@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState, type ReactElement } from 'react';
 import { ContextMenu } from '@base-ui/react/context-menu';
 import { Menu } from '@base-ui/react/menu';
 import type { InboxMessageWire, InboxThread } from '@plannotator/core/inbox-types';
+import { inboxOpenCommentThreadsLabel } from '@plannotator/core/inbox-open-threads-guard';
 import { copyTextToClipboard } from '@plannotator/ui/utils/clipboard';
 import { focusAfterSwap, SnoozeTimes, type SnoozeView } from '@plannotator/ui/components/inbox-thread/SnoozeMenu';
 import { copyAuthor, copyMarkdown, messageMarkdown, threadMarkdown } from '../copyMarkdown';
@@ -163,13 +164,16 @@ export function ThreadMore(
     /** A phone's Move back to the top on a thread marked read: the pressed Read button's click, moved into the sheet. */
     moveBack?: () => void;
     markUnread?: () => void;
-    archive?: { archived: boolean; onToggle: () => void };
+    /** `held`: comment threads still open hold Archive (own/open-threads-guard): the item says how many, and its press leads to them. */
+    archive?: { archived: boolean; onToggle: () => void; held?: number };
     snooze?: ThreadSnoozeProps;
     /** Request guided review (guideRequest.ts): its own group above Archive, only where the thread offers it. */
     requestGuide?: () => void;
   },
 ) {
   const { thread, phone, pin, markRead, moveBack, markUnread, archive, snooze, requestGuide } = props;
+  const held = archive && !archive.archived ? (archive.held ?? 0) : 0;
+  const archiveLabel = archive?.archived ? 'Unarchive thread' : held > 0 ? inboxOpenCommentThreadsLabel(held) : 'Archive thread';
   const copies = useCopies(props);
   const { ref, portal } = usePortal<HTMLButtonElement>();
   const [open, setOpen] = useState(false);
@@ -313,12 +317,13 @@ export function ThreadMore(
                     <Menu.Separator className="ib-pm-sep" />
                     <Menu.Item
                       className="ib-pmi"
-                      label={archive.archived ? 'Unarchive thread' : 'Archive thread'}
+                      label={archiveLabel}
                       onClick={archive.onToggle}
                       data-thread-archive-item=""
+                      data-thread-archive-held={held > 0 ? held : undefined}
                     >
                       <Icon name="archive" size={15} />
-                      {archive.archived ? 'Unarchive thread' : 'Archive thread'}
+                      {archiveLabel}
                     </Menu.Item>
                   </>
                 )}

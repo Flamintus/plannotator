@@ -141,6 +141,7 @@ import { stepsCount, stepsWaitTarget } from '../steps/model';
 import { useThreadSteps, type StepsSubscribe } from '../steps/useThreadSteps';
 import { replyKeysToRenew, routeSendAnnotations, sendTargetAnswerIds, sendTargetsOf, wordsMessage, type SendTarget, type SentContents } from '../sendTargets';
 import { SentComments, useSentComments } from './SentComments';
+import { revealCommentThread, useOpenCommentThreads } from '../openThreadsGuard';
 
 export { routeSendAnnotations, sendTargetsOf, type SendTarget };
 
@@ -1954,6 +1955,8 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
   const records = files?.annotations ?? [];
   // Comments that stay after Send (experimental "persistent-comments"; SentComments.tsx): only while the person has it on.
   const sentComments = useSentComments({ messages: thread.messages, files, drafts: records, patchDrafts: patchRecords, onError: setError, canResolve: !machine });
+  // own/open-threads-guard: a comment thread still open holds Archive, whose item leads to it (openThreadsGuard.ts).
+  const holdingArchive = useOpenCommentThreads(sentComments.records, records, files?.comment_replies);
   /** The person's own messages: their images are named "image in my … message" in the feedback (replyFileLinks.ts). */
   const personMessageIds = useMemo(() => new Set(thread.messages.filter((m) => m.author.kind === 'person').map((m) => m.id)), [thread.messages]);
   // Code review: `/review-recheck` is offered (and matched at Send) only once a review happened in this thread.
@@ -5188,7 +5191,11 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
               markRead={phoneMarkRead}
               moveBack={phoneMoveBack}
               markUnread={markUnreadInMenu ? onMarkUnread : undefined}
-              archive={{ archived, onToggle: () => void resolve(!archived) }}
+              archive={{
+                archived,
+                held: holdingArchive.length,
+                onToggle: () => (!archived && holdingArchive.length > 0 ? revealCommentThread(holdingArchive[0]!, bodyRef.current, unfold, openRecord) : void resolve(!archived)),
+              }}
               snooze={snoozeProps}
               requestGuide={guideOffered ? () => void requestGuide() : undefined}
             />

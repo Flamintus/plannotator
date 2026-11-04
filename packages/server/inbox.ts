@@ -137,6 +137,7 @@ import { InboxStore } from "@plannotator/shared/inbox/store";
 import { INBOX_TIDY_WITHDRAWN_HOST, inboxTidyBodyStepsOff, inboxTidyIsStepsOnly, inboxTidyStepsOnlyWakes } from "@plannotator/shared/inbox/tidy";
 import { inboxArchivedRows, inboxListSections, inboxRowArchived } from "@plannotator/shared/inbox/list";
 import { archiveProject, markProjectRead, unarchiveProject, unmarkProjectRead } from "@plannotator/shared/inbox/project-batch";
+import { commentThreadsHoldingArchive, refuseArchiveWhileCommentThreadsOpen } from "@plannotator/shared/inbox/open-threads-guard";
 import {
   INBOX_ASK_BRIDGE_PREFIX,
   INBOX_ASK_WAITS_FIELD,
@@ -597,6 +598,8 @@ const ERROR_STATUS: Record<string, number> = {
   // Tidy: none of the sessions asked has anything to tidy now (asked a moment ago, or nothing left).
   nothing_to_tidy: 409,
   thread_resolved: 409,
+  // own/open-threads-guard: a comment thread still open holds the archive.
+  comment_threads_open: 409,
   // A reply held for this machine whose thread an agent wrote to after the person read it (linked machines, rule 11).
   thread_moved_on: 409,
   // Linking machines (inbox-machines.ts).
@@ -4327,7 +4330,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         } else {
           if (body.resolved !== undefined && typeof body.resolved !== "boolean") throw new InboxError("validation_error", "resolved: must be a boolean.", { field: "resolved" });
           if (body.resolved !== false) {
-            const { error, ...batch } = archiveProject(store, projectId);
+            // own/open-threads-guard: a thread with a comment thread still open stays where it is (`held`).
+            const holds = persistentCommentsOn() ? (id: string) => commentThreadsHoldingArchive(store, id).length > 0 : undefined;
+            const { error, ...batch } = archiveProject(store, projectId, holds);
             // A came-back thread sent back by Mark read: its set-aside note, as for the single action.
             for (const id of batch.read) scheduleSetAside(id);
             answer = { project: folder(), batch, threads: rows([...batch.resolved, ...batch.read]), ...incomplete(error) };
@@ -4505,6 +4510,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
             if (body.resolved !== undefined && typeof body.resolved !== "boolean") {
               throw new InboxError("validation_error", "resolved: must be a boolean.");
             }
+            // own/open-threads-guard: a comment thread still open holds the person's Archive too.
+            if (body.resolved !== false && persistentCommentsOn()) refuseArchiveWhileCommentThreadsOpen(store, messageId, "person");
             // The person's Archive (the window, a phone, a linked machine's forward): it ends a snooze.
             const thread = store.resolveThread(messageId, body.resolved !== false, "person");
             // Unarchived: a Mark read's set-aside note an archive held back is due again.

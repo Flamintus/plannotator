@@ -153,6 +153,7 @@
     "./inbox/list": "./inbox/list.ts",
     "./inbox/tidy": "./inbox/tidy.ts",
     "./inbox/project-batch": "./inbox/project-batch.ts",
+    "./inbox/open-threads-guard": "./inbox/open-threads-guard.ts",
     "./inbox/search": "./inbox/search.ts",
     "./inbox/registry": "./inbox/registry.ts",
     "./inbox/qwen-sessions": "./inbox/qwen-sessions.ts",

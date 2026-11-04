@@ -239,7 +239,9 @@ test("comments sent before the thread was archived stay with it when the agent b
   const server = await start(dataDir, true);
   const client = await agent(server);
   const { sent, replyId } = await roundOne(server, client, project);
-  expect((await post(server, `/api/inbox/messages/${sent.thread_id}/resolve`, { resolved: true })).status).toBe(200);
+  // own/open-threads-guard: an open comment holds every door's archive, so the thread is archived as the store keeps it
+  // when the switch was off then (inbox-open-threads-guard.test.ts proves the doors).
+  server.store.resolveThread(sent.thread_id, true, "person");
   const back = (await call(client, "send_message", { project_path: project, body: "One more thing about the rollout.", reply_to: replyId, ...SESSION })).structured;
   expect(await replyBody(server, back.message_id, "r-back")).not.toContain("still open");
 });

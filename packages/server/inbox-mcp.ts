@@ -28,6 +28,7 @@ import { attachedImagesNotInBody, attachedImagesNotInBodyText } from "@plannotat
 import { INBOX_TIDY_WITHDRAWN_HOST, inboxTidyBodyStepsOff, inboxTidyIsStepsOnly } from "@plannotator/shared/inbox/tidy";
 import { QUESTION_OPENERS_WITH_TEXT_MAX, questionOpenersWithText, questionOpenersWithTextText, type QuestionOpenerWithText } from "@plannotator/shared/inbox/question-openers";
 import { InboxError } from "@plannotator/shared/inbox/schema";
+import { refuseArchiveWhileCommentThreadsOpen } from "@plannotator/shared/inbox/open-threads-guard";
 import type { InboxSendResult, InboxStore } from "@plannotator/shared/inbox/store";
 import type { InboxAttachment, InboxListRow } from "@plannotator/core/inbox-types";
 import { registerInboxGuideTools } from "./inbox-guides";
@@ -1228,6 +1229,8 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
     },
     async (input) =>
       guarded(() => {
+        // own/open-threads-guard: a comment thread still open holds the archive (shared/inbox/open-threads-guard.ts).
+        if ((input.resolved ?? true) && context.persistentCommentsOn?.()) refuseArchiveWhileCommentThreadsOpen(store, input.message_id, "agent");
         const summary = store.resolveThread(input.message_id, input.resolved ?? true);
         return ok(`Thread ${summary.thread_id} is ${summary.resolved_at ? "resolved" : "open"}.`, { thread: summary });
       }),
