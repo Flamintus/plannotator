@@ -35,6 +35,14 @@ describe('a passage of words as drawn', () => {
     expect(passageContext('Short words.\n', { quote: 'words', offset: 6 }, 60)).toBe('Short words.');
   });
 
+  test('a cut never splits a word: it falls between words, and the passage stays whole', () => {
+    const long = `${'section '.repeat(40)}the off switch ${'deployment '.repeat(40)}`;
+    const cut = passageWindow(long, { quote: 'off switch', offset: passageOffset(long, long.indexOf('off')) }, 61);
+    const words = cut.text.replace(/^…|…$/g, '').split(' ');
+    for (const word of words) expect(['section', 'deployment', 'the', 'off', 'switch']).toContain(word);
+    expect(cut.text.slice(cut.offset).startsWith('off switch')).toBe(true);
+  });
+
   test('the cut says where the passage starts in it, so a reader of the cut finds it there', () => {
     const long = `${'a '.repeat(200)}the off switch ${'b '.repeat(200)}`;
     const cut = passageWindow(long, { quote: 'off switch', offset: passageOffset(long, long.indexOf('off')) }, 60);
