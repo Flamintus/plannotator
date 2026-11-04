@@ -18,6 +18,7 @@
 import { AnnotationType, type Annotation, type Block, type ImageRegion } from '@plannotator/ui/types';
 import { regionOf } from '@plannotator/ui/components/ImageRegions';
 import { generateId } from '@plannotator/ui/utils/generateId';
+import { buildReplyAnnotation } from '@plannotator/ui/utils/annotationReply';
 import { collectQuestionAnswers } from '@plannotator/ui/utils/questionAnswers';
 import {
   canonicalQuestionAnswer,
@@ -706,24 +707,7 @@ export function buildDocumentTools(adapter: DocumentToolAdapter, state: Document
             results.push({ ok: false, index, error: { code: 'not_found', message: 'inReplyTo does not name a comment in this document' } });
             continue;
           }
-          annotation = {
-            ...base,
-            type: parent.type === AnnotationType.DELETION ? AnnotationType.COMMENT : parent.type,
-            blockId: parent.blockId,
-            startOffset: parent.startOffset,
-            endOffset: parent.endOffset,
-            originalText: parent.originalText,
-            inReplyTo: parent.id,
-            ...(parent.startMeta ? { startMeta: parent.startMeta } : {}),
-            ...(parent.endMeta ? { endMeta: parent.endMeta } : {}),
-            ...(parent.htmlAnchor ? { htmlAnchor: parent.htmlAnchor } : {}),
-            // A reply to a diagram comment is a diagram comment: without the
-            // anchor it would fall to text search and paint the node's label
-            // wherever the prose repeats it.
-            ...(parent.diagramAnchor ? { diagramAnchor: parent.diagramAnchor } : {}),
-            ...(parent.pageUrl ? { pageUrl: parent.pageUrl } : {}),
-            ...(parent.diffContext ? { diffContext: parent.diffContext } : {}),
-          };
+          annotation = buildReplyAnnotation(parent, { id: base.id, text: item.text, createdA: base.createdA, author: base.author, source: base.source });
           anchoredBy = 'reply';
         } else if (item.quote) {
           const section = item.section ? findSection(outline, item.section) : null;

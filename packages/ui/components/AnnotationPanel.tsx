@@ -11,7 +11,7 @@ import { useIsMobile } from '../hooks/useIsMobile';
 import { OverlayScrollArea } from './OverlayScrollArea';
 import { Button } from './ui/button';
 import { cn } from '../lib/utils';
-import { resolveReplyParents, resolveThreadRootTimestamps } from '@plannotator/core/annotation-threads';
+import { resolveReplyParents } from '@plannotator/core/annotation-threads';
 import { basenameFromPath } from '@plannotator/core/source-save';
 import { ROOT_DOCUMENT_GROUP_KEY } from '../utils/annotationScope';
 import type { AnnotationScope, AnnotationDocumentGroup } from '../utils/annotationScope';
@@ -21,6 +21,7 @@ import { HostTitle } from './HostTitle';
 import { isCommentSubmitKey } from '../utils/commentSubmitKey';
 import { useConfigValue } from '../config/useConfig';
 import { imageRegionNumbers, RegionCardInfo, RegionNumber, regionOf } from './ImageRegions';
+import { CHECKBOX_ANNOTATION_PREFIX } from '../utils/annotationOwnsHighlight';
 
 /** What a region card (#2100) needs from its panel: each region's number on
  *  its image, and how to load the image for the crop thumbnail. */
@@ -58,17 +59,37 @@ const TrashCardIcon = () => (
   </svg>
 );
 
+const ReplyCardIcon = () => (
+  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3" />
+  </svg>
+);
+
+/** One annotation in thread order: how deep it sits (0 for a root) and the
+ *  annotation it replies to (null for a root). */
+export interface ThreadedAnnotation {
+  annotation: Annotation;
+  isReply: boolean;
+  depth: number;
+  parent: Annotation | null;
+}
+
+type TimelineEntry =
+  | ({ kind: 'plan' } & ThreadedAnnotation)
+  | { kind: 'code'; annotation: CodeAnnotation; depth: 0 };
+
 /**
- * Order annotations so every reply follows its parent (replies among
- * themselves stay in creation order). The threading rule is the shared one
- * (resolveReplyParents, also what the export applies): a reply whose parent
- * is absent, a self-reference, and every member of an `inReplyTo` cycle
- * render as top-level cards in input order, so nothing is ever dropped.
- * Without any `inReplyTo` the input order is returned unchanged, so
- * annotations without replies render exactly as before.
+ * Order annotations so every reply follows its parent, depth first: a reply
+ * to a reply sits under that reply, before the parent's later replies
+ * (replies to one annotation stay in input order). The threading rule is
+ * the shared one (resolveReplyParents, also what the export applies): a
+ * reply whose parent is absent, a self-reference, and every member of an
+ * `inReplyTo` cycle render as top-level cards in input order, so nothing is
+ * ever dropped. Without any `inReplyTo` the input order is returned
+ * unchanged, so annotations without replies render exactly as before.
  */
-export function threadReplies(sorted: Annotation[]): Array<{ annotation: Annotation; isReply: boolean }> {
-  if (!sorted.some((a) => a.inReplyTo)) return sorted.map((annotation) => ({ annotation, isReply: false }));
+export function threadReplies(sorted: Annotation[]): ThreadedAnnotation[] {
+  if (!sorted.some((a) => a.inReplyTo)) return sorted.map((annotation) => ({ annotation, isReply: false, depth: 0, parent: null }));
   const parents = resolveReplyParents(sorted);
   const byParent = new Map<string, Annotation[]>();
   for (const a of sorted) {
@@ -81,24 +102,65 @@ export function threadReplies(sorted: Annotation[]): Array<{ annotation: Annotat
   // Depth-first, iteratively: a 5,000-deep chain must not recurse 5,000
   // frames deep. The stack holds each node's replies in reverse so they pop
   // in creation order.
-  const out: Array<{ annotation: Annotation; isReply: boolean }> = [];
-  const stack: Array<{ annotation: Annotation; isReply: boolean }> = [];
-  const pushReplies = (a: Annotation) => {
+  const out: ThreadedAnnotation[] = [];
+  const stack: ThreadedAnnotation[] = [];
+  const pushReplies = (a: Annotation, depth: number) => {
     const replies = byParent.get(a.id);
     if (!replies) return;
-    for (let i = replies.length - 1; i >= 0; i--) stack.push({ annotation: replies[i], isReply: true });
+    for (let i = replies.length - 1; i >= 0; i--) stack.push({ annotation: replies[i], isReply: true, depth: depth + 1, parent: a });
   };
   for (const a of sorted) {
     if (parents.get(a.id)) continue;
-    out.push({ annotation: a, isReply: false });
-    pushReplies(a);
+    out.push({ annotation: a, isReply: false, depth: 0, parent: null });
+    pushReplies(a, 0);
     while (stack.length > 0) {
       const next = stack.pop()!;
       out.push(next);
-      pushReplies(next.annotation);
+      pushReplies(next.annotation, next.depth);
     }
   }
   return out;
+}
+
+/**
+ * A reply's indent: one step and one thread line per level, the same at
+ * every level, with no rule by depth, so a reply to a reply reads as nested
+ * under it and every ancestor's line runs beside it. One element draws all
+ * of a card's levels (the lines are its background), so a chain of
+ * thousands of replies, which a buggy tool can write, costs one wrapper per
+ * card. A level is the 0.75rem margin, 2px line and 0.375rem gap of
+ * `ml-3 border-l-2 border-border/40 pl-1.5`.
+ */
+const REPLY_STEP = 'calc(1.125rem + 2px)';
+const REPLY_LINES = `repeating-linear-gradient(to right, transparent 0 0.75rem, color-mix(in oklab, var(--border) 40%, transparent) 0.75rem calc(0.75rem + 2px), transparent calc(0.75rem + 2px) ${REPLY_STEP})`;
+
+const ReplyIndent: React.FC<{ depth: number; composer?: boolean; children: React.ReactNode }> = ({ depth, composer = false, children }) => {
+  const indent = `calc(${depth} * ${REPLY_STEP})`;
+  return (
+    <div
+      {...(composer ? { 'data-annotation-reply-composer': 'true' } : { 'data-annotation-reply': 'true' })}
+      data-annotation-depth={depth}
+      style={{ paddingLeft: indent, backgroundImage: REPLY_LINES, backgroundSize: `${indent} 100%`, backgroundRepeat: 'no-repeat' }}
+    >
+      {children}
+    </div>
+  );
+};
+
+/**
+ * Where the reply box for `parentId` goes in a thread-ordered list: after
+ * the parent's whole subtree, which is where the reply will land, one level
+ * under the parent. Null when the parent is not in the list.
+ */
+function replyBoxIndex(
+  entries: ReadonlyArray<{ kind?: string; annotation: { id: string }; depth: number }>,
+  parentId: string,
+): { index: number; depth: number } | null {
+  const at = entries.findIndex((entry) => entry.kind !== 'code' && entry.annotation.id === parentId);
+  if (at < 0) return null;
+  let end = at + 1;
+  while (end < entries.length && entries[end].depth > entries[at].depth) end++;
+  return { index: end, depth: entries[at].depth + 1 };
 }
 
 interface DirectEditsPanelItem {
@@ -155,6 +217,18 @@ interface PanelProps {
     *  (a stamp is a read affordance). Default: nothing rendered, and no
     *  wrapper element exists at all. */
   renderCardHeader?: (annotation: Annotation) => React.ReactNode;
+  /** Opt-in: the person replies to a plan-annotation card. Supplied (and not
+    *  `readOnly`), each card of the open document gets a Reply action that
+    *  opens a box after the card's own replies, where the reply will appear;
+    *  Reply (or the comment submit key) calls `onReply(parentId, { text,
+    *  mentions })` and the host adds the reply (`buildReplyAnnotation` in
+    *  `utils/annotationReply`). `mentions` follows the edit box's rule: only
+    *  with a `mentionSource` and a surviving pick. A card whose place is drawn
+    *  by something other than a text highlight (a comment on part of an
+    *  image, a checkbox toggle, a question's answer) takes no Reply: a reply
+    *  would carry a text anchor its parent does not have. Absent: no action
+    *  and no box. */
+  onReply?: (parentId: string, reply: { text: string; mentions?: readonly string[] }) => void;
   /** Opt-in host capability: an `@` mention source for the EDIT box of each
     *  plan-annotation card, the same `MentionSource` `Viewer` and `HtmlViewer`
     *  take for their creation composers. Supplied → the edit textarea grows
@@ -272,6 +346,7 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
   directEdits = null,
   renderCardFooter,
   renderCardHeader,
+  onReply,
   mentionSource,
   readOnly = false,
   presentation = 'panel',
@@ -306,6 +381,17 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
   const mobilePanel = isMobile && !embedded;
   const [copiedText, setCopiedText] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
+  // The reply being written: the card it answers and its words. One box at a
+  // time; Reply on another card moves the box and keeps the words. `opened`
+  // counts the Reply presses, so each one puts the caret back in the box.
+  const [replyDraft, setReplyDraft] = useState<{ parentId: string; text: string; opened: number } | null>(null);
+  const canReply = onReply !== undefined && !readOnly;
+  // The card the box answers is gone (deleted here, removed by an agent):
+  // its words go with it, as its box did.
+  const replyParentGone = replyDraft !== null && !annotations.some((a) => a.id === replyDraft.parentId);
+  useEffect(() => {
+    if (replyParentGone) setReplyDraft(null);
+  }, [replyParentGone]);
   // With a Questions section, answers are listed there, not as comments.
   const showQuestions = questionRows !== undefined && questionRows.length > 0;
   const timelineAnnotations = questionRows !== undefined
@@ -315,24 +401,25 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
   const byHost = compareAnnotations ? (a: Annotation, b: Annotation) => compareAnnotations(a, b) || byCreation(a, b) : byCreation;
   const sortedAnnotations = [...timelineAnnotations].sort(byHost);
   const sortedCodeAnnotations = [...codeAnnotations].sort((a, b) => a.createdAt - b.createdAt);
-  // Replies (`inReplyTo`) thread under their parent: each reply is lifted to
-  // sit right after its parent (and the parent's earlier replies) at the
-  // parent's timeline position. With no replies the order is untouched.
+  // Replies (`inReplyTo`) thread under their parent, depth first: a thread
+  // (a root and every reply under it) stays together, in thread order, at
+  // the root's place on the timeline. With no replies the order is untouched.
   const threadedAnnotations = threadReplies(sortedAnnotations);
-  // Thread timestamps are resolved once per render, linearly (shared helper),
-  // and the comparator only reads the map: resolving each chain inside the
-  // comparator with a linear parent lookup was O(n^2 log n) and froze the
-  // tab on a few thousand threaded comments.
-  const threadRootTs = resolveThreadRootTimestamps(sortedAnnotations);
-  const planEntries = threadedAnnotations.map(({ annotation, isReply }) => ({ kind: 'plan' as const, ts: annotation.createdA, threadTs: threadRootTs.get(annotation.id) ?? annotation.createdA, annotation, isReply }));
-  const codeEntries = sortedCodeAnnotations.map(annotation => ({ kind: 'code' as const, ts: annotation.createdAt, threadTs: annotation.createdAt, annotation, isReply: false }));
+  // The timeline places whole threads and code comments by when each
+  // started. Sorting threads as units keeps a reply to a reply under it
+  // (sorting cards by their own time hung it under a later sibling) and
+  // stays linear in the thread length.
+  const timelineUnits: Array<{ ts: number; entries: TimelineEntry[] }> = [];
+  for (const item of threadedAnnotations) {
+    if (item.depth === 0) timelineUnits.push({ ts: item.annotation.createdA, entries: [] });
+    timelineUnits[timelineUnits.length - 1].entries.push({ kind: 'plan', ...item });
+  }
+  for (const annotation of sortedCodeAnnotations) {
+    timelineUnits.push({ ts: annotation.createdAt, entries: [{ kind: 'code', annotation, depth: 0 }] });
+  }
   // A host order keeps the plan comments as the host sorted them (code comments after).
-  const timelineEntries = compareAnnotations
-    ? [...planEntries, ...codeEntries]
-    : [...planEntries, ...codeEntries].sort((a, b) => {
-        if (a.threadTs !== b.threadTs) return a.threadTs - b.threadTs;
-        return a.ts - b.ts;
-      });
+  if (!compareAnnotations) timelineUnits.sort((a, b) => a.ts - b.ts);
+  const timelineEntries = timelineUnits.flatMap((unit) => unit.entries);
   const totalCount = annotations.length + codeAnnotations.length + (editorAnnotations?.length ?? 0);
   const timelineCount = timelineAnnotations.length + codeAnnotations.length + (editorAnnotations?.length ?? 0);
 
@@ -394,6 +481,49 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
   }, [selectedId]);
 
   if (!isOpen) return null;
+
+  const startReply = (parentId: string) => setReplyDraft((draft) => ({ parentId, text: draft?.text ?? '', opened: (draft?.opened ?? 0) + 1 }));
+  // A card in a thread: a root as is, a reply inside its indent.
+  const inThread = (entry: ThreadedAnnotation, card: React.ReactElement) => (
+    entry.depth === 0
+      ? <React.Fragment key={entry.annotation.id}>{card}</React.Fragment>
+      : <ReplyIndent key={entry.annotation.id} depth={entry.depth}>{card}</ReplyIndent>
+  );
+  // A reply whose quote is its parent's does not draw it again: the parent
+  // above it shows it.
+  const threadParts = (entry: ThreadedAnnotation, parts: ReturnType<NonNullable<typeof cardParts>> | undefined) => (
+    entry.parent && entry.annotation.originalText === entry.parent.originalText ? { ...parts, quote: false } : parts
+  );
+  // The reply box, spliced into a thread-ordered list after the parent's
+  // subtree, at the depth the reply will have.
+  const withReplyBox = (entries: ReadonlyArray<TimelineEntry | ThreadedAnnotation>, nodes: React.ReactNode[]): React.ReactNode[] => {
+    if (!canReply || !replyDraft) return nodes;
+    const at = replyBoxIndex(entries, replyDraft.parentId);
+    if (!at) return nodes;
+    const box = (
+      <ReplyIndent key={`reply-box-${replyDraft.opened}`} depth={at.depth} composer>
+        <div className="rounded-lg bg-surface-1 px-3 py-2.5 ring-1 ring-border/50">
+          <AnnotationEditComposer
+            value={replyDraft.text}
+            onChange={(text) => setReplyDraft((draft) => (draft ? { ...draft, text } : draft))}
+            onSave={(mentions) => {
+              const text = replyDraft.text.trim();
+              if (!text) return;
+              onReply!(replyDraft.parentId, mentionSource && mentions.length > 0 ? { text, mentions } : { text });
+              setReplyDraft(null);
+            }}
+            onCancel={() => setReplyDraft(null)}
+            mentionSource={mentionSource}
+            placeholder="Reply..."
+            label="Reply"
+            submitLabel="Reply"
+            selectOnOpen={false}
+          />
+        </div>
+      </ReplyIndent>
+    );
+    return [...nodes.slice(0, at.index), box, ...nodes.slice(at.index)];
+  };
 
   const panel = (
     <aside
@@ -542,8 +672,9 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
                   </button>
                   {!collapsed && (
                     <div className="mt-0.5 flex flex-col gap-1.5">
-                      {threaded.map(({ annotation, isReply }) => {
-                        const card = (
+                      {withReplyBox(group.isCurrent ? threaded : [], threaded.map((entry) => {
+                        const { annotation } = entry;
+                        return inThread(entry, (
                           <AnnotationCard
                             annotation={annotation}
                             isSelected={selectedId === annotation.id}
@@ -557,25 +688,19 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
                             onEdit={group.isCurrent
                               ? (onEdit ? (updates: Partial<Annotation>) => onEdit(annotation.id, updates) : undefined)
                               : (onEditInDocument ? (updates: Partial<Annotation>) => onEditInDocument(group.path, annotation.id, updates) : undefined)}
+                            onReply={group.isCurrent && canReply ? () => startReply(annotation.id) : undefined}
                             readOnly={readOnly}
                             footer={group.isCurrent ? renderCardFooter?.(annotation) : undefined}
                             header={group.isCurrent ? renderCardHeader?.(annotation) : undefined}
-                            parts={group.isCurrent ? cardParts?.(annotation) : undefined}
+                            parts={threadParts(entry, group.isCurrent ? cardParts?.(annotation) : undefined)}
                             body={group.isCurrent ? renderCardBody?.(annotation) : undefined}
                             mentionSource={mentionSource}
                             unanchored={group.isCurrent ? (unanchoredIds?.has(annotation.id) ?? false) : false}
                             sectionRefs={group.isCurrent ? sectionRefs : undefined}
                             onNavigateAnchor={onNavigateAnchor}
                           />
-                        );
-                        return isReply ? (
-                          <div key={annotation.id} data-annotation-reply="true" className="ml-3 border-l-2 border-border/40 pl-1.5">
-                            {card}
-                          </div>
-                        ) : (
-                          <React.Fragment key={annotation.id}>{card}</React.Fragment>
-                        );
-                      })}
+                        ));
+                      }))}
                     </div>
                   )}
                 </section>
@@ -660,35 +785,9 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
           )
         ) : (
           <>
-            {timelineEntries.map(entry => (
-              entry.kind === 'plan' ? (
-                entry.isReply ? (
-                  <div
-                    key={entry.annotation.id}
-                    data-annotation-reply="true"
-                    className="ml-3 border-l-2 border-border/40 pl-1.5"
-                  >
-                    <AnnotationCard
-                      annotation={entry.annotation}
-                      sectionRefs={sectionRefs}
-                      onNavigateAnchor={onNavigateAnchor}
-                      isSelected={selectedId === entry.annotation.id}
-                      isMe={isCurrentUser(entry.annotation.author)}
-                      onSelect={() => onSelect(entry.annotation.id)}
-                      onDelete={() => onDelete(entry.annotation.id)}
-                      onEdit={onEdit ? (updates: Partial<Annotation>) => onEdit(entry.annotation.id, updates) : undefined}
-                      readOnly={readOnly}
-                      footer={renderCardFooter?.(entry.annotation)}
-                      header={renderCardHeader?.(entry.annotation)}
-                  parts={cardParts?.(entry.annotation)}
-                  body={renderCardBody?.(entry.annotation)}
-                      mentionSource={mentionSource}
-                      unanchored={unanchoredIds?.has(entry.annotation.id) ?? false}
-                    />
-                  </div>
-                ) : (
+            {withReplyBox(timelineEntries, timelineEntries.map(entry => (
+              entry.kind === 'plan' ? inThread(entry, (
                 <AnnotationCard
-                  key={entry.annotation.id}
                   annotation={entry.annotation}
                   sectionRefs={sectionRefs}
                   onNavigateAnchor={onNavigateAnchor}
@@ -697,16 +796,16 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
                   onSelect={() => onSelect(entry.annotation.id)}
                   onDelete={() => onDelete(entry.annotation.id)}
                   onEdit={onEdit ? (updates: Partial<Annotation>) => onEdit(entry.annotation.id, updates) : undefined}
+                  onReply={canReply ? () => startReply(entry.annotation.id) : undefined}
                   readOnly={readOnly}
                   footer={renderCardFooter?.(entry.annotation)}
                   header={renderCardHeader?.(entry.annotation)}
-                  parts={cardParts?.(entry.annotation)}
+                  parts={threadParts(entry, cardParts?.(entry.annotation))}
                   body={renderCardBody?.(entry.annotation)}
                   mentionSource={mentionSource}
                   unanchored={unanchoredIds?.has(entry.annotation.id) ?? false}
                 />
-                )
-              ) : (
+              )) : (
                 <CodeAnnotationCard
                   key={entry.annotation.id}
                   annotation={entry.annotation}
@@ -718,7 +817,7 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
                   readOnly={readOnly}
                 />
               )
-            ))}
+            )))}
             {editorAnnotations && editorAnnotations.length > 0 && (
               <>
                 {timelineEntries.length > 0 && (
@@ -991,7 +1090,9 @@ const AnnotationText: React.FC<{
 };
 
 /**
- * The plan-annotation card's edit box.
+ * The plan-annotation card's edit box, and the panel's reply box (the same
+ * box with its own placeholder, name and button, and the caret at the end of
+ * the words instead of the words selected).
  *
  * Mounted only while a card is in edit mode, which is also what scopes an
  * `@` pick to ONE edit session: `useMentionAutocomplete`'s tagged-people
@@ -1015,19 +1116,36 @@ const AnnotationEditComposer: React.FC<{
   onSave: (mentions: readonly string[]) => void;
   onCancel: () => void;
   mentionSource?: MentionSource;
-}> = ({ value, onChange, onSave, onCancel, mentionSource }) => {
+  placeholder?: string;
+  /** The field's accessible name. */
+  label?: string;
+  submitLabel?: string;
+  /** Select the text on open (an edit replaces it); otherwise the caret goes to its end. */
+  selectOnOpen?: boolean;
+}> = ({
+  value,
+  onChange,
+  onSave,
+  onCancel,
+  mentionSource,
+  placeholder = 'Add your comment...',
+  label = 'Annotation comment',
+  submitLabel = 'Save',
+  selectOnOpen = true,
+}) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const mention = useMentionAutocomplete({ text: value, setText: onChange, textareaRef, source: mentionSource });
   const listboxId = `annotation-card-mentions-${useId().replace(/:/g, '')}`;
   const menuOpen = mention.menu !== null;
   const enterSavesComment = useConfigValue('enterSavesComment');
 
-  // Focus-on-open, unchanged: this component mounts exactly when editing starts.
+  // Focus-on-open: this component mounts exactly when editing (or a reply) starts.
   useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.focus();
-      textareaRef.current.select();
-    }
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.focus();
+    if (selectOnOpen) textarea.select();
+    else textarea.setSelectionRange(textarea.value.length, textarea.value.length);
   }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1053,8 +1171,8 @@ const AnnotationEditComposer: React.FC<{
         onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => { onChange(e.target.value); mention.onSelect(); }}
         onSelect={mention.onSelect}
         onKeyDown={handleKeyDown}
-        placeholder="Add your comment..."
-        aria-label="Annotation comment"
+        placeholder={placeholder}
+        aria-label={label}
         aria-autocomplete={mentionSource ? 'list' : undefined}
         aria-haspopup={mentionSource ? 'listbox' : undefined}
         aria-controls={menuOpen ? listboxId : undefined}
@@ -1065,7 +1183,7 @@ const AnnotationEditComposer: React.FC<{
       />
       <div className="mt-1.5 flex justify-end gap-1.5">
         <Button variant="ghost" size="xxs" onClick={onCancel}>Cancel</Button>
-        <Button size="xxs" disabled={!value.trim()} onClick={() => onSave(mention.mentionIds)}>Save</Button>
+        <Button size="xxs" disabled={!value.trim()} onClick={() => onSave(mention.mentionIds)}>{submitLabel}</Button>
       </div>
       <MentionAutocompleteMenu id={listboxId} menu={mention.menu} onSelect={mention.select} />
     </div>
@@ -1079,6 +1197,8 @@ const AnnotationCard: React.FC<{
   onSelect: () => void;
   onDelete: () => void;
   onEdit?: (updates: Partial<Annotation>) => void;
+  /** Open the panel's reply box under this card's thread (see `onReply`). */
+  onReply?: () => void;
   readOnly?: boolean;
   footer?: React.ReactNode;
   /** Host slot in the card's header row (see `renderCardHeader`). */
@@ -1093,7 +1213,7 @@ const AnnotationCard: React.FC<{
   body?: React.ReactNode;
   sectionRefs?: Map<string, string>;
   onNavigateAnchor?: (hash: string) => void;
-}> = ({ annotation, isSelected, isMe, onSelect, onDelete, onEdit, readOnly = false, footer, header, mentionSource, unanchored = false, parts, body, sectionRefs, onNavigateAnchor }) => {
+}> = ({ annotation, isSelected, isMe, onSelect, onDelete, onEdit, onReply, readOnly = false, footer, header, mentionSource, unanchored = false, parts, body, sectionRefs, onNavigateAnchor }) => {
   // `text: false`: the stored text is the host's stand-in, never the person's words; the edit box starts empty.
   const shownText = parts?.text === false ? '' : annotation.text || '';
   const [isEditing, setIsEditing] = useState(false);
@@ -1210,6 +1330,20 @@ const AnnotationCard: React.FC<{
         )}
         {!readOnly && parts?.actions !== false && (
           <div className="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100">
+            {/* A card whose place is not a text highlight (a region of an
+                image, a checkbox toggle, a question's answer) takes no reply:
+                the reply would carry a text anchor its parent does not have. */}
+            {onReply && !region && !annotation.id.startsWith(CHECKBOX_ANNOTATION_PREFIX) && annotation.questionAnswer == null && !isEditing && (
+              <HostTitle title="Reply" name>
+                <button
+                  type="button"
+                  onClick={(e: React.MouseEvent<HTMLButtonElement>) => { e.stopPropagation(); onReply(); }}
+                  className="relative rounded-md p-1.5 text-muted-foreground transition-colors before:absolute before:-inset-1.5 before:content-[''] hover:text-foreground"
+                >
+                  <ReplyCardIcon />
+                </button>
+              </HostTitle>
+            )}
             {onEdit && annotation.type !== AnnotationType.DELETION && !isEditing && (
               <HostTitle title="Edit annotation" name>
                 <button

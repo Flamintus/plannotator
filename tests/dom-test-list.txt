@@ -244,6 +244,7 @@ packages/ui/utils/diagramAnchor.test.ts
 packages/ui/utils/diagramAnchorGraphviz.test.ts
 packages/ui/hooks/useAnnotationHighlighter.diagramSkip.test.tsx
 packages/ui/hooks/useAnnotationHighlighter.blankSelection.test.tsx
+packages/ui/hooks/useAnnotationHighlighter.reselectOverlap.test.tsx
 packages/ui/components/Viewer.diagramLazyRestore.test.tsx
 packages/ui/components/Viewer.diagramAnchorHostile.test.tsx
 packages/ui/components/CommentPopover.skillReferences.test.tsx
@@ -339,6 +340,7 @@ packages/editor/App.htmlChrome.test.tsx
 packages/editor/App.sidebarTabsAgentTerminal.test.tsx
 packages/editor/App.htmlLinkDraft.test.tsx
 packages/editor/App.decisionControl.test.tsx
+packages/editor/App.annotationReply.test.tsx
 packages/editor/App.planDecisionControl.test.tsx
 packages/editor/App.planRevision.test.tsx
 packages/editor/App.liveVersion.test.tsx
@@ -375,6 +377,7 @@ packages/ui/components/StickyHeaderLane.test.tsx
 packages/editor/actionsLabelMode.test.ts
 packages/ui/webmcp/useToolset.seam.test.tsx
 packages/ui/components/AnnotationPanel.inReplyTo.test.tsx
+packages/ui/components/AnnotationPanel.reply.test.tsx
 packages/editor/webmcp/useDocumentWebMcp.toggle.test.tsx
 packages/editor/components/AppHeader.webmcpIndicator.test.tsx
 packages/ui/components/MathBlock.firstPaint.test.tsx
@@ -494,6 +497,7 @@ packages/inbox/linkedMachines.test.tsx
 packages/inbox/voiceMirror.test.tsx
 packages/inbox/voiceComposeRenders.test.tsx
 packages/inbox/voiceDebugLog.test.ts
+packages/inbox/voiceMiss.test.ts
 packages/ui/components/RenderedMarkdown.softLineBreaks.test.tsx
 packages/inbox/personLineBreaks.test.tsx
 packages/inbox/aboutPrivacy.test.tsx

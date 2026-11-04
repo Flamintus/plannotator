@@ -339,6 +339,8 @@ import {
 } from './annotateSubmission';
 import { applyRestoredAnchors } from './restoredAnchors';
 import { annotationOwnsHighlight } from '@plannotator/ui/utils/annotationOwnsHighlight';
+import { buildReplyAnnotation } from '@plannotator/ui/utils/annotationReply';
+import { stampLivePage } from './livePageStamp';
 import { blocksForDocument, blocksForRenderAs, collectSubmittedAnnotations, mergeExternalAnnotations, mergeExternalsIntoMessageEntries, resolveFeedbackSections } from './feedbackDocuments';
 import { buildDecisionSpec, type DecisionActionId, type DecisionMenuItem } from '@plannotator/ui/utils/decisionSpec';
 import { DecisionNoteDialog, type DecisionControlProps, type DecisionHandler } from '@plannotator/ui/components/DecisionControl';
@@ -5020,12 +5022,8 @@ const App: React.FC = () => {
   const handleAddAnnotation = (ann: Annotation) => {
     if (documentReadOnly) return;
     // Live app sessions stamp every page-located annotation with the page it
-    // was made on (restore filters per page; export groups by page). Global
-    // comments have no page location and stay unstamped.
-    const stamped =
-      liveApp && livePageUrl && ann.type !== AnnotationType.GLOBAL_COMMENT
-        ? { ...ann, pageUrl: livePageUrl }
-        : ann;
+    // was made on (restore filters per page; export groups by page).
+    const stamped = liveApp ? stampLivePage(ann, livePageUrl) : ann;
     const beforeSelection = selectionRef.current;
     const index = annotationsRef.current.length;
     annotationsRef.current = [...annotationsRef.current, stamped];
@@ -5295,6 +5293,25 @@ const App: React.FC = () => {
   };
   const handleEditAnnotation = (id: string, updates: Partial<Annotation>) =>
     editAnnotation(id, updates, 'record');
+
+  // The person's Reply in the annotations panel: built like a browser agent's
+  // reply (the parent's place, threaded under it), then added like any
+  // comment the person makes, with its undo step and the highlight a redo or
+  // a draft restore would paint for it.
+  const handleReplyToAnnotation = (parentId: string, reply: { text: string; mentions?: readonly string[] }) => {
+    if (documentReadOnly) return;
+    const parent = allAnnotations.find((a) => a.id === parentId);
+    if (!parent) return;
+    const annotation = buildReplyAnnotation(parent, {
+      id: generateId('reply'),
+      text: reply.text,
+      createdA: Date.now(),
+      author: getIdentity(),
+      mentions: reply.mentions,
+    });
+    handleAddAnnotation(annotation);
+    if (annotationOwnsHighlight(annotation)) viewerRef.current?.applySharedAnnotations([annotation]);
+  };
   const editAnnotationSilently = (id: string, updates: Partial<Annotation>) =>
     editAnnotation(id, updates, 'silent');
 
@@ -7390,6 +7407,7 @@ const App: React.FC = () => {
       onSelect={handleSelectAnnotation}
       onDelete={handleDeleteAnnotation}
       onEdit={handleEditAnnotation}
+      onReply={handleReplyToAnnotation}
       codeAnnotations={codeAnnotations}
       onSelectCodeAnnotation={handleSelectCodeAnnotation}
       onDeleteCodeAnnotation={handleDeleteCodeAnnotation}

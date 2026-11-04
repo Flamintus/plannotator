@@ -74,6 +74,7 @@
     "utils/headingScrollSpy.ts",
     "hooks/useScrollViewport.ts",
     "utils/annotationHelpers.ts",
+    "utils/annotationReply.ts",
     "config/index.ts",
     "components/inbox-thread/icons.tsx",
     "components/inbox-thread/Tip.tsx",

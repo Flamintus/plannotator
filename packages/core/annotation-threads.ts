@@ -85,8 +85,9 @@ export function resolveReplyParents<T extends ThreadableAnnotation>(
 
 /**
  * The timestamp of every annotation's thread root (its own when it is a
- * root), keyed by id, in one linear pass over `parents`. Panels sort threads
- * by this so a reply sits at its root's position on the timeline.
+ * root), keyed by id, in one linear pass over `parents`: what a timeline
+ * sorts by to keep a reply at its root's position. (`AnnotationPanel` now
+ * places whole threads instead, so a reply to a reply stays under it.)
  */
 export function resolveThreadRootTimestamps<T extends ThreadableAnnotation & { createdA: number }>(
   items: readonly T[],
