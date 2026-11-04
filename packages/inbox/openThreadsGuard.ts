@@ -34,33 +34,57 @@ export interface OpenThreadsLead {
   onError: (message: string) => void;
 }
 
+/** How long a file's thread box is waited for: the file opens, then its words are read and its threads drawn. */
+const FILE_BOX_WAIT_MS = 3000;
+
+/** A thread's box where the window draws it (SentComments.tsx `SentThreads`): in an agent's message, or in a Markdown or text file's document. */
+const boxOf = (root: ParentNode | null | undefined, id: string) => root?.querySelector<HTMLElement>(`[data-sent-comments] [data-sent-comment="${CSS.escape(id)}"]`) ?? null;
+
+/** A thread's box brought into view and rung, as a jump to a question is, with focus on its Resolve (its head's, before any sub-thread's). */
+function ringBox(box: HTMLElement): void {
+  const still = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  box.scrollIntoView?.({ block: 'center', behavior: still ? 'auto' : 'smooth' });
+  // After the menu gives focus back to its trigger.
+  requestAnimationFrame(() => (box.querySelector<HTMLElement>('[data-sent-resolve]') ?? box.querySelector<HTMLElement>('button'))?.focus({ preventScroll: true }));
+  box.classList.remove('ib-q-target-out');
+  box.classList.add('ib-q-target');
+  setTimeout(() => {
+    box.classList.add('ib-q-target-out');
+    box.classList.remove('ib-q-target');
+    setTimeout(() => box.classList.remove('ib-q-target-out'), 700);
+  }, 1400);
+}
+
 /**
  * The Archive item's press while comment threads are open (`open`, oldest
- * first): the oldest brought into view. Under its agent's message, its row
- * in the list there (the message unfolded first), rung as a jump to a
- * question is, with focus on its Resolve; a file's comment, or one whose row
- * is not drawn, opens where a press on it does (`openRecord`: the file at
- * its card). On another machine's thread, also where to resolve them.
+ * first): the oldest brought into view, its box rung with focus on its
+ * Resolve. Under its agent's message, the box under the block its passage
+ * is in (the message unfolded first); one whose box is not drawn opens where
+ * a press on it does (`openRecord`). A file's comment opens the file at its
+ * card (`openRecord`), then, in a Markdown or text file, its box under the
+ * block its words are in, once drawn; a code, HTML, image or video file has
+ * no box, the card is where it is. On another machine's thread, also where
+ * to resolve them.
  */
 export function leadToOpenThreads(open: readonly InboxAnnotationRecord[], lead: OpenThreadsLead): void {
   const record = open[0];
   if (!record) return;
   if (lead.elsewhere) lead.onError(`${inboxOpenCommentThreadsLabel(open.length)}: resolve ${open.length === 1 ? 'it' : 'them'} on ${lead.elsewhere} to archive the thread.`);
-  if (!record.message) return lead.openRecord(record);
+  if (!record.message) {
+    lead.openRecord(record);
+    const until = Date.now() + FILE_BOX_WAIT_MS;
+    const look = () => {
+      // The file's pane sits beside the thread's body, outside it.
+      const box = boxOf(document, record.id);
+      if (box) ringBox(box);
+      else if (Date.now() < until) setTimeout(look, 50);
+    };
+    return look();
+  }
   const show = () => {
-    const row = lead.body?.querySelector<HTMLElement>(`[data-sent-comments] [data-sent-comment="${CSS.escape(record.id)}"]`);
-    if (!row) return lead.openRecord(record);
-    const still = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-    row.scrollIntoView?.({ block: 'center', behavior: still ? 'auto' : 'smooth' });
-    // After the menu gives focus back to its trigger.
-    requestAnimationFrame(() => (row.querySelector<HTMLElement>('[data-sent-resolve]') ?? row.querySelector<HTMLElement>('button'))?.focus({ preventScroll: true }));
-    row.classList.remove('ib-q-target-out');
-    row.classList.add('ib-q-target');
-    setTimeout(() => {
-      row.classList.add('ib-q-target-out');
-      row.classList.remove('ib-q-target');
-      setTimeout(() => row.classList.remove('ib-q-target-out'), 700);
-    }, 1400);
+    const box = boxOf(lead.body, record.id);
+    if (box) ringBox(box);
+    else lead.openRecord(record);
   };
   if (lead.unfold(record.message_id)) requestAnimationFrame(() => requestAnimationFrame(show));
   else show();

@@ -7,10 +7,12 @@
  * comment is open, the thread header's ⋯ Archive item says how many comment
  * threads are still open (a resolved one opened again by the agent's reply
  * or the person's draft reply counts), and its press leads to the oldest
- * (its row under the agent's message, focus on its Resolve, or a file's
- * card) and archives nothing; once it is resolved the item archives as
- * before; a list row's Archive says why and opens the thread; Archive all
- * keeps the thread and its toast says so; with the switch off nothing holds.
+ * (its box under the block its passage is in, in the agent's message or in
+ * a Markdown file, the file open at its card, rung with focus on its
+ * Resolve) and archives nothing; once it is resolved (its box folded) the
+ * item archives as before; a list row's Archive says why and opens the
+ * thread; Archive all keeps the thread and its toast says so; with the
+ * switch off nothing holds.
  * The server side is proved in packages/server/inbox-open-threads-guard.test.ts.
  *
  * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
@@ -164,14 +166,15 @@ async function renderApp(hash: string) {
 
 const keepSentComments = (on: boolean) => postJson('/api/inbox/settings', { experimental: { persistent_comments: on } });
 
-function words(id: string, originalText: string, text: string) {
-  return { id, blockId: 'block-1', startOffset: 0, endOffset: originalText.length, type: 'COMMENT', text, originalText, createdA: 1 };
+/** A comment on selected words, as the window's viewer makes it: `blockId`, the block they are in (a message of one paragraph: `block-0`; notes.md's paragraph: `block-1`). */
+function words(id: string, originalText: string, text: string, blockId = 'block-1') {
+  return { id, blockId, startOffset: 0, endOffset: originalText.length, type: 'COMMENT', text, originalText, createdA: 1 };
 }
 
 /** An agent's message with one comment on its words, sent in the person's reply. */
 async function commentedMessage(session: string, id: string): Promise<string> {
   const { sent } = await command<{ sent: string }>({ send: { project: world.project, session, body: 'Retries now back off for a minute at most.' } });
-  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words(id, 'a minute at most', 'Why a minute?') });
+  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words(id, 'a minute at most', 'Why a minute?', 'block-0') });
   await postJson(`/api/inbox/messages/${sent}/reply`, { idempotency_key: `k-${id}`, feedback: '# Feedback', annotation_ids: [id] });
   return sent;
 }
@@ -198,12 +201,12 @@ async function archiveItem(el: HTMLElement): Promise<HTMLElement> {
 const archivedFoot = (el: HTMLElement) => el.textContent?.includes('Archived. The next message from') ?? false;
 const storedArchived = async (thread: string) => (JSON.parse((await loopback(`/api/inbox/threads/${thread}`)).text) as { thread: { resolved_at: string | null } }).thread.resolved_at !== null;
 
-test.skipIf(!hasDom)("on: while a sent comment is open, Archive says so and leads to its row under the message, archiving nothing; resolved, it archives", async () => {
+test.skipIf(!hasDom)("on: while a sent comment is open, Archive says so and leads to its box under its passage in the message, archiving nothing; resolved, it archives", async () => {
   await keepSentComments(true);
   const sent = await commentedMessage('ses_guard_msg', 'guard-msg-1');
   const el = await renderApp(`#thread=${sent}`);
-  const row = () => el.querySelector<HTMLElement>(`[data-sent-comments] [data-sent-comment="guard-msg-1"]`);
-  // The message folds once answered: the item unfolds it to bring the row into view.
+  const box = () => el.querySelector<HTMLElement>(`[data-message-article="${sent}"] [data-sent-comments] [data-sent-comment="guard-msg-1"]`);
+  // The message folds once answered: the item unfolds it to bring the box into view.
   await until(() => el.querySelector(`[data-message-article="${sent}"]`) !== null, 'the thread');
 
   const held = await archiveItem(el);
@@ -211,14 +214,18 @@ test.skipIf(!hasDom)("on: while a sent comment is open, Archive says so and lead
   // Deliberate: the item says why it does not archive (the assignment's words).
   expect(held.textContent).toContain('1 comment thread still open');
   await act(async () => held.click());
-  await until(() => row()?.classList.contains('ib-q-target') === true, 'the open comment rung under its message');
-  await until(() => document.activeElement === row()!.querySelector('[data-sent-resolve]'), 'focus on its Resolve');
+  await until(() => box()?.classList.contains('ib-q-target') === true, "the open comment's box rung in its message");
+  // Under the block its passage is in, not at the message's end ("Passage not found").
+  expect(box()!.closest('[data-sent-lost]') === null).toBe(true);
+  await until(() => document.activeElement === box()!.querySelector('[data-sent-resolve]'), 'focus on its Resolve');
   expect(posted.some((path) => path.includes(`${sent}/resolve`))).toBe(false);
   expect(archivedFoot(el)).toBe(false);
   expect(await storedArchived(sent)).toBe(false);
 
-  act(() => row()!.querySelector<HTMLButtonElement>('[data-sent-resolve]')!.click());
-  await until(() => row() === null, 'the comment resolved and folded');
+  act(() => box()!.querySelector<HTMLButtonElement>('[data-sent-resolve]')!.click());
+  // Resolved with nothing open under it: its box folds to one "Resolved" line.
+  await until(() => box()?.hasAttribute('data-sent-folded') === true, 'the comment resolved and its box folded');
+  expect(box()!.hasAttribute('data-sent-resolved')).toBe(true);
   const item = await archiveItem(el);
   expect(item.hasAttribute('data-thread-archive-held')).toBe(false);
   expect(item.textContent).toContain('Archive thread');
@@ -227,18 +234,23 @@ test.skipIf(!hasDom)("on: while a sent comment is open, Archive says so and lead
   expect(await storedArchived(sent)).toBe(true);
 }, 30_000);
 
-test.skipIf(!hasDom)("on: an open comment on a file holds it too, and the item opens the file at its card", async () => {
+test.skipIf(!hasDom)("on: an open comment on a file holds it too, and the item opens the file at its card and its box under its passage", async () => {
   await keepSentComments(true);
   await postJson('/api/inbox/annotations', { attachment_id: world.attachment, version: 'current', annotation: words('guard-file-1', 'The plan, in short.', 'Say more.') });
   await postJson(`/api/inbox/messages/${world.filed}/reply`, { idempotency_key: 'k-guard-file', feedback: '# Feedback', annotation_ids: ['guard-file-1'] });
   const el = await renderApp(`#thread=${world.filed}`);
   const card = () => document.querySelector(`[data-annotation-id="guard-file-1"]`);
+  // A Markdown file draws the thread as a box under the block its words are in (the pane sits beside the thread).
+  const box = () => document.querySelector<HTMLElement>(`[data-sent-comments] [data-sent-comment="guard-file-1"]`);
   expect(card()).toBeNull();
 
   const held = await archiveItem(el);
   expect(held.textContent).toContain('1 comment thread still open');
   await act(async () => held.click());
   await until(() => card() !== null, "the file open at the comment's card");
+  await until(() => box()?.classList.contains('ib-q-target') === true, "the comment's box rung in the file");
+  expect(box()!.closest('[data-sent-lost]') === null).toBe(true);
+  await until(() => document.activeElement === box()!.querySelector('[data-sent-resolve]'), 'focus on its Resolve');
   expect(posted.some((path) => path.includes(`${world.filed}/resolve`))).toBe(false);
   expect(await storedArchived(world.filed)).toBe(false);
 }, 30_000);
@@ -246,8 +258,8 @@ test.skipIf(!hasDom)("on: an open comment on a file holds it too, and the item o
 test.skipIf(!hasDom)("on: a resolved comment opened again by the agent's reply or the person's draft reply holds it too", async () => {
   await keepSentComments(true);
   const { sent } = await command<{ sent: string }>({ send: { project: world.project, session: 'ses_guard_again', body: 'Deploys run at night, with a pager.' } });
-  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('again-1', 'at night', 'Who watches?') });
-  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('again-2', 'with a pager', 'Which pager?') });
+  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('again-1', 'at night', 'Who watches?', 'block-0') });
+  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('again-2', 'with a pager', 'Which pager?', 'block-0') });
   await postJson(`/api/inbox/messages/${sent}/reply`, { idempotency_key: 'k-again', feedback: '# Feedback', annotation_ids: ['again-1', 'again-2'] });
   await postJson('/api/inbox/annotations/again-1/resolve', { resolved: true });
   await postJson('/api/inbox/annotations/again-2/resolve', { resolved: true });
