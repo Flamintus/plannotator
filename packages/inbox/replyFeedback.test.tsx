@@ -11,7 +11,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { InboxAnnotationRecord, InboxAttachmentState, InboxMessageWire } from '@plannotator/core/inbox-types';
-import { inboxCommentThreads, inboxOpenCommentsFeedback } from '@plannotator/core/inbox-comment-threads';
+import { inboxCommentRepliesFeedback, inboxCommentThreads, inboxOpenCommentsFeedback } from '@plannotator/core/inbox-comment-threads';
 import { attachmentFeedback, imageCommentAnnotation } from './attachments';
 import { splitReplyFeedback } from './replyFeedback';
 
@@ -71,9 +71,14 @@ test("the split finds the export's section after the person's words, never one i
   expect(splitReplyFeedback('Notes.\n# Feedback on the attached files')).toBeNull();
 });
 
+test("a reply that carries the person's replies under comments is split at that section", () => {
+  const replies = inboxCommentRepliesFeedback([{ ...RECORDS[0]!, re: 'c-root', annotation: { ...RECORDS[0]!.annotation, text: 'Still Friday?' } }], ROOT);
+  expect(splitReplyFeedback(`Next round.\n\n${replies}`)).toEqual({ words: 'Next round.', feedback: replies });
+});
+
 test('a reply that sends open comments again is split at that section too (the server writes it after the feedback)', () => {
   const sentRecord = { ...RECORDS[0]!, sent_reply_id: REPLY };
-  const again = inboxOpenCommentsFeedback(inboxCommentThreads([{ id: AGENT_MSG, author: { kind: 'agent' } }, { id: REPLY, author: { kind: 'person' } }], [sentRecord]), ROOT);
+  const again = inboxOpenCommentsFeedback(inboxCommentThreads([{ id: AGENT_MSG, author: { kind: 'agent' }, created_at: '2026-11-04T10:00:00.000Z' }, { id: REPLY, author: { kind: 'person' }, created_at: '2026-11-04T10:01:00.000Z' }], [sentRecord]), ROOT);
   expect(splitReplyFeedback(`Next round.\n\n${again}`)).toEqual({ words: 'Next round.', feedback: again });
 });
 

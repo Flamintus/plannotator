@@ -11,55 +11,96 @@
  * thread: the device door does not forward it). A resolved comment leaves
  * the highlights and folds: its card keeps its header (its round, Resolved)
  * and Reopen, and under the message it waits behind "N resolved".
+ *
+ * Replies sit under their comment, one flat list each, as crit's: the
+ * agents' (`comment_replies`, written with their message) and the person's,
+ * a draft until the next Send carries it. The person replies from a sent
+ * comment's card (ui `AnnotationPanel`'s `onReply`) or its row under the
+ * message; a reply newer than a resolution opens the comment again. A reply
+ * is never painted on the file or the message: its comment's highlight is
+ * its place.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { inboxCommentRounds, inboxCommentState, type InboxCommentRoundMessage } from '@plannotator/core/inbox-comment-threads';
-import type { InboxAnnotationRecord } from '@plannotator/core/inbox-types';
+import { inboxCommentLastReplies, inboxCommentRounds, inboxCommentState, isInboxCommentReply, type InboxCommentThreadMessage } from '@plannotator/core/inbox-comment-threads';
+import type { InboxAnnotationRecord, InboxCommentReplyRecord } from '@plannotator/core/inbox-types';
 import type { Annotation } from '@plannotator/ui/types';
 import { InboxApiError, inboxApi, type AttachmentsModel } from '../api';
 import { annotationOf, annotationQuote, isFileComment, shortLabel } from '../attachments';
-import { followCodeLines, sentUnanchoredChanges, withSentWrites } from '../sentComments';
+import { agentReplyAnnotation, commentOfCard, followCodeLines, sentReplyRounds, sentReplyRows, sentUnanchoredChanges, withSentWrites, type SentReplyRow } from '../sentComments';
+import { newUuid } from '../uuid';
 
 const NO_RECORDS: readonly InboxAnnotationRecord[] = [];
+const NO_REPLIES: readonly InboxCommentReplyRecord[] = [];
 const NO_WRITES: ReadonlyMap<string, InboxAnnotationRecord> = new Map();
+const NO_IDS: ReadonlySet<string> = new Set();
 
 type UnanchoredReport = { attempted: readonly string[]; unanchored: readonly string[] };
 
-/** The person resolved it (a reply under it would open it again: inboxCommentState). */
-const isResolved = (record: InboxAnnotationRecord) => inboxCommentState(record) === 'resolved';
+/** The person's reply under a comment, as the composer hands it. */
+type ReplyInput = { text: string; mentions?: readonly string[] };
 
 /** What the file pane gets of a thread's sent comments. */
 export interface SentFileComments {
-  /** The thread's file comments a Send carried. */
+  /** The thread's file comments a Send carried (the person's replies under them included). */
   records: readonly InboxAnnotationRecord[];
   /** Each reply that carried comments, by id, with its round. */
   rounds: ReadonlyMap<string, number>;
+  /** The agents' replies under the thread's comments. */
+  agentReplies: readonly InboxCommentReplyRecord[];
+  /** Each reply's round (the person's sent ones and the agents'), by id. */
+  replyRounds: ReadonlyMap<string, number>;
+  /** The comments the person resolved (a newer reply opens one again). */
+  resolved: ReadonlySet<string>;
   /** What the pane found of their words. */
   onUnanchoredReport: (report: UnanchoredReport) => void;
   /** The person resolves one, or opens it again (absent: no Resolve, a linked machine's thread). */
   onResolve?: (record: InboxAnnotationRecord, resolved: boolean) => void;
+  /** The person replies under one (absent: no Reply, a linked machine's thread). */
+  onReply?: (commentId: string, reply: ReplyInput) => void;
 }
 
 /**
- * The thread's sent comments, from its files (`sent_comments`, present only
- * while the switch is on): their rounds, the open ones (`open`: highlighted
- * in their message), all of them by message, the pane's part (`pane`),
- * `report`, which keeps what the window found of their words (the store's
- * event then reads the files again), and `resolve`, the person's Resolve or
- * Reopen (drawn as soon as the Inbox answers; a refusal goes to `onError`),
- * absent when `canResolve` is false.
+ * The thread's sent comments, from its files (`sent_comments` and
+ * `comment_replies`, present only while the switch is on): their rounds, the
+ * open ones (`open`: highlighted in their message), all of them by message,
+ * the replies under each (`replies`), the pane's part (`pane`), `report`,
+ * which keeps what the window found of their words (the store's event then
+ * reads the files again), `resolve`, the person's Resolve or Reopen (drawn as
+ * soon as the Inbox answers; a refusal goes to `onError`), and `reply`, the
+ * person's reply under one, saved as a draft with the thread's other drafts
+ * (`patchDrafts`, the files' own patch); both absent when `canResolve` is
+ * false. `drafts`: the thread's comments waiting for a Send (a draft reply
+ * under a resolved comment shows it open again).
  */
-export function useSentComments(messages: readonly InboxCommentRoundMessage[], files: AttachmentsModel | null, onError: (message: string) => void, canResolve: boolean) {
+export function useSentComments(input: {
+  messages: readonly InboxCommentThreadMessage[];
+  files: AttachmentsModel | null;
+  drafts: readonly InboxAnnotationRecord[];
+  patchDrafts: (update: (records: InboxAnnotationRecord[]) => InboxAnnotationRecord[]) => void;
+  onError: (message: string) => void;
+  canResolve: boolean;
+}) {
+  const { messages, files, drafts, patchDrafts, onError, canResolve } = input;
   const listed = files?.sent_comments ?? NO_RECORDS;
+  const agentReplies = files?.comment_replies ?? NO_REPLIES;
   const [written, setWritten] = useState(NO_WRITES);
   const records = useMemo(() => withSentWrites(listed, written), [listed, written]);
   const rounds = useMemo(() => inboxCommentRounds(messages, records), [messages, records]);
-  const open = useMemo(() => records.filter((record) => !isResolved(record)), [records]);
+  // A reply newer than a resolution opens the comment again (inboxCommentState), the person's draft too.
+  const lastReplies = useMemo(() => inboxCommentLastReplies([...records, ...drafts], agentReplies), [records, drafts, agentReplies]);
+  const comments = useMemo(() => records.filter((record) => !isInboxCommentReply(record)), [records]);
+  const resolved = useMemo(
+    () => new Set(comments.filter((record) => inboxCommentState(record, lastReplies.get(record.id) ?? null) === 'resolved').map((record) => record.id)),
+    [comments, lastReplies],
+  );
+  const open = useMemo(() => comments.filter((record) => !resolved.has(record.id)), [comments, resolved]);
   const byMessage = useMemo(() => {
     const out = new Map<string, InboxAnnotationRecord[]>();
-    for (const record of records) if (record.message) out.set(record.message_id, [...(out.get(record.message_id) ?? []), record]);
+    for (const record of comments) if (record.message) out.set(record.message_id, [...(out.get(record.message_id) ?? []), record]);
     return out;
-  }, [records]);
+  }, [comments]);
+  const replyRounds = useMemo(() => sentReplyRounds(messages, rounds, records, agentReplies), [messages, rounds, records, agentReplies]);
+  const replies = useMemo(() => sentReplyRows([...records, ...drafts], agentReplies, replyRounds), [records, drafts, agentReplies, replyRounds]);
   const recordsRef = useRef(records);
   recordsRef.current = records;
   const report = useCallback((found: UnanchoredReport) => {
@@ -73,23 +114,42 @@ export function useSentComments(messages: readonly InboxCommentRoundMessage[], f
       (cause: unknown) => onErrorRef.current(cause instanceof InboxApiError ? cause.message : 'The comment did not change.'),
     );
   }, []);
+  const patchRef = useRef(patchDrafts);
+  patchRef.current = patchDrafts;
+  /** The person's reply under a comment: a draft, with the thread's others (true once saved). */
+  const reply = useCallback(async (commentId: string, { text, mentions }: ReplyInput): Promise<boolean> => {
+    try {
+      const { annotation } = await inboxApi.saveCommentReply(commentId, { id: newUuid(), text, ...(mentions && mentions.length > 0 ? { mentions } : {}) });
+      patchRef.current((list) => [...list.filter((record) => record.id !== annotation.id), annotation]);
+      return true;
+    } catch (cause) {
+      onErrorRef.current(cause instanceof InboxApiError ? cause.message : 'The reply was not saved.');
+      return false;
+    }
+  }, []);
+  const replyFromCard = useCallback((commentId: string, input: ReplyInput) => void reply(commentId, input), [reply]);
   const fileRecords = useMemo(() => records.filter(isFileComment), [records]);
   const pane = useMemo<SentFileComments | undefined>(
-    () => (files?.sent_comments ? { records: fileRecords, rounds, onUnanchoredReport: report, ...(canResolve ? { onResolve: resolve } : {}) } : undefined),
-    [files?.sent_comments, fileRecords, rounds, report, resolve, canResolve],
+    () =>
+      files?.sent_comments
+        ? { records: fileRecords, rounds, agentReplies, replyRounds, resolved, onUnanchoredReport: report, ...(canResolve ? { onResolve: resolve, onReply: replyFromCard } : {}) }
+        : undefined,
+    [files?.sent_comments, fileRecords, rounds, agentReplies, replyRounds, resolved, report, resolve, replyFromCard, canResolve],
   );
-  return { records, open, rounds, byMessage, report, resolve: canResolve ? resolve : undefined, pane };
+  return { records, open, rounds, byMessage, replies, resolved, report, resolve: canResolve ? resolve : undefined, reply: canResolve ? reply : undefined, pane };
 }
 
 /**
  * The file pane's part: its records are the drafts plus this file's sent
  * comments; a sent code comment follows its lines on the file shown; a sent
- * card has its round, no edit or delete, and Resolve (Reopen once resolved,
- * when the card folds to its header); a resolved comment is not painted on
- * the file (`annotations`) but stays in the panel (`panelAnnotations`), and
- * one opened again is painted again (`repaint`); and what the pane finds of
- * their words is reported once per comment and file read (`view.key`), so a
- * reload of the records never sends it again.
+ * card has its round, no edit or delete, Reply, and Resolve (Reopen once
+ * resolved, when the card folds to its header and its replies fold with
+ * it); a resolved comment is not painted on the file (`annotations`) but
+ * stays in the panel (`panelAnnotations`), and one opened again is painted
+ * again (`repaint`); replies, the agents' and the person's, are cards under
+ * their comment, never painted; and what the pane finds of their words is
+ * reported once per comment and file read (`view.key`), so a reload of the
+ * records never sends it again.
  */
 export function useSentFileComments(input: {
   sent: SentFileComments | undefined;
@@ -113,17 +173,31 @@ export function useSentFileComments(input: {
   );
   const sentById = useMemo(() => new Map((sentRecords ?? NO_RECORDS).map((r) => [r.id, r])), [sentRecords]);
   const sentIds = useMemo(() => new Set(sentById.keys()), [sentById]);
-  const resolvedIds = useMemo(() => new Set((sentRecords ?? NO_RECORDS).filter(isResolved).map((r) => r.id)), [sentRecords]);
+  const resolvedIds = sent?.resolved ?? NO_IDS;
   /** This file's sent comments (the panel's "All files" groups list them with its drafts). */
   const sentHere = useMemo(() => fileRecords.filter((r) => sentIds.has(r.id)), [fileRecords, sentIds]);
+  /** The agents' replies under this file's comments. */
+  const agentHere = useMemo(() => (sent?.agentReplies ?? NO_REPLIES).filter((reply) => sentById.has(reply.re)), [sent?.agentReplies, sentById]);
+  /** Every reply card here (the person's, sent or a draft, and the agents'): never painted, and folded with a resolved comment. */
+  const replyIds = useMemo(() => new Set([...fileRecords.filter(isInboxCommentReply).map((r) => r.id), ...agentHere.map((reply) => reply.id)]), [fileRecords, agentHere]);
+  const folded = useMemo(
+    () => new Set([...fileRecords.filter((r) => isInboxCommentReply(r) && resolvedIds.has(r.re!)).map((r) => r.id), ...agentHere.filter((reply) => resolvedIds.has(reply.re)).map((reply) => reply.id)]),
+    [fileRecords, agentHere, resolvedIds],
+  );
   const text = view?.text;
   const codeLines = useMemo(() => (isCode && text !== undefined && sentIds.size > 0 ? text.split('\n') : null), [isCode, text, sentIds]);
   const panelAnnotations = useMemo(
-    () => fileRecords.map((r) => (codeLines && sentIds.has(r.id) ? followCodeLines(annotationOf(r), codeLines) : annotationOf(r))),
-    [fileRecords, codeLines, sentIds],
+    () => [
+      ...fileRecords.filter((r) => !folded.has(r.id)).map((r) => (codeLines && sentIds.has(r.id) && !replyIds.has(r.id) ? followCodeLines(annotationOf(r), codeLines) : annotationOf(r))),
+      ...agentHere.filter((reply) => !folded.has(reply.id)).map((reply) => agentReplyAnnotation(sentById.get(reply.re)!, reply)),
+    ],
+    [fileRecords, agentHere, folded, codeLines, sentIds, replyIds, sentById],
   );
-  // What the file paints and counts: a resolved comment leaves its words.
-  const annotations = useMemo(() => (resolvedIds.size === 0 ? panelAnnotations : panelAnnotations.filter((a) => !resolvedIds.has(a.id))), [panelAnnotations, resolvedIds]);
+  // What the file paints and counts: a resolved comment leaves its words, and a reply's place is its comment's.
+  const annotations = useMemo(
+    () => (resolvedIds.size === 0 && replyIds.size === 0 ? panelAnnotations : panelAnnotations.filter((a) => !resolvedIds.has(a.id) && !replyIds.has(a.id))),
+    [panelAnnotations, resolvedIds, replyIds],
+  );
   // The image and video views draw their own remove controls: a sent comment is in the panel only.
   const ownAnnotations = useMemo(() => (sentIds.size === 0 ? annotations : annotations.filter((a) => !sentIds.has(a.id))), [annotations, sentIds]);
   // A comment opened again is painted again, once the viewer has it (a resolved one left the page with `annotations`).
@@ -143,13 +217,13 @@ export function useSentFileComments(input: {
     });
   }, [resolvedIds]);
   const rounds = useMemo(() => {
-    const out = new Map<string, number>();
+    const out = new Map<string, number>(sent?.replyRounds ?? []);
     for (const record of sentRecords ?? NO_RECORDS) {
       const round = record.sent_reply_id ? sent?.rounds.get(record.sent_reply_id) : undefined;
       if (round !== undefined) out.set(record.id, round);
     }
     return out;
-  }, [sentRecords, sent?.rounds]);
+  }, [sentRecords, sent?.rounds, sent?.replyRounds]);
 
   /** A sent card: its round (and Resolved) after the card's own header. */
   const withSentRound = (header: ((annotation: Annotation) => ReactNode) | undefined) =>
@@ -173,11 +247,12 @@ export function useSentFileComments(input: {
             </>
           );
         };
-  /** A sent card: no edit or delete; resolved, folded to its header. */
+  /** A sent card (and an agent's reply): no edit or delete; resolved, folded to its header. A draft takes no reply yet. */
   const withSentParts =
     <T extends object>(parts: (annotation: Annotation) => T) =>
     (annotation: Annotation) => {
-      if (!sentIds.has(annotation.id)) return parts(annotation);
+      if (replyIds.has(annotation.id) && !drafts.some((r) => r.id === annotation.id)) return { ...parts(annotation), actions: false };
+      if (!sentIds.has(annotation.id)) return sentIds.size > 0 && !replyIds.has(annotation.id) ? { ...parts(annotation), reply: false } : parts(annotation);
       return resolvedIds.has(annotation.id) ? { ...parts(annotation), actions: false, quote: false, text: false, images: false } : { ...parts(annotation), actions: false };
     };
   /** A resolved card draws no body of its own either (a drawing's picture). */
@@ -189,7 +264,7 @@ export function useSentFileComments(input: {
       ? undefined
       : (annotation: Annotation) => {
           const record = sentById.get(annotation.id);
-          if (!record) return null;
+          if (!record || replyIds.has(record.id)) return null;
           const resolved = resolvedIds.has(record.id);
           return (
             <button type="button" className="ib-sentc-act" data-sent-resolve={record.id} onClick={() => onResolve(record, !resolved)}>
@@ -217,34 +292,52 @@ export function useSentFileComments(input: {
     [setUnanchored],
   );
 
-  return { sentHere, sentIds, annotations, panelAnnotations, ownAnnotations, withSentRound, withSentParts, withSentBody, sentFooter, reportUnanchored };
+  /** The person's Reply on a card here: under the card's comment (a reply's own comment: one list per comment). */
+  const onReply = sent?.onReply;
+  const replyAt =
+    sentIds.size === 0 || readOnly || !onReply
+      ? undefined
+      : (parentId: string, reply: ReplyInput) => onReply(commentOfCard(parentId, fileRecords, agentHere), reply);
+
+  return { sentHere, sentIds, annotations, panelAnnotations, ownAnnotations, withSentRound, withSentParts, withSentBody, sentFooter, reportUnanchored, onReply: replyAt };
 }
 
 /**
  * The comments the person sent on an agent's message, under it, each with its
  * round. The open ones' passages stay highlighted in the message; a row
  * brings its passage into view. Each has Resolve (`onResolve`; absent: none);
- * the resolved ones wait behind "N resolved", each with Reopen.
+ * the resolved ones wait behind "N resolved", each with Reopen. Under a row,
+ * its replies (`replies`: the agent's, the person's, a draft marked so), and
+ * Reply (`onReply`; absent: none) opens a box under them; a draft goes with
+ * the next Send.
  */
 export function SentComments({
   records,
   rounds,
+  resolved,
+  replies,
   onOpen,
   onResolve,
+  onReply,
 }: {
   records: readonly InboxAnnotationRecord[];
   rounds: ReadonlyMap<string, number>;
+  resolved: ReadonlySet<string>;
+  replies: ReadonlyMap<string, readonly SentReplyRow[]>;
   onOpen: (record: InboxAnnotationRecord) => void;
   onResolve?: (record: InboxAnnotationRecord, resolved: boolean) => void;
+  onReply?: (commentId: string, reply: ReplyInput) => Promise<boolean>;
 }) {
   const [showResolved, setShowResolved] = useState(false);
+  const [replying, setReplying] = useState<string | null>(null);
   if (records.length === 0) return null;
-  const open = records.filter((record) => !isResolved(record));
-  const resolved = records.filter(isResolved);
+  const open = records.filter((record) => !resolved.has(record.id));
+  const resolvedRows = records.filter((record) => resolved.has(record.id));
   const row = (record: InboxAnnotationRecord, isResolvedRow: boolean) => {
     const annotation = annotationOf(record);
     const round = record.sent_reply_id ? rounds.get(record.sent_reply_id) : undefined;
-    return (
+    const under = isResolvedRow ? [] : (replies.get(record.id) ?? []);
+    return [
       <li key={record.id} className="ib-sentc-item" data-sent-comment={record.id} data-sent-resolved={isResolvedRow ? '' : undefined}>
         <button type="button" className="ib-sentc-row" onClick={() => onOpen(record)}>
           {round !== undefined && <span className="ib-sentc-chip" data-sent-round={round}>Round {round}</span>}
@@ -252,25 +345,106 @@ export function SentComments({
           <span className="ib-sentc-quote">“{shortLabel(annotationQuote(annotation))}”</span>
           <span className="ib-sentc-text">{annotation.text}</span>
         </button>
+        {onReply && (
+          <button type="button" className="ib-sentc-act" data-sent-reply-to={record.id} aria-expanded={replying === record.id} onClick={() => setReplying((at) => (at === record.id ? null : record.id))}>
+            Reply
+          </button>
+        )}
         {onResolve && (
           <button type="button" className="ib-sentc-act" data-sent-resolve={record.id} onClick={() => onResolve(record, !isResolvedRow)}>
             {isResolvedRow ? 'Reopen' : 'Resolve'}
           </button>
         )}
-      </li>
-    );
+      </li>,
+      ...(under.length > 0 || replying === record.id
+        ? [
+            <li key={`${record.id}-replies`} className="ib-sentc-thread" data-sent-replies={record.id}>
+              {under.length > 0 && (
+                <ul aria-label="Replies">
+                  {under.map((reply) => (
+                    <li key={reply.id} className="ib-sentc-reply" data-sent-reply={reply.id} data-sent-reply-draft={reply.draft ? '' : undefined}>
+                      <span className="ib-sentc-who">{reply.who}</span>
+                      {reply.draft ? <span className="ib-sentc-chip">Not sent</span> : reply.round !== undefined && <span className="ib-sentc-chip">Round {reply.round}</span>}
+                      <span className="ib-sentc-said">{reply.text}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {replying === record.id && onReply && (
+                <SentReplyBox
+                  onSave={async (text) => {
+                    if (await onReply(record.id, { text })) setReplying(null);
+                  }}
+                  onCancel={() => setReplying(null)}
+                />
+              )}
+            </li>,
+          ]
+        : []),
+    ];
   };
   return (
     <ul className="ib-sentc" data-sent-comments="" aria-label="Comments you sent">
-      {open.map((record) => row(record, false))}
-      {resolved.length > 0 && (
+      {open.flatMap((record) => row(record, false))}
+      {resolvedRows.length > 0 && (
         <li>
           <button type="button" className="ib-sentc-more" aria-expanded={showResolved} data-sent-resolved-toggle="" onClick={() => setShowResolved((shown) => !shown)}>
-            {resolved.length} resolved
+            {resolvedRows.length} resolved
           </button>
         </li>
       )}
-      {showResolved && resolved.map((record) => row(record, true))}
+      {showResolved && resolvedRows.flatMap((record) => row(record, true))}
     </ul>
+  );
+}
+
+/**
+ * The box a reply is written in under a message's comment: Reply (or the
+ * comment composers' key, ⌘/Ctrl+Enter) saves it as a draft; Escape or
+ * Cancel closes it. ⌘/Ctrl+Enter here never reaches the thread's Send.
+ */
+function SentReplyBox({ onSave, onCancel }: { onSave: (text: string) => Promise<void>; onCancel: () => void }) {
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const area = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => area.current?.focus(), []);
+  const save = async () => {
+    const words = text.trim();
+    if (!words || busy) return;
+    setBusy(true);
+    await onSave(words);
+    setBusy(false);
+  };
+  return (
+    <div className="ib-sentc-box">
+      <textarea
+        ref={area}
+        className="ib-sentc-area"
+        aria-label="Reply"
+        placeholder="Reply..."
+        rows={2}
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            onCancel();
+          } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            event.stopPropagation();
+            void save();
+          }
+        }}
+      />
+      <div className="ib-sentc-acts">
+        <button type="button" className="ib-btn ib-sm" onClick={onCancel}>
+          Cancel
+        </button>
+        <button type="button" className="ib-btn ib-sm ib-pri" data-sent-reply-save="" disabled={busy || text.trim() === ''} onClick={() => void save()}>
+          Reply
+        </button>
+      </div>
+    </div>
   );
 }

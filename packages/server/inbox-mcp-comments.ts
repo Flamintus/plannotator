@@ -1,15 +1,28 @@
 /**
- * read_thread's comments (experimental "persistent-comments"): the comments
- * the person sent in a thread, each named by the id their feedback gave it,
- * with its round, where it is, whether its words are gone from the file, and
- * its state, as lines of the transcript and as a list
- * (`InboxCommentThread`, packages/core/inbox-comment-threads.ts).
+ * The comments the person sent (experimental "persistent-comments"), as
+ * agents reach them:
  *
- * Quotes and comments are clipped: the person's reply that carried each one
- * (`reply`) has it whole.
+ *  - read_thread's comments: the comments the person sent in a thread, each
+ *    named by the id their feedback gave it, with its round, where it is,
+ *    whether its words are gone from the file, its state and the replies
+ *    under it (each with its author and round), as lines of the transcript
+ *    and as a list (`InboxCommentThread`, packages/core/inbox-comment-threads.ts).
+ *    Quotes, comments and replies are clipped: the person's reply that
+ *    carried each one (`reply`) has it whole.
+ *  - send_message's `comment_replies`: with its message, the agent's reply
+ *    under each comment, by the comment's id, whoever wrote it. Nothing
+ *    resolves or removes one: only the person does. A field, not an action
+ *    of its own: the agent tool's description has no room left for one under
+ *    Claude Code's 2,048 characters (with the Board and steps on), and the
+ *    message is how the round ends, as crit's agent ends its round. Served
+ *    only while the person has the switch on.
  */
 
-import { inboxCommentPlace, inboxCommentThreads, type InboxCommentThread } from "@plannotator/core/inbox-comment-threads";
+import * as z from "zod";
+import { inboxStoredAgentName } from "@plannotator/core/inbox-format";
+import { inboxAgentName } from "@plannotator/core/inbox-types";
+import { INBOX_COMMENT_REPLY_TEXT_MAX, inboxCommentPlace, inboxCommentThreads, type InboxCommentReply, type InboxCommentThread } from "@plannotator/core/inbox-comment-threads";
+import { InboxError } from "@plannotator/shared/inbox/schema";
 import type { InboxStore } from "@plannotator/shared/inbox/store";
 import { clip } from "./inbox-mcp-read";
 
@@ -20,21 +33,33 @@ export const INBOX_COMMENT_TEXT_CHARS = 400;
 export const INBOX_COMMENTS_SHOWN = 50;
 
 /**
- * The thread's sent comments, clipped. A ranged read (`replies`: its
- * messages) keeps those its replies carried and every unanchored one, and
- * counts the others (`elsewhere`).
+ * The thread's sent comments, clipped, with the replies under them. A ranged
+ * read (`replies`: its messages) keeps those its replies carried and every
+ * unanchored one, and counts the others (`elsewhere`).
  */
 export function threadComments(store: InboxStore, threadId: string, replies: ReadonlySet<string> | null = null): { comments: InboxCommentThread[]; elsewhere: number } {
   const messages = store.thread(threadId)?.messages ?? [];
-  const all = inboxCommentThreads(messages, store.sentAnnotations(threadId));
+  const all = inboxCommentThreads(messages, store.sentAnnotations(threadId), store.commentReplies(threadId));
   const comments = all
     .filter((comment) => replies === null || replies.has(comment.reply_id) || comment.unanchored)
-    .map((comment) => ({ ...comment, quote: clip(comment.quote, INBOX_COMMENT_QUOTE_CHARS), text: clip(comment.text, INBOX_COMMENT_TEXT_CHARS) }));
+    .map((comment) => ({
+      ...comment,
+      quote: clip(comment.quote, INBOX_COMMENT_QUOTE_CHARS),
+      text: clip(comment.text, INBOX_COMMENT_TEXT_CHARS),
+      replies: comment.replies.map((reply) => ({ ...reply, text: clip(reply.text, INBOX_COMMENT_TEXT_CHARS) })),
+    }));
   return { comments, elsewhere: all.length - comments.length };
 }
 
-/** The comments as lines of the transcript: none when the read has none to show. */
-export function threadCommentsText({ comments, elsewhere }: { comments: readonly InboxCommentThread[]; elsewhere: number }, root: string): string[] {
+/** Who wrote a reply, as its reader reads it: the person, you (the reader's own session), or the agent by name. */
+function replyAuthor(reply: InboxCommentReply, reader: string | null): string {
+  if (reply.author.kind === "person") return "the person";
+  if (reader !== null && reply.author.session === reader) return "you";
+  return reply.author.session ? `${inboxAgentName(reply.author)} (${reply.author.session})` : inboxAgentName(reply.author);
+}
+
+/** The comments as lines of the transcript, each reply indented under its comment: none when the read has none to show. */
+export function threadCommentsText({ comments, elsewhere }: { comments: readonly InboxCommentThread[]; elsewhere: number }, root: string, reader: string | null = null): string[] {
   if (comments.length === 0) return elsewhere > 0 ? [`Comments the person sent: ${elsewhere} from other rounds; read_thread without after or before lists them.`] : [];
   const shown = comments.slice(-INBOX_COMMENTS_SHOWN);
   const notes = [
@@ -44,7 +69,7 @@ export function threadCommentsText({ comments, elsewhere }: { comments: readonly
   const head = `Comments the person sent (${notes.join("; ")}):`;
   return [
     head,
-    ...shown.map((c) =>
+    ...shown.flatMap((c) => [
       [
         `- ${c.id}`,
         `round ${c.round} (reply ${c.reply_id})`,
@@ -53,6 +78,68 @@ export function threadCommentsText({ comments, elsewhere }: { comments: readonly
         ...(c.unanchored ? ["unanchored: its words were not in the file when the person last opened it"] : []),
         `${JSON.stringify(c.quote)} → ${JSON.stringify(c.text)}`,
       ].join(" · "),
-    ),
+      ...c.replies.map((reply) => `  - reply ${reply.id} · round ${reply.round} · ${replyAuthor(reply, reader)}: ${JSON.stringify(reply.text)}`),
+    ]),
   ];
+}
+
+/** The most replies one send_message carries. */
+export const INBOX_COMMENT_REPLIES_MAX = 100;
+
+/**
+ * send_message's `comment_replies`, as an agent reads it (a field description
+ * reaches the model whole; Claude Code cuts the tool's own description at
+ * 2,048 characters, which an action of its own would pass).
+ */
+export const COMMENT_REPLIES_DESCRIPTION =
+  'With this message, your reply under each comment the person sent: `[{ "comment_id": "…", "text": "…" }]`, one per comment. comment_id is the `(id …)` ending the comment\'s heading in their reply (read_thread lists them too; the id of a reply under a comment answers that comment). Each text shows under its comment: what you changed for it, your answer, or why you did not do it; keep `body` to the round\'s summary. Send with reply_to into their thread. Only the person resolves a comment.';
+
+/** The `comment_replies` field: send_message's, only while sent comments stay in view. */
+export const COMMENT_REPLIES_FIELD = z
+  .array(
+    z
+      .object({
+        comment_id: z.string(),
+        text: z.string().min(1).max(INBOX_COMMENT_REPLY_TEXT_MAX),
+      })
+      .strict(),
+  )
+  .max(INBOX_COMMENT_REPLIES_MAX)
+  .describe(COMMENT_REPLIES_DESCRIPTION);
+
+/**
+ * The replies a send_message carries, checked before anything is sent, so a
+ * message never lands without them: each under a sent comment of the thread
+ * `reply_to` lands in (an id of a reply under a comment answers that
+ * comment), with words. A refusal names the entry.
+ */
+export function planCommentReplies(store: InboxStore, replies: readonly { comment_id: string; text: string }[] | undefined, replyTo: string | undefined): { comment: string; text: string }[] {
+  if (!replies || replies.length === 0) return [];
+  const thread = replyTo ? store.message(replyTo)?.thread_id : undefined;
+  if (!thread) throw new InboxError("validation_error", "comment_replies: send with reply_to into the thread of the comments.", { field: "comment_replies" });
+  return replies.map((reply, index) => {
+    const field = `comment_replies[${index}]`;
+    const text = reply.text.trim();
+    if (text === "") throw new InboxError("validation_error", `${field}.text: your reply (no words).`, { field });
+    let comment;
+    try {
+      comment = store.sentComment(reply.comment_id);
+    } catch (error) {
+      if (error instanceof InboxError) throw new InboxError(error.code, `${field}.comment_id: ${error.message} read_thread lists the comments of the thread.`, { field });
+      throw error;
+    }
+    if (comment.thread_id !== thread) {
+      throw new InboxError("validation_error", `${field}.comment_id: ${reply.comment_id} is in thread ${comment.thread_id}, not the one reply_to lands in (${thread}).`, { field });
+    }
+    return { comment: comment.id, text };
+  });
+}
+
+/** Write the replies a sent message carried (planCommentReplies), as the session that sent it. */
+export function writeCommentReplies(store: InboxStore, planned: readonly { comment: string; text: string }[], input: { agent_session?: string; agent_host?: string; agent_name?: string }): { reply_id: string; comment_id: string }[] {
+  const from = { kind: "agent" as const, host: input.agent_host?.trim() || null, session: input.agent_session?.trim() || null, name: inboxStoredAgentName(input.agent_name) };
+  return planned.map(({ comment, text }) => {
+    const reply = store.replyToComment(comment, { text, from });
+    return { reply_id: reply.id, comment_id: reply.re };
+  });
 }

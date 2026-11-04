@@ -122,6 +122,7 @@ import {
   readInboxVideoTime,
   type InboxAnnotationRecord,
   type InboxAttachment,
+  type InboxCommentReplyRecord,
   type InboxDraftFile,
   type InboxInlineImage,
 } from "@plannotator/core/inbox-types";
@@ -170,11 +171,22 @@ import {
   type InboxCardWire,
 } from "@plannotator/core/inbox-types";
 import { isInboxStepsRecord, normalizeInboxSteps, sameInboxSteps, type InboxSteps } from "@plannotator/core/inbox-types";
-import { inboxCommentState, inboxCommentThreads, inboxCommentsToCarry, inboxOpenCommentsFeedback } from "@plannotator/core/inbox-comment-threads";
+import {
+  INBOX_COMMENT_REPLY_TEXT_MAX,
+  inboxCommentLastReplies,
+  inboxCommentReplyAnnotation,
+  inboxCommentReplyId,
+  inboxCommentState,
+  inboxCommentThreads,
+  inboxCommentsToCarry,
+  inboxOpenCommentsFeedback,
+  isInboxCommentReply,
+} from "@plannotator/core/inbox-comment-threads";
 import type { InboxReviewVerdictRecord } from "@plannotator/core/inbox-review";
 import {
   ANNOTATIONS_FILE,
   CARDS_FILE,
+  COMMENT_REPLIES_FILE,
   LEGACY_DECISIONS_FILE,
   INBOX_PROJECTS_DIR,
   SEQ_FLOOR_FILE,
@@ -629,6 +641,8 @@ export class InboxStore {
   private readonly annotations = new Map<string, InboxAnnotationRecord>();
   /** Per thread, its annotations waiting for a Send (not sent, not removed): a row's `unsent.comments`. */
   private readonly unsentAnnotations = new Map<string, number>();
+  /** The agents' replies under the person's sent comments, by id (experimental "persistent-comments"). */
+  private readonly commentReplyRecords = new Map<string, InboxCommentReplyRecord>();
   /**
    * The words typed in each thread's reply box and not sent (reply-drafts.ts),
    * by thread id: files outside the event log, read at load and kept here.
@@ -719,7 +733,7 @@ export class InboxStore {
       // left on disk and never applied, but its seqs still count, so a seq is
       // never handed out twice.
       this.seq = Math.max(this.seq, legacySeqFloor(join(folder, LEGACY_DECISIONS_FILE)));
-      for (const name of [PROJECT_FILE, MESSAGES_FILE, QUESTIONS_FILE, ANNOTATIONS_FILE, CARDS_FILE, STEPS_FILE]) {
+      for (const name of [PROJECT_FILE, MESSAGES_FILE, QUESTIONS_FILE, ANNOTATIONS_FILE, CARDS_FILE, STEPS_FILE, COMMENT_REPLIES_FILE]) {
         const path = join(folder, name);
         let text: string;
         try {
@@ -836,6 +850,10 @@ export class InboxStore {
           if (!prev || !isInboxCardSeenOnlyChange(prev, card)) this.cardHeardSeq.set(card.id, line.seq);
           this.cards.set(card.id, card);
         }
+        break;
+      case "comment_reply":
+        // An agent's reply under a sent comment: its own record, never the person's, never unsent work.
+        this.commentReplyRecords.set(line.record.id, line.record);
         break;
       case "steps":
         // Steps are their own records: nothing here touches routing, the list, unread or notifications.
@@ -3133,7 +3151,7 @@ export class InboxStore {
         perThread.set(threadId, threadBytes);
       }
       for (const sha256 of projectBlobs) bytes += blobSizes.get(sha256) ?? 0;
-      for (const name of [PROJECT_FILE, MESSAGES_FILE, QUESTIONS_FILE, LEGACY_DECISIONS_FILE, ANNOTATIONS_FILE, CARDS_FILE, STEPS_FILE]) {
+      for (const name of [PROJECT_FILE, MESSAGES_FILE, QUESTIONS_FILE, LEGACY_DECISIONS_FILE, ANNOTATIONS_FILE, CARDS_FILE, STEPS_FILE, COMMENT_REPLIES_FILE]) {
         let text: string;
         try {
           text = readFileSync(join(folder, name), "utf8");
@@ -3152,7 +3170,7 @@ export class InboxStore {
               ? line.record.id
               : line.kind === "question" || line.kind === "annotation"
                 ? line.record.message_id
-                : line.kind === "steps"
+                : line.kind === "steps" || line.kind === "comment_reply"
                   ? line.record.thread_id
                   : null;
           const threadId = messageId ? this.messages.get(messageId)?.thread_id : undefined;
@@ -4629,6 +4647,9 @@ export class InboxStore {
    * blob's hash.
    */
   saveAnnotation(input: { attachment_id: string; version: unknown; annotation: unknown }): InboxAnnotationRecord {
+    // An edit of the person's reply under a comment stays a reply (commentReplyDraftOf).
+    const reply = this.commentReplyDraftOf(input.annotation);
+    if (reply) return this.saveCommentReply(reply.re!, input.annotation as Record<string, unknown>);
     const hit = this.attachment(input.attachment_id);
     if (!hit) throw new InboxError("attachment_not_found", `No attachment ${input.attachment_id}.`);
     // A PDF and a plain file are downloads: there is nothing in the window to comment on.
@@ -4766,6 +4787,8 @@ export class InboxStore {
    * `message` names it. Sent with the reply like an attachment's annotation.
    */
   saveMessageAnnotation(messageId: string, annotation: unknown): InboxAnnotationRecord {
+    const reply = this.commentReplyDraftOf(annotation);
+    if (reply) return this.saveCommentReply(reply.re!, annotation as Record<string, unknown>);
     const message = this.messages.get(messageId);
     if (!message) throw new InboxError("message_not_found", `No message ${messageId}.`);
     if (message.author.kind !== "agent") {
@@ -4903,11 +4926,112 @@ export class InboxStore {
     if (record.sent_reply_id === null || record.removed_at !== null) {
       throw new InboxError("validation_error", "Only a sent comment is resolved; a draft is removed instead.", { field: "id" });
     }
-    if ((inboxCommentState(record) === "resolved") === resolved) return record;
+    if (isInboxCommentReply(record)) throw new InboxError("validation_error", "A reply is resolved with the comment it is under.", { field: "id" });
+    // A reply newer than its resolution opens it again (inboxCommentState): a press then resolves it anew.
+    if ((inboxCommentState(record, this.lastCommentReplyAt(record)) === "resolved") === resolved) return record;
     const at = this.stamp();
     const next = { ...record, resolved_at: resolved ? at : null, updated_at: at };
     this.appendAnnotation(next, at);
     return next;
+  }
+
+  /**
+   * The person's reply under a sent comment, a new one or an edit of one
+   * still waiting (experimental "persistent-comments"): a comment record
+   * whose `re` names the comment, a draft that the next Send carries like any
+   * other. Its target and place are the comment's (`inboxCommentReplyAnnotation`),
+   * so it needs nothing of the viewer. A reply under a reply goes under that
+   * reply's comment: one list per comment, as crit's.
+   */
+  saveCommentReply(commentId: string, input: { id?: unknown; text?: unknown; mentions?: unknown }): InboxAnnotationRecord {
+    const comment = this.sentComment(commentId);
+    if (!isInboxAnnotationId(input.id)) throw new InboxError("validation_error", "annotation.id: a short id.", { field: "annotation.id" });
+    const text = typeof input.text === "string" ? input.text.trim() : "";
+    if (text === "" || text.length > INBOX_COMMENT_REPLY_TEXT_MAX) {
+      throw new InboxError("validation_error", `annotation.text: the reply (1 to ${INBOX_COMMENT_REPLY_TEXT_MAX} characters).`, { field: "annotation.text" });
+    }
+    const mentions = Array.isArray(input.mentions) ? input.mentions.filter((m): m is string => typeof m === "string") : undefined;
+    const message = this.messages.get(comment.message_id);
+    if (message && this.closedByArchive(message)) throw new InboxError("thread_resolved", "This thread is resolved; reopen it to annotate.");
+    const existing = this.annotations.get(input.id);
+    if (existing && existing.re !== comment.id) throw new InboxError("validation_error", "annotation.id: already used by another comment.", { field: "annotation.id" });
+    if (existing && (existing.sent_reply_id !== null || existing.removed_at !== null)) {
+      throw new InboxError("annotation_closed", "This annotation was already sent or removed.");
+    }
+    const at = this.stamp();
+    const { unanchored_at: _unanchored, resolved_at: _resolved, ...target } = comment;
+    const record: InboxAnnotationRecord = {
+      ...target,
+      id: input.id,
+      annotation: inboxCommentReplyAnnotation(comment, { id: input.id, text, createdA: Date.parse(existing?.created_at ?? at), mentions }),
+      re: comment.id,
+      created_at: existing?.created_at ?? at,
+      updated_at: at,
+      removed_at: null,
+      sent_reply_id: null,
+    };
+    this.appendAnnotation(record, at);
+    return record;
+  }
+
+  /**
+   * The person's reply under a comment that an annotation edits, or null: a
+   * reply edited through its target's route (the window's list and the
+   * file's panel save every comment so) keeps its place under the comment.
+   */
+  private commentReplyDraftOf(annotation: unknown): InboxAnnotationRecord | null {
+    const id = annotation && typeof annotation === "object" ? (annotation as Record<string, unknown>).id : undefined;
+    const existing = typeof id === "string" ? this.annotations.get(id) : undefined;
+    return existing && isInboxCommentReply(existing) ? existing : null;
+  }
+
+  /**
+   * An agent's reply under a comment the person sent (experimental
+   * "persistent-comments"; send_message's `comment_replies`), whoever wrote
+   * the comment: written at once, as its own record (`comment_reply`), never
+   * edited, removed or resolved. An id of a reply under it answers its
+   * comment. The person sees it under the comment.
+   */
+  replyToComment(commentId: string, input: { text: string; from: InboxCommentReplyRecord["from"] }): InboxCommentReplyRecord {
+    const comment = this.sentComment(commentId);
+    const text = typeof input.text === "string" ? input.text.trim() : "";
+    if (text === "" || text.length > INBOX_COMMENT_REPLY_TEXT_MAX) {
+      throw new InboxError("validation_error", `text: the reply (1 to ${INBOX_COMMENT_REPLY_TEXT_MAX} characters).`, { field: "text" });
+    }
+    const project = this.projectsById.get(comment.project_id);
+    if (!project) throw new InboxError("project_not_found", `No project ${comment.project_id}.`);
+    const at = this.stamp();
+    const record: InboxCommentReplyRecord = { id: inboxCommentReplyId(), project_id: comment.project_id, thread_id: comment.thread_id, re: comment.id, from: input.from, text, created_at: at };
+    this.write(join(this.projectFolder(project), COMMENT_REPLIES_FILE), { v: INBOX_RECORD_VERSION, seq: this.seq + 1, at, kind: "comment_reply", id: record.id, record });
+    return record;
+  }
+
+  /** The agents' replies under a thread's sent comments, in the order they were written (the lines' seq: the map's). */
+  commentReplies(threadId: string): InboxCommentReplyRecord[] {
+    const out: InboxCommentReplyRecord[] = [];
+    for (const record of this.commentReplyRecords.values()) if (record.thread_id === threadId) out.push(record);
+    return out;
+  }
+
+  /**
+   * The sent comment an id names, for a reply under it: the comment itself,
+   * or the comment a reply under it (the person's or an agent's) is under.
+   * A draft, a removed comment or an unknown id is refused.
+   */
+  sentComment(id: string): InboxAnnotationRecord {
+    const agentReply = this.commentReplyRecords.get(id);
+    const named = this.annotations.get(agentReply ? agentReply.re : id);
+    const comment = named && isInboxCommentReply(named) ? this.annotations.get(named.re!) : named;
+    if (!comment || comment.removed_at !== null) throw new InboxError("annotation_not_found", `No comment ${id}.`);
+    if (comment.sent_reply_id === null) throw new InboxError("annotation_not_sent", `${id} is a draft: a reply goes under a comment once it is sent.`);
+    return comment;
+  }
+
+  /** When the newest reply under a sent comment was written (drafts and the agents' too), or null. */
+  private lastCommentReplyAt(comment: InboxAnnotationRecord): string | null {
+    const replies = [...this.annotations.values()].filter((record) => record.re === comment.id);
+    const agents = [...this.commentReplyRecords.values()].filter((record) => record.re === comment.id);
+    return inboxCommentLastReplies(replies, agents).get(comment.id) ?? null;
   }
 
   /**
@@ -4917,7 +5041,7 @@ export class InboxStore {
    */
   private openCommentsFeedback(message: InboxMessage, session: string): string {
     const messages = this.threadMessages(message.thread_id);
-    const threads = inboxCommentThreads(messages, this.sentAnnotations(message.thread_id));
+    const threads = inboxCommentThreads(messages, this.sentAnnotations(message.thread_id), this.commentReplies(message.thread_id));
     const sentTo = (m: InboxMessage) => (m.reask ? null : (this.recipientOf(m)?.session ?? null));
     const carried = inboxCommentsToCarry(messages, threads, session, sentTo).filter((t) => !this.closedByArchive(this.messages.get(t.reply_id)!));
     return inboxOpenCommentsFeedback(carried, this.projectsById.get(message.project_id)?.root ?? "");
@@ -5200,7 +5324,7 @@ export class InboxStore {
     const folder = this.projectFolder(project);
     const markups = this.markupsOf((record) => record.thread_id === threadId);
     this.keepSeqFloor();
-    for (const name of [MESSAGES_FILE, QUESTIONS_FILE, ANNOTATIONS_FILE, STEPS_FILE]) {
+    for (const name of [MESSAGES_FILE, QUESTIONS_FILE, ANNOTATIONS_FILE, STEPS_FILE, COMMENT_REPLIES_FILE]) {
       const path = join(folder, name);
       let text: string;
       try {
@@ -5214,7 +5338,7 @@ export class InboxStore {
         if (line.kind === "message") return line.record.thread_id !== threadId;
         if (line.kind === "question") return !messageIds.has(line.record.message_id);
         if (line.kind === "annotation") return line.record.thread_id !== threadId;
-        if (line.kind === "steps") return line.record.thread_id !== threadId;
+        if (line.kind === "steps" || line.kind === "comment_reply") return line.record.thread_id !== threadId;
         return true;
       });
       const temp = `${path}.${process.pid}.tmp`;
@@ -5266,6 +5390,7 @@ export class InboxStore {
     this.personNamed.clear();
     this.annotations.clear();
     this.unsentAnnotations.clear();
+    this.commentReplyRecords.clear();
     this.cards.clear();
     this.cardHeardSeq.clear();
     this.stepsById.clear();

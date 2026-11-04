@@ -647,6 +647,8 @@ const ERROR_STATUS: Record<string, number> = {
   annotation_not_allowed: 422,
   annotation_not_found: 404,
   annotation_closed: 409,
+  // A reply under a comment that is still a draft (experimental "persistent-comments").
+  annotation_not_sent: 409,
   // A comment on a guided review's diff, on a message that carries none.
   guide_not_found: 404,
   // A verdict on a review while the person has Code review off (Settings → Capabilities).
@@ -1132,7 +1134,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         stepsOn,
         // Code review: submit_guide's `review` field is listed and served only while the person has it on.
         codeReviewOn,
-        // Sent comments: read_thread lists them only while the person has them on (experimental).
+        // Sent comments: read_thread lists them, and send_message takes comment_replies, only while the person has them on (experimental).
         persistentCommentsOn,
         ...(options.mcpNow ? { now: options.mcpNow } : {}),
       }),
@@ -2423,6 +2425,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       case "steps":
         // A session's steps in a thread (approval "inbox-thread-steps"): silent, never a notification or unread.
         // `thread_id` so a window reads the open thread's steps again only for its own. A reader that does not know the kind skips it.
+        return { seq: line.seq, kind: line.kind, id: line.id, thread_id: line.record.thread_id };
+      case "comment_reply":
+        // An agent's reply under a sent comment (experimental "persistent-comments"): the open thread's files read it.
+        // Silent, never a notification or unread. A reader that does not know the kind skips it.
         return { seq: line.seq, kind: line.kind, id: line.id, thread_id: line.record.thread_id };
     }
   };

@@ -237,6 +237,34 @@ describe("the guide against what it describes", () => {
     }
   });
 
+  // What regresses: a guide that names send_message's comment_replies while the Inbox does not take it (the switch
+  // off), or, on, a send_message argument the guide leaves out.
+  test("with kept comments off the guide names no comment_replies; on, it covers send_message's field as served", async () => {
+    expect(help).not.toContain("comment_replies");
+    const helpComments = formatInboxHelp({ command: COMMAND, dataDir: DATA_DIR, platform: "linux", comments: true });
+    const savedData = process.env.PLANNOTATOR_DATA_DIR;
+    process.env.PLANNOTATOR_DATA_DIR = join(root, "served-comments-data");
+    const server = await startInboxServer({ dataDir: join(root, "served-comments-data"), persistentComments: true, phones: false });
+    const client = new Client({ name: "inbox-help-test", version: "1.0.0" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${server.port}/mcp`)));
+      const { tools } = await client.listTools();
+      const properties = Object.keys((tools.find((tool) => tool.name === "send_message")!.inputSchema as { properties?: Record<string, unknown> }).properties ?? {});
+      expect(properties).toContain("comment_replies");
+      const start = helpComments.indexOf("\n### send_message\n");
+      const section = helpComments.slice(start, helpComments.indexOf("\n### ", start + 5));
+      for (const property of properties) {
+        const covered = (INBOX_FILLED_ARGUMENTS as readonly string[]).includes(property) || section.includes(`\`${property}\``);
+        expect(covered, `send_message's argument ${property} is not in the guide`).toBe(true);
+      }
+    } finally {
+      await client.close();
+      server.stop();
+      if (savedData === undefined) delete process.env.PLANNOTATOR_DATA_DIR;
+      else process.env.PLANNOTATOR_DATA_DIR = savedData;
+    }
+  });
+
   // Deliberate: the top-level help is where an agent learns this guide exists.
   test("the top-level help points agents at it", () => {
     expect(formatTopLevelHelp()).toContain("plannotator inbox --help");

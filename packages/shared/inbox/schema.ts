@@ -46,13 +46,15 @@ export const ANNOTATIONS_FILE = "annotations.jsonl";
 export const CARDS_FILE = "cards.jsonl";
 /** Each agent session's steps per thread (approval "inbox-thread-steps"): never read by routing, the list, unread or notifications. */
 export const STEPS_FILE = "steps.jsonl";
+/** The agents' replies under the person's sent comments (experimental "persistent-comments"; `comment_reply` lines). */
+export const COMMENT_REPLIES_FILE = "comment-replies.jsonl";
 export const SEQ_FLOOR_FILE = "seq.json";
 
 export function inboxDir(dataDir: string): string {
   return join(dataDir, INBOX_DIR_NAME);
 }
 
-const KINDS: ReadonlySet<InboxRecordKind> = new Set(["project", "message", "question", "annotation", "card", "steps"]);
+const KINDS: ReadonlySet<InboxRecordKind> = new Set(["project", "message", "question", "annotation", "card", "steps", "comment_reply"]);
 
 /**
  * One line of a store file, or null when it is not a line this reader can

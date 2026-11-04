@@ -55,6 +55,7 @@ import type {
   InboxMachineAccountsRead,
   InboxAgentsModel,
   InboxAnnotationRecord,
+  InboxCommentReplyRecord,
   InboxCardColumn,
   InboxCardHistoryEntry,
   InboxCardRef,
@@ -1340,6 +1341,9 @@ export const inboxApi = {
   /** The person resolves a sent comment, or opens it again (experimental "persistent-comments"). */
   resolveComment: (id: string, resolved: boolean) =>
     post<{ annotation: InboxAnnotationRecord }>(inboxUrl(`/annotations/${encodeURIComponent(id)}/resolve`, undefined, machineOf(id)), { resolved }),
+  /** The person's reply under a sent comment, new or edited: a draft the next Send carries (experimental "persistent-comments"). */
+  saveCommentReply: (commentId: string, reply: { id: string; text: string; mentions?: readonly string[] }) =>
+    post<{ annotation: InboxAnnotationRecord }>(inboxUrl(`/annotations/${encodeURIComponent(commentId)}/replies`, undefined, machineOf(commentId)), { annotation: reply }),
   /** "Open in": the file as it is now, in a catalog app or the default app, by the attachment's id (on this computer only). */
   openIn: (attachmentId: string, appId: string) =>
     post<{ ok: boolean; error?: string }>(inboxUrl('/open-in'), { attachment_id: attachmentId, app_id: appId }),
@@ -1607,7 +1611,9 @@ export type InboxEvent =
   /** A Board card (approval "inbox-board"); absent from an older Inbox. */
   | { seq: number; kind: 'card'; id: string; card: InboxCardWire }
   /** A session's steps in a thread changed (approval "inbox-thread-steps"): silent; the window reads that thread's steps again. Absent from an older Inbox. */
-  | { seq: number; kind: 'steps'; id: string; thread_id: string };
+  | { seq: number; kind: 'steps'; id: string; thread_id: string }
+  /** An agent's reply under a sent comment (experimental "persistent-comments"): silent; the window reads that thread's files again. Absent from an older Inbox. */
+  | { seq: number; kind: 'comment_reply'; id: string; thread_id: string };
 
 /** A thread's attachments as they are now, and the person's annotations waiting for a Send. */
 export interface AttachmentsModel {
@@ -1618,6 +1624,8 @@ export interface AttachmentsModel {
   annotations: InboxAnnotationRecord[];
   /** The comments a Send carried, kept in view (experimental "persistent-comments"; absent while off or from an older Inbox). */
   sent_comments?: InboxAnnotationRecord[];
+  /** The agents' replies under them (the same switch; absent while off or from an older Inbox). */
+  comment_replies?: InboxCommentReplyRecord[];
 }
 
 /** One version of a file: its text, and for HTML the page as annotate serves it. */

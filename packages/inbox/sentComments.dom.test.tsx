@@ -9,8 +9,11 @@
  * took its words away the window shows it Unanchored and keeps that in the
  * store; and the person resolves a sent comment, from under the message or
  * from its card, and opens it again: resolved, it leaves the highlights and
- * folds, and the store keeps it. The server side is proved in
- * packages/server/inbox-persistent-comments.test.ts.
+ * folds, and the store keeps it; and replies sit under a sent comment, the
+ * agent's and the person's (a draft until the next Send), under the message
+ * and on the file's card, never painted. The server side is proved in
+ * packages/server/inbox-persistent-comments.test.ts and
+ * inbox-comment-replies.test.ts.
  *
  * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
@@ -86,7 +89,7 @@ beforeAll(async () => {
   mkdirSync(join(dir, 'bin'));
   writeFileSync(join(dir, 'bin', 'tailscale'), '#!/bin/sh\nexit 1\n');
   chmodSync(join(dir, 'bin', 'tailscale'), 0o755);
-  child = Bun.spawn(['bun', SERVER_SCRIPT, join(dir, 'data'), join(dir, 'projects'), '4'], {
+  child = Bun.spawn(['bun', SERVER_SCRIPT, join(dir, 'data'), join(dir, 'projects'), '6'], {
     env: { ...process.env, DOM_TESTS: '0', PLANNOTATOR_DATA_DIR: join(dir, 'data'), PLANNOTATOR_EXPERIMENTAL: 'persistent-comments', HOME: dir, PATH: `${join(dir, 'bin')}:${process.env.PATH}` },
     stdin: 'pipe',
     stdout: 'pipe',
@@ -205,8 +208,8 @@ test.skipIf(!hasDom)("a sent comment on a file stays in its panel with its round
   const card = () => document.querySelector(`[data-annotation-id="sent-file-1"]`);
   await until(() => card() !== null, "the sent comment's card");
   expect(card()!.querySelector('[data-sent-round="1"]')).not.toBeNull();
-  // No edit or delete: Resolve is its only button.
-  expect([...card()!.querySelectorAll('button')].map((button) => button.textContent)).toEqual(['Resolve']);
+  // No edit or delete: Reply and Resolve are its only buttons.
+  expect([...card()!.querySelectorAll('button')].map((button) => button.getAttribute('aria-label') ?? button.textContent)).toEqual(['Reply', 'Resolve']);
   await until(() => card()!.querySelector('[data-annotation-unanchored]') !== null, 'the Unanchored chip');
   await until(() => posted.some((p) => p.path.includes('/annotations/sent-file-1/unanchored') && p.body.unanchored === true), 'the unanchored mark sent');
   await until(async () => {
@@ -266,4 +269,69 @@ test.skipIf(!hasDom)('resolved from its card, a sent comment on a file folds to 
 
   act(() => card()!.querySelector<HTMLButtonElement>('[data-sent-resolve]')!.click());
   await until(() => highlight() !== null && card()!.textContent!.includes('Say more.'), 'the comment open again, painted');
+}, 30_000);
+
+async function type(el: HTMLTextAreaElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')!.set!;
+  await act(async () => {
+    setter.call(el, value);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+test.skipIf(!hasDom)("under the message, the agent's reply sits under its comment, and the person's Reply saves a draft there for the next Send", async () => {
+  const { sent } = await command<{ sent: string }>({ send: { project: world.project, session: 'ses_reply_msg', body: 'Deploys now run at night.' } });
+  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('rep-msg-1', 'at night', 'Who watches it?') });
+  await postJson(`/api/inbox/messages/${sent}/reply`, { idempotency_key: 'k-rep-msg', feedback: '# Feedback', annotation_ids: ['rep-msg-1'] });
+  const { replied } = await command<{ replied: string }>({ commentReply: { comment: 'rep-msg-1', session: 'ses_reply_msg', text: 'The on-call person, paged.' } });
+
+  const el = await renderApp(`#thread=${sent}`);
+  await until(() => el.querySelector(`[data-message-article="${sent}"]`) !== null, 'the thread');
+  const article = el.querySelector<HTMLElement>(`[data-message-article="${sent}"]`)!;
+  if (article.hasAttribute('data-folded')) act(() => article.querySelector<HTMLButtonElement>('[data-fold-head]')!.click());
+  const thread = () => el.querySelector('[data-sent-comments] [data-sent-replies="rep-msg-1"]');
+  await until(() => thread()?.querySelector(`[data-sent-reply="${replied}"]`) != null, "the agent's reply under its comment");
+  expect(thread()!.textContent).toContain('Claude Code');
+  expect(thread()!.textContent).toContain('The on-call person, paged.');
+  // Its place is its comment's: one highlight on the message, the comment's.
+  expect(el.querySelectorAll(`[data-message-id="${sent}"] [data-bind-id="${replied}"], [data-message-id="${sent}"] [data-highlight-id="${replied}"]`)).toHaveLength(0);
+
+  act(() => el.querySelector<HTMLButtonElement>('[data-sent-comment="rep-msg-1"] [data-sent-reply-to]')!.click());
+  const area = el.querySelector<HTMLTextAreaElement>('[data-sent-replies="rep-msg-1"] textarea')!;
+  await type(area, 'Page me too.');
+  await act(async () => {
+    el.querySelector<HTMLButtonElement>('[data-sent-replies="rep-msg-1"] [data-sent-reply-save]')!.click();
+  });
+  await until(() => thread()?.querySelector('[data-sent-reply-draft]') != null, "the person's draft under the comment");
+  expect(thread()!.querySelector('[data-sent-reply-draft]')!.textContent).toContain('Page me too.');
+  expect(thread()!.querySelector('textarea')).toBeNull();
+  const model = JSON.parse((await loopback(`/api/inbox/threads/${sent}/attachments`)).text) as { annotations: InboxAnnotationRecord[] };
+  expect(model.annotations.map((r) => [r.re, r.annotation.text, r.sent_reply_id])).toEqual([['rep-msg-1', 'Page me too.', null]]);
+}, 30_000);
+
+test.skipIf(!hasDom)("on a file, the agent's reply is a card under its comment's, never painted, and the person replies from the sent card", async () => {
+  await postJson('/api/inbox/annotations', { attachment_id: world.attachment, version: 'current', annotation: words('rep-file-1', 'The plan, in short.', 'Longer, please.') });
+  await postJson(`/api/inbox/messages/${world.filed}/reply`, { idempotency_key: 'k-rep-file', feedback: '# Feedback', annotation_ids: ['rep-file-1'] });
+  const { replied } = await command<{ replied: string }>({ commentReply: { comment: 'rep-file-1', session: 'ses_file', text: 'Added three lines.' } });
+
+  await renderApp(`#thread=${world.filed}&file=${world.attachment}`);
+  const card = (id: string) => document.querySelector(`[data-annotation-id="${id}"]`);
+  await until(() => card('rep-file-1') !== null && card(replied) !== null, "the comment's card and the agent's under it");
+  expect(card(replied)!.closest('[data-annotation-reply]')?.getAttribute('data-annotation-depth')).toBe('1');
+  expect(card(replied)!.textContent).toContain('Added three lines.');
+  // The agent's reply: no edit or delete, no Resolve of its own.
+  expect([...card(replied)!.querySelectorAll('button')].map((button) => button.getAttribute('aria-label') ?? button.textContent)).toEqual(['Reply']);
+  expect(document.querySelector(`[data-bind-id="${replied}"], [data-highlight-id="${replied}"]`)).toBeNull();
+
+  act(() => card('rep-file-1')!.querySelector<HTMLButtonElement>('button[aria-label="Reply"]')!.click());
+  const area = document.querySelector<HTMLTextAreaElement>('[data-annotation-panel] textarea[aria-label="Reply"]')!;
+  await type(area, 'Thanks, that reads well.');
+  await act(async () => {
+    area.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true, cancelable: true }));
+  });
+  await until(() => posted.some((p) => p.path.includes('/annotations/rep-file-1/replies')), 'the reply saved under the comment');
+  const draft = () =>
+    [...document.querySelectorAll('[data-annotation-reply] [data-annotation-id]')].find((node) => node.textContent?.includes('Thanks, that reads well.')) ?? null;
+  await until(() => draft() !== null, "the person's draft card under the comment");
+  expect(draft()!.closest('[data-annotation-reply]')?.getAttribute('data-annotation-depth')).toBe('1');
 }, 30_000);

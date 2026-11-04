@@ -703,6 +703,8 @@ void (async () => {
       poll?: { session: string; body: Record<string, unknown> };
       first?: { root: string; session: string; body: string };
       card?: { project: string; session: string; title: string; say?: string; thread?: string };
+      /** An agent's reply under a sent comment (experimental "persistent-comments"), as send_message's `comment_replies` writes it. */
+      commentReply?: { comment: string; session: string; text: string };
     };
     if (command.first) {
       // An agent's first message: its folder becomes the Inbox's first project.
@@ -733,6 +735,12 @@ void (async () => {
         threads: command.card.thread ? [command.card.thread] : [],
       });
       process.stdout.write(`${JSON.stringify({ carded: made.card.id })}\n`);
+      continue;
+    }
+    if (command.commentReply) {
+      const { comment, session, text } = command.commentReply;
+      const reply = store.replyToComment(comment, { text, from: { kind: "agent", host: "claude-code", session, name: "Claude Code" } });
+      process.stdout.write(`${JSON.stringify({ replied: reply.id })}\n`);
       continue;
     }
     if (command.read) {

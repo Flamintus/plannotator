@@ -35,7 +35,8 @@ import { lastContactOf, noteSessionRead, staleThreadOf, staleThreadText } from "
 import { INBOX_BODY_CUT_BYTES, INBOX_EARLIER_PERSON_BYTES, INBOX_THREAD_WINDOW, clip, shortTime, sizeText, windowedThread, windowedThreadText } from "./inbox-mcp-read";
 import { registerInboxSearchTool } from "./inbox-mcp-search";
 import { registerInboxCardTool } from "./inbox-mcp-cards";
-import { threadComments, threadCommentsText } from "./inbox-mcp-comments";
+import { COMMENT_REPLIES_FIELD, planCommentReplies, threadComments, threadCommentsText, writeCommentReplies } from "./inbox-mcp-comments";
+export { COMMENT_REPLIES_DESCRIPTION } from "./inbox-mcp-comments";
 export { INBOX_BOARD_OFF_TEXT } from "./inbox-mcp-cards";
 import { checkStepsInput, INBOX_STEPS_OFF_TEXT, registerInboxStepsTool, rowSteps, STEPS_FIELD, stepsAgent, stepsProgressText, threadStepsText } from "./inbox-mcp-steps";
 export { INBOX_STEPS_OFF_TEXT } from "./inbox-mcp-steps";
@@ -289,7 +290,9 @@ export interface InboxMcpContext {
   /**
    * Whether sent comments stay in view (experimental "persistent-comments",
    * read on every request). On: read_thread lists the comments the person
-   * sent, with their ids, rounds and anchors (inbox-mcp-comments.ts). Absent: off.
+   * sent, with their ids, rounds, anchors and replies, and send_message takes
+   * `comment_replies`, the agent's replies under them (inbox-mcp-comments.ts).
+   * Absent: off.
    */
   persistentCommentsOn?: () => boolean;
 }
@@ -1018,6 +1021,8 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
             ),
           // Thread steps (approval "inbox-thread-steps"): a message and its list together, only while the person has steps on.
           ...(context.stepsOn?.() ? { steps: STEPS_FIELD.optional() } : {}),
+          // The agent's replies under the person's sent comments, with this message (experimental "persistent-comments").
+          ...(context.persistentCommentsOn?.() ? { comment_replies: COMMENT_REPLIES_FIELD.optional() } : {}),
         })
         .strict(),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
@@ -1030,10 +1035,15 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
           if (!context.stepsOn?.()) throw new InboxError("steps_off", INBOX_STEPS_OFF_TEXT.replace(/^steps_off: /, ""));
           checkStepsInput(withSteps, stepsAgent(input));
         }
+        // Replies under comments are checked before anything is sent too, so a message never lands without them.
+        const replies = planCommentReplies(store, (input as { comment_replies?: { comment_id: string; text: string }[] }).comment_replies, input.reply_to);
         const project = await sendProject(context, input);
         const wakes = await senderWakes(context, ctx, input);
-        const { steps: _steps, ...message } = input as typeof input & { steps?: unknown };
+        const { steps: _steps, comment_replies: _replies, ...message } = input as typeof input & { steps?: unknown; comment_replies?: unknown };
         const sent = await sendAgentMessage(context, project, { ...message, working_folder: callerWorkingFolder(ctx) }, undefined, wakes);
+        // A replay (the same idempotency key) wrote its replies the first time.
+        const replied = sent.replayed ? [] : writeCommentReplies(store, replies, input);
+        const repliedLine = replied.length > 0 ? ` Replied under ${replied.length} comment${replied.length === 1 ? "" : "s"}; the person sees each under its comment.` : "";
         // A replay (the same idempotency key) answers the first send and writes nothing: a list the session sent
         // since (the steps action) is never put back to this older one.
         const stepsLine =
@@ -1066,8 +1076,8 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
         ];
         if (stale) hints.push(`\n${staleThreadText(stale, shortTime)}`);
         return ok(
-          `${sent.replayed ? "Already sent" : "Sent"} to the Plannotator Inbox${asked} (thread ${sent.structured.thread_id}, ${sent.structured.url}).${stepsLine}${namingLine(sent.naming)} ${replyNextStepText(wakes, input.agent_host)}${hints.join("")}`,
-          stale ? { ...sent.structured, not_read_since: lastContactOf(stale) } : sent.structured,
+          `${sent.replayed ? "Already sent" : "Sent"} to the Plannotator Inbox${asked} (thread ${sent.structured.thread_id}, ${sent.structured.url}).${stepsLine}${repliedLine}${namingLine(sent.naming)} ${replyNextStepText(wakes, input.agent_host)}${hints.join("")}`,
+          { ...sent.structured, ...(stale ? { not_read_since: lastContactOf(stale) } : {}), ...(replied.length > 0 ? { comment_replies: replied } : {}) },
         );
       }),
   );
@@ -1140,7 +1150,7 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
           const lists = steps.length > 0 ? { steps: store.threadSteps(threadId).map(({ agent, steps: list, updated_at }) => ({ agent, steps: list, updated_at })) } : {};
           // The comments the person sent (experimental): a ranged read lists those its replies carried and the unanchored ones.
           const sent = context.persistentCommentsOn?.() ? threadComments(store, threadId, input.after !== undefined || input.before !== undefined ? shown : null) : { comments: [], elsewhere: 0 };
-          const header = [...steps, ...threadCommentsText(sent, result.thread.project.root)];
+          const header = [...steps, ...threadCommentsText(sent, result.thread.project.root, reader)];
           return okComplete(windowedThreadText(result, order, naming?.line ?? "", header), { ...result, ...(naming?.structured ?? {}), ...lists, ...(sent.comments.length > 0 ? { comments: sent.comments } : {}) });
         }
         if (input.expand || input.before !== undefined || input.after !== undefined) {

@@ -7,19 +7,21 @@
  * (`attachmentFeedback`): "# Feedback on your messages", "# Feedback on the
  * attached files" and "# Feedback on the guided review", each with `##` file
  * or message headings and `###` comments; with experimental
- * "persistent-comments", a reply also sends the comments still open under
- * "# Feedback on comments still open" (packages/core/inbox-comment-threads.ts).
+ * "persistent-comments", the person's replies under their sent comments go
+ * under "# Feedback on comment threads", and a reply also sends the comments
+ * still open under "# Feedback on comments still open"
+ * (packages/core/inbox-comment-threads.ts).
  * That text is what the agent gets and it is kept as it is. When the window draws the person's own reply, the
  * feedback is drawn as a block of its own (`[data-reply-feedback]` in
  * `MessageBody`), whose headings inbox.css sets at text size, so it reads as
  * part of the reply and not as page headings. Display only: an agent's
  * message, and every other surface, draws its headings as before.
  */
-import { INBOX_OPEN_COMMENTS_TITLE } from '@plannotator/core/inbox-comment-threads';
+import { INBOX_COMMENT_REPLIES_TITLE, INBOX_OPEN_COMMENTS_TITLE } from '@plannotator/core/inbox-comment-threads';
 import { ATTACHMENT_FEEDBACK_HEADING, GUIDE_FEEDBACK_TITLE, MESSAGE_FEEDBACK_HEADING } from './attachments';
 
 /** The headings the export opens each feedback section with. */
-const FEEDBACK_HEADINGS = new Set([MESSAGE_FEEDBACK_HEADING.title, ATTACHMENT_FEEDBACK_HEADING.title, GUIDE_FEEDBACK_TITLE, INBOX_OPEN_COMMENTS_TITLE].map((title) => `# ${title}`));
+const FEEDBACK_HEADINGS = new Set([MESSAGE_FEEDBACK_HEADING.title, ATTACHMENT_FEEDBACK_HEADING.title, GUIDE_FEEDBACK_TITLE, INBOX_COMMENT_REPLIES_TITLE, INBOX_OPEN_COMMENTS_TITLE].map((title) => `# ${title}`));
 const FENCE = /^\s{0,3}(`{3,}|~{3,})/;
 
 /**

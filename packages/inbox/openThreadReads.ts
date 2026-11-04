@@ -6,7 +6,8 @@
  * What the open thread's read carries, and what changes it:
  *  - its messages, their questions and their annotations: a message, question
  *    or annotation record of that thread (a question's thread is its
- *    message's: the server names it, `thread_id`);
+ *    message's: the server names it, `thread_id`), and an agent's reply under
+ *    one of its sent comments (`comment_reply`, its `thread_id`);
  *  - its project (name, label, the project it was combined into): any project
  *    record, of any project (a new project can change another's label);
  *  - its project's repo, which the server learns off the record path: while
@@ -65,6 +66,9 @@ function threadOfRecord(event: InboxEvent): string | null {
       return id(event.thread_id);
     case 'annotation':
       return id(event.annotation?.thread_id);
+    case 'comment_reply':
+      // An agent's reply under a sent comment (experimental "persistent-comments"): the thread's files list it.
+      return id(event.thread_id);
     default:
       // A project (a rename, a combine, a label any thread's header reads), a card (the window hands those to the
       // Board before this), or a kind this build does not know.

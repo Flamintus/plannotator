@@ -27,7 +27,7 @@ import { INBOX_SET_ASIDE_HEADING } from "@plannotator/core/inbox-questions";
 import { INBOX_ACTION_EXAMPLE, INBOX_ACTION_GUIDE, INBOX_ACTIONS_HEADING } from "@plannotator/core/inbox-actions";
 import { HARNESSES, harnessPanel, shellLine, type ConnectContext, type Harness } from "@plannotator/inbox/harnesses";
 import { join } from "node:path";
-import { INBOX_CONTRACT_EXAMPLE, INBOX_MCP_TOOLS, inboxServedTools } from "@plannotator/server/inbox-mcp";
+import { COMMENT_REPLIES_DESCRIPTION, INBOX_CONTRACT_EXAMPLE, INBOX_MCP_TOOLS, inboxServedTools } from "@plannotator/server/inbox-mcp";
 import { INBOX_BODY_CUT_BYTES, INBOX_EARLIER_PERSON_BYTES, INBOX_THREAD_WINDOW, sizeText } from "@plannotator/server/inbox-mcp-read";
 import { INBOX_AGENT_SEARCH_LIMIT } from "@plannotator/server/inbox-mcp-search";
 import { INBOX_TOOL_DEFAULTS, INBOX_TOOL_HOSTS } from "@plannotator/shared/config";
@@ -256,23 +256,32 @@ export interface InboxHelpOptions {
    * "inbox-code-review-direction").
    */
   codeReview?: boolean;
+  /**
+   * Sent comments stay in view (experimental "persistent-comments", read by
+   * the caller). Off (the default), the guide says nothing of replies under
+   * comments: no `comment_replies` on send_message, as the Inbox serves none.
+   */
+  comments?: boolean;
 }
 
 export function inboxHelpPlatform(platform: NodeJS.Platform = process.platform): ConnectContext["platform"] {
   return platform === "win32" ? "windows" : platform === "darwin" ? "mac" : "linux";
 }
 
-function toolBlock(name: InboxMcpToolName, steps = false, codeReview = false): string[] {
+function toolBlock(name: InboxMcpToolName, steps = false, codeReview = false, comments = false): string[] {
   const guide = TOOL_GUIDE[name];
   // send_message's `steps` field exists only while steps are on.
   const withSteps = steps && name === "send_message";
   // submit_guide's `review` field exists only while code review is on.
   const withReview = codeReview && name === "submit_guide";
-  const extra = [...(withSteps ? ["steps"] : []), ...(withReview ? ["review"] : [])];
+  // send_message's `comment_replies` exists only while sent comments stay in view.
+  const withReplies = comments && name === "send_message";
+  const extra = [...(withSteps ? ["steps"] : []), ...(withReplies ? ["comment_replies"] : []), ...(withReview ? ["review"] : [])];
   const args = guide.args.length > 0 ? [`Arguments: ${[...guide.args, ...extra].map(code).join(", ")}.`, ""] : [];
   const lines = [
     ...guide.lines,
     ...(withSteps ? ["- `steps`: your steps in the thread this message lands in, sent with it (see steps)."] : []),
+    ...(withReplies ? [`- \`comment_replies\`: ${COMMENT_REPLIES_DESCRIPTION} An id that names no sent comment of that thread refuses the whole send, naming the entry. The result's \`comment_replies\` lists each reply's \`reply_id\` and \`comment_id\`; read_thread lists the replies under each comment.`] : []),
     ...(withReview ? [`- \`review\`: ${INBOX_REVIEW_FIELD_DESCRIPTION}`] : []),
   ];
   return [`### ${name}`, "", ...args, ...lines, ""];
@@ -282,6 +291,7 @@ export function formatInboxHelp(options: InboxHelpOptions): string {
   const board = INBOX_CARD_ACTION_ON && options.board === true;
   const steps = options.steps === true;
   const codeReview = options.codeReview === true;
+  const comments = options.comments === true;
   const mcpCommand = [...options.command, "inbox", "mcp"];
   const mcp = shellLine(mcpCommand);
   const self = shellLine(options.command);
@@ -375,7 +385,7 @@ export function formatInboxHelp(options: InboxHelpOptions): string {
     "",
     // Every tool this Inbox serves (`card` only while the Board is on and INBOX_CARD_ACTION_ON lets it ship).
     // `steps` only while the person has thread steps on.
-    ...inboxServedTools({ board, steps }).flatMap((name) => toolBlock(name, steps, codeReview)),
+    ...inboxServedTools({ board, steps }).flatMap((name) => toolBlock(name, steps, codeReview, comments)),
     "## Threads",
     "",
     "Where send_message (and submit_guide) puts a message; the first rule that applies wins:",

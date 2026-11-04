@@ -10,6 +10,7 @@ import { shouldStripFrontmatter } from '@plannotator/core/annotatable';
 import { diagramAnchorLocationLine, parseDiagramAnchor } from '@plannotator/core/diagram-anchor';
 import { codeFenceFor } from '@plannotator/core/markdown-structure';
 import { cutText, sliceText } from '@plannotator/core/inbox-questions';
+import { inboxCommentRepliesFeedback, isInboxCommentReply } from '@plannotator/core/inbox-comment-threads';
 import {
   formatInboxVideoTime,
   INBOX_VIDEO_BLOCK_ID,
@@ -607,6 +608,9 @@ export const ATTACHMENT_AND_IMAGE_FEEDBACK_HEADING = {
  * `<attachment id>\0<version>`, so line numbers name the lines the person read.
  * Every comment's heading ends with its id (`commentIdSuffix`), the record's
  * own, so the same comment reads the same id in every Send that carries it.
+ * The person's replies under their sent comments (experimental
+ * "persistent-comments", a record's `re`) go last, in a section of their own,
+ * each under the id of the comment it answers (`inboxCommentRepliesFeedback`).
  */
 export function attachmentFeedback(
   records: readonly InboxAnnotationRecord[],
@@ -624,10 +628,12 @@ export function attachmentFeedback(
   } = {},
 ): string {
   if (records.length === 0) return '';
-  const messages = messageFeedback(records);
+  const threads = inboxCommentRepliesFeedback(records, projectRoot);
+  const own = threads ? records.filter((record) => !isInboxCommentReply(record)) : records;
+  const messages = messageFeedback(own);
   let inlineImages = false;
   const groups = new Map<string, { annotations: Annotation[]; markdown?: string; blocks: Block[]; video?: { durationMs?: number } }>();
-  for (const record of records) {
+  for (const record of own) {
     // Comments on a guided review's diff go in their own section, after the files'; a message's text has its own, before them.
     if (record.guide || record.message) continue;
     const attachment = attachments.find((a) => a.id === record.attachment_id) ?? attachments.find((a) => a.path === record.path);
@@ -689,6 +695,6 @@ export function attachmentFeedback(
     }
   }
   const entries = new Map([...groups].map(([label, group]) => [label, { annotations: group.annotations, globalAttachments: [], blocks: group.blocks }]));
-  const files = records.some(isFileComment) ? exportLinkedDocAnnotations(entries, inlineImages ? ATTACHMENT_AND_IMAGE_FEEDBACK_HEADING : ATTACHMENT_FEEDBACK_HEADING, { commentIds: true }).trim() : '';
-  return [messages, files, guideFeedback(records)].filter(Boolean).join('\n\n');
+  const files = own.some(isFileComment) ? exportLinkedDocAnnotations(entries, inlineImages ? ATTACHMENT_AND_IMAGE_FEEDBACK_HEADING : ATTACHMENT_FEEDBACK_HEADING, { commentIds: true }).trim() : '';
+  return [messages, files, guideFeedback(own), threads].filter(Boolean).join('\n\n');
 }

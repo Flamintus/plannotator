@@ -22,6 +22,7 @@ const message = (threadId: string, id = `${threadId}_m`) => ({ seq: 1, kind: 'me
 const question = (threadId: string | null | undefined) =>
   ({ seq: 2, kind: 'question', id: 'q', ...(threadId === undefined ? {} : { thread_id: threadId }), question: { message_id: 'msg_x', key: 'q-1' } }) as unknown as InboxEvent;
 const annotation = (threadId: string) => ({ seq: 3, kind: 'annotation', id: 'a', annotation: { id: 'a', thread_id: threadId, message_id: 'msg_x' } }) as unknown as InboxEvent;
+const commentReply = (threadId: string) => ({ seq: 8, kind: 'comment_reply', id: 'rep_1', thread_id: threadId }) as unknown as InboxEvent;
 const project = { seq: 4, kind: 'project', id: 'prj_1', project: { id: 'prj_1', name: 'web' } } as unknown as InboxEvent;
 const card = { seq: 5, kind: 'card', id: 'crd_1', card: { id: 'crd_1' } } as unknown as InboxEvent;
 const unknownKind = { seq: 6, kind: 'reaction', id: 'r_1' } as unknown as InboxEvent;
@@ -49,6 +50,11 @@ describe('which records read the open thread again', () => {
     expect(readFor([message(OPEN)])).toBe('thread');
     expect(readFor([question(OPEN)])).toBe('thread');
     expect(readFor([annotation(OPEN)])).toBe('thread');
+  });
+
+  test("an agent's reply under one of the open thread's comments reads it (its files list the reply); another thread's does not", () => {
+    expect(readFor([commentReply(OPEN)])).toBe('thread');
+    expect(readFor([commentReply(OTHER)])).toBe('files');
   });
 
   test("another thread's message, question and annotation do not", () => {

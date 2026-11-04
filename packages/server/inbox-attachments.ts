@@ -226,8 +226,9 @@ export interface InboxAttachmentRoutesContext {
   /**
    * Whether sent comments stay in the window (experimental
    * "persistent-comments", read on every request): the thread's files list
-   * them as `sent_comments`, and the window may mark one unanchored or the
-   * person resolve one. Absent: off.
+   * them as `sent_comments` with the agents' replies under them
+   * (`comment_replies`), and the window may mark one unanchored, or the
+   * person resolve one or reply under it. Absent: off.
    */
   persistentCommentsOn?: () => boolean;
 }
@@ -285,8 +286,9 @@ export function createInboxAttachmentRoutes(context: InboxAttachmentRoutesContex
         // The images the messages show, captured as files (additive: a reader that does not know it draws nothing extra).
         inline_images: await Promise.all(store.threadInlineImages(threadId).map(({ attachment, message }) => inboxAttachmentState(attachment, message.id, { hash: "small" }))),
         annotations: store.pendingAnnotations(threadId),
-        // The comments a Send carried, kept in view (experimental; additive: absent while off or from an older Inbox).
-        ...(context.persistentCommentsOn?.() ? { sent_comments: store.sentAnnotations(threadId) } : {}),
+        // The comments a Send carried, kept in view, and the agents' replies under them (experimental; additive:
+        // absent while off or from an older Inbox). The person's replies are comments: drafts, or sent, as above.
+        ...(context.persistentCommentsOn?.() ? { sent_comments: store.sentAnnotations(threadId), comment_replies: store.commentReplies(threadId) } : {}),
       });
     }
 
@@ -599,6 +601,17 @@ export function createInboxAttachmentRoutes(context: InboxAttachmentRoutesContex
       if (body instanceof Response) return body;
       if (typeof body.resolved !== "boolean") throw new InboxError("validation_error", "resolved: a boolean.", { field: "resolved" });
       return json({ annotation: store.resolveAnnotation(resolve[1]!, body.resolved) });
+    }
+
+    // The person's reply under a sent comment, a draft the next Send carries (experimental "persistent-comments").
+    const reply = /^\/api\/inbox\/annotations\/([A-Za-z0-9_.:-]+)\/replies$/.exec(path);
+    if (reply) {
+      if (req.method !== "POST") return json({ error: "Use POST." }, 405);
+      if (!context.persistentCommentsOn?.()) return json({ error: "Sent comments are not kept in view.", code: "persistent_comments_off" }, 409);
+      const body = await guardedBody(req);
+      if (body instanceof Response) return body;
+      const annotation = body.annotation && typeof body.annotation === "object" && !Array.isArray(body.annotation) ? (body.annotation as Record<string, unknown>) : {};
+      return json({ annotation: store.saveCommentReply(reply[1]!, annotation) });
     }
 
     const deleteThread = /^\/api\/inbox\/threads\/([A-Za-z0-9_]+)\/delete$/.exec(path);

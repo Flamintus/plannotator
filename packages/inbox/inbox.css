@@ -7700,3 +7700,12 @@ dialog.ib-zx .ib-listcol.ib-zx-list { position: relative; inset: auto; visibilit
 .ib-sentc-item[data-sent-resolved] .ib-sentc-row { color: var(--muted-foreground); }
 .ib-sentc-act, .ib-sentc-more { flex: none; padding: 2px 6px; border-radius: 6px; background: none; border: 0; color: var(--muted-foreground); font: inherit; font-size: 0.8em; cursor: pointer; }
 .ib-sentc-act:hover, .ib-sentc-act:focus-visible, .ib-sentc-more:hover, .ib-sentc-more:focus-visible { background: var(--muted); color: var(--foreground); }
+/* Replies under a sent comment, the agent's and the person's (a draft says Not sent), and the box Reply opens. */
+.ib-sentc-thread { margin: 0 0 4px 18px; padding-left: 8px; border-left: 2px solid var(--border); }
+.ib-sentc-thread > ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.ib-sentc-reply { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; padding: 2px 6px; font-size: 0.9em; }
+.ib-sentc-who { flex: none; font-weight: 600; }
+.ib-sentc-said { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ib-sentc-box { display: grid; gap: 4px; padding: 4px 6px; }
+.ib-sentc-area { width: 100%; resize: vertical; font: inherit; font-size: 0.9em; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--background); color: var(--foreground); }
+.ib-sentc-acts { display: flex; justify-content: flex-end; gap: 4px; }
