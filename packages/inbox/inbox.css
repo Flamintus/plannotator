@@ -7844,7 +7844,7 @@ button.ib-sentb-quote:hover, button.ib-sentb-quote:focus-visible { color: var(--
 .ib-sentb-state { flex: none; display: inline-flex; align-items: center; gap: 4px; font-weight: 600; color: var(--foreground); }
 .ib-sentb-fquote { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ib-sentb-count { flex: none; font-size: 0.9em; }
-@media (max-width: 767px) { .ib-sentb-count { display: none; } }
+@media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) { .ib-sentb-count { display: none; } }
 .ib-sentc-chip { flex: none; font-size: 0.8em; padding: 0 6px; border-radius: 999px; background: var(--muted); color: var(--muted-foreground); white-space: nowrap; }
 /* Resolve / Reopen and Reply, at a thread's head here and on a sent card's foot in the file's panel. */
 .ib-sentc-act { flex: none; padding: 2px 6px; border-radius: 6px; background: none; border: 0; color: var(--muted-foreground); font: inherit; font-size: 0.85em; cursor: pointer; }
