@@ -21,15 +21,20 @@
  *   reopen it or a reply lands under it (`inboxCommentState`);
  * - which open comments a reply sends again (`inboxCommentsToCarry`), as a
  *   section of its feedback (`inboxOpenCommentsFeedback`): each round, the
- *   agent gets what is still open, as crit sends every unresolved thread.
+ *   agent gets what is still open, as crit sends every unresolved thread;
+ * - its replies, one flat list under it, as crit's: the agent's
+ *   (`InboxCommentReplyRecord`, send_message's `comment_replies`) and the person's
+ *   (a comment record whose `re` names it, a draft until a Send carries it,
+ *   sent as its own section, `inboxCommentRepliesFeedback`), each with its
+ *   author and round.
  *
- * Browser-safe and zero-dep. Built to grow: the agent's replies under a
- * comment and a comment on a passage of another comment are fields of
- * `InboxCommentThread` the record does not carry yet.
+ * Browser-safe and zero-dep. Built to grow: a comment on a passage of another
+ * comment is a field of `InboxCommentThread` the record does not carry yet.
  */
 
-import { readInboxVideoTime, type InboxAnnotationRecord } from "./inbox-attachments";
+import { INBOX_MESSAGE_COMMENT_TEXT_MAX, readInboxVideoTime, type InboxAnnotationRecord, type InboxCommentReplyRecord } from "./inbox-attachments";
 import { formatInboxVideoTime } from "./inbox-types";
+import { ulid } from "./ulid";
 
 /** Where a sent comment is. */
 export type InboxCommentAnchor =
@@ -63,6 +68,41 @@ export interface InboxCommentThread {
   text: string;
   /** Its words were not found in the file the last time the window showed it. */
   unanchored: boolean;
+  /** The replies under it, oldest first: the agent's, and the person's that a Send carried. */
+  replies: InboxCommentReply[];
+}
+
+/** Who wrote a reply under a comment. */
+export type InboxCommentAuthor = { kind: "person" } | InboxCommentReplyRecord["from"];
+
+/** One reply under a sent comment. */
+export interface InboxCommentReply {
+  /** `rep_…` for the agent's; the person's is a comment record's id, as its feedback heading names it. */
+  id: string;
+  author: InboxCommentAuthor;
+  /** The round it was written in: the person's, the round of the Send that carried it; the agent's, the round under way then. */
+  round: number;
+  text: string;
+  at: string;
+}
+
+/** The longest reply under a comment, in characters (a message comment's limit). */
+export const INBOX_COMMENT_REPLY_TEXT_MAX = INBOX_MESSAGE_COMMENT_TEXT_MAX;
+
+const REPLY_ID_RE = /^rep_[0-9A-HJKMNP-TV-Z]{26}$/;
+
+/** A new id for an agent's reply under a comment. */
+export function inboxCommentReplyId(now?: number): string {
+  return `rep_${ulid(now)}`;
+}
+
+export function isInboxCommentReplyId(value: unknown): value is string {
+  return typeof value === "string" && REPLY_ID_RE.test(value);
+}
+
+/** Whether a comment record is the person's reply under another comment (`re`). */
+export function isInboxCommentReply(record: Pick<InboxAnnotationRecord, "re">): boolean {
+  return typeof record.re === "string" && record.re !== "";
 }
 
 /** A sent comment is open until the person resolves it. */
@@ -72,9 +112,8 @@ export type InboxCommentState = "open" | "resolved";
  * A sent comment's state: resolved from when the person resolved it
  * (`resolved_at`) until they reopen it, or until a reply lands under it: a
  * reply newer than `resolved_at` (`lastReplyAt`, the newest reply's time)
- * opens it again, as a reply does in crit, with nothing written. The replies
- * under a comment pass their newest time here; until then none is passed.
- * Three readers ask it, and each must pass that time once replies exist:
+ * opens it again, as a reply does in crit, with nothing written. Its three
+ * readers pass the newest reply's time (`inboxCommentLastReplies`):
  * `inboxCommentThreads` (read_thread and what a reply sends again), the
  * store's `resolveAnnotation` (whether a press changes anything) and the
  * window's `isResolved` (packages/inbox/components/SentComments.tsx).
@@ -85,10 +124,49 @@ export function inboxCommentState(record: Pick<InboxAnnotationRecord, "resolved_
   return lastReplyAt !== null && lastReplyAt > resolved ? "open" : "resolved";
 }
 
+/**
+ * The newest reply under each comment, by the comment's id: the agent's, and
+ * the person's, a draft too (a draft reply under a resolved comment shows it
+ * open again in the window, and the person's Resolve then closes it again).
+ * A removed reply counts for nothing.
+ */
+export function inboxCommentLastReplies(
+  records: readonly Pick<InboxAnnotationRecord, "re" | "removed_at" | "created_at">[],
+  agentReplies: readonly Pick<InboxCommentReplyRecord, "re" | "created_at">[] = [],
+): Map<string, string> {
+  const out = new Map<string, string>();
+  const note = (id: string, at: string) => {
+    const known = out.get(id);
+    if (known === undefined || at > known) out.set(id, at);
+  };
+  for (const record of records) if (isInboxCommentReply(record) && record.removed_at === null) note(record.re!, record.created_at);
+  for (const reply of agentReplies) note(reply.re, reply.created_at);
+  return out;
+}
+
 /** What a round needs of a message: its id and who wrote it. */
 export interface InboxCommentRoundMessage {
   id: string;
   author: { kind: string };
+}
+
+/** What a thread of comments needs of a message: its round's part, and when it was written (the agent's replies' round). */
+export interface InboxCommentThreadMessage extends InboxCommentRoundMessage {
+  created_at: string;
+}
+
+/**
+ * The round under way at `at`, for a reply the agent wrote then: the round of
+ * the newest reply of the person's that carried comments by then (1 at least:
+ * a reply is under a comment some round carried).
+ */
+export function inboxCommentReplyRound(messages: readonly InboxCommentThreadMessage[], rounds: ReadonlyMap<string, number>, at: string): number {
+  let round = 1;
+  for (const message of messages) {
+    const of = rounds.get(message.id);
+    if (of !== undefined && message.created_at <= at && of > round) round = of;
+  }
+  return round;
 }
 
 /** Whether a record is a comment the person sent (not a draft, not removed). */
@@ -155,31 +233,76 @@ export function inboxCommentAnchor(record: InboxAnnotationRecord): InboxCommentA
 
 /**
  * The thread's sent comments, oldest round first (then by when they were
- * made), each with its round, anchor and state. A record whose reply is not
- * in `messages` (a Send that never landed) is left out.
+ * made), each with its round, anchor, state and replies: the person's that a
+ * Send carried (a draft is not sent yet, so it is not listed and does not
+ * open a comment again here) and the agent's (`agentReplies`). A record whose
+ * reply is not in `messages` (a Send that never landed) is left out.
  */
-export function inboxCommentThreads(messages: readonly InboxCommentRoundMessage[], records: readonly InboxAnnotationRecord[]): InboxCommentThread[] {
+export function inboxCommentThreads(
+  messages: readonly InboxCommentThreadMessage[],
+  records: readonly InboxAnnotationRecord[],
+  agentReplies: readonly InboxCommentReplyRecord[] = [],
+): InboxCommentThread[] {
   const rounds = inboxCommentRounds(messages, records);
-  const out: (InboxCommentThread & { created_at: string })[] = [];
+  const replies = new Map<string, InboxCommentReply[]>();
+  const add = (id: string, reply: InboxCommentReply) => replies.set(id, [...(replies.get(id) ?? []), reply]);
+  const sent: InboxAnnotationRecord[] = [];
   for (const record of records) {
     if (!isInboxCommentSent(record)) continue;
     const round = rounds.get(record.sent_reply_id!);
     if (round === undefined) continue;
+    if (isInboxCommentReply(record)) add(record.re!, { id: record.id, author: { kind: "person" }, round, text: text(record.annotation.text), at: record.created_at });
+    else sent.push(record);
+  }
+  for (const reply of agentReplies) {
+    add(reply.re, { id: reply.id, author: reply.from, round: inboxCommentReplyRound(messages, rounds, reply.created_at), text: reply.text, at: reply.created_at });
+  }
+  const last = inboxCommentLastReplies(records.filter(isInboxCommentSent), agentReplies);
+  const out: (InboxCommentThread & { created_at: string })[] = sent.map((record) => {
     const annotation = record.annotation;
-    out.push({
+    return {
       id: record.id,
       reply_id: record.sent_reply_id!,
-      round,
-      state: inboxCommentState(record),
+      round: rounds.get(record.sent_reply_id!)!,
+      state: inboxCommentState(record, last.get(record.id) ?? null),
       on: inboxCommentAnchor(record),
       quote: text(annotation.originalText) || text(annotation.selectedText) || text(annotation.originalCode),
       text: text(annotation.text),
       unanchored: typeof record.unanchored_at === "string",
+      // By time; replies written in the same millisecond keep the order they were written in (a stable sort).
+      replies: (replies.get(record.id) ?? []).sort((a, b) => a.at.localeCompare(b.at)),
       created_at: record.created_at,
-    });
-  }
+    };
+  });
   out.sort((a, b) => a.round - b.round || a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
   return out.map(({ created_at: _created, ...thread }) => thread);
+}
+
+/**
+ * The fields of a comment's annotation that are its author's own, never a
+ * reply's: everything else (its block, offsets, words, lines, moment, part of
+ * a diagram, element) is where it is, and a reply takes that place, as
+ * `buildReplyAnnotation` does in @plannotator/ui.
+ */
+const OWN_FIELDS = new Set(["id", "type", "text", "author", "source", "createdA", "mentions", "images", "isQuickLabel", "quickLabelTip", "inReplyTo", "exportLocation", "questionAnswer"]);
+
+/**
+ * The annotation of the person's reply under a comment: the comment's place,
+ * the reply's own id, words and tags, and `inReplyTo` the comment, so a panel
+ * threads it under its card and an older reader sees a comment on the same
+ * words. A reply is a comment, even under a deletion.
+ */
+export function inboxCommentReplyAnnotation(comment: Pick<InboxAnnotationRecord, "id" | "annotation">, reply: { id: string; text: string; createdA: number; mentions?: readonly string[] }): Record<string, unknown> {
+  const place = Object.fromEntries(Object.entries(comment.annotation).filter(([key]) => !OWN_FIELDS.has(key)));
+  return {
+    ...place,
+    id: reply.id,
+    type: "COMMENT",
+    text: reply.text,
+    createdA: reply.createdA,
+    ...(reply.mentions && reply.mentions.length > 0 ? { mentions: [...reply.mentions] } : {}),
+    inReplyTo: comment.id,
+  };
 }
 
 function shownPath(path: string, root: string): string {
@@ -267,6 +390,30 @@ export function inboxOpenCommentsFeedback(threads: readonly InboxCommentThread[]
   const intro = "The person has not resolved these comments from earlier rounds yet.";
   const rest = older > 0 ? [`${older} older open comment${older === 1 ? " is" : "s are"} not repeated here: read_thread lists every comment.`] : [];
   return [`# ${INBOX_OPEN_COMMENTS_TITLE}`, intro, ...entries, ...rest].join("\n\n");
+}
+
+/**
+ * The title of the section that sends the person's replies under their
+ * comments. A feedback section of the reply, as the others (the window draws
+ * it with them, packages/inbox/replyFeedback.ts).
+ */
+export const INBOX_COMMENT_REPLIES_TITLE = "Feedback on comment threads";
+
+/**
+ * The person's replies under comments a Send carries, as a section of its
+ * feedback: one entry per reply, under the comment it answers (its id, where
+ * it is, its words), then the reply; each heading ends with the reply's own
+ * id, as every entry of a Send does. Empty when there is none.
+ */
+export function inboxCommentRepliesFeedback(records: readonly InboxAnnotationRecord[], root: string): string {
+  const replies = records.filter(isInboxCommentReply).sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+  if (replies.length === 0) return "";
+  const entries = replies.map((record, index) => {
+    const quote = (text(record.annotation.originalText) || text(record.annotation.selectedText) || text(record.annotation.originalCode)).replace(/\s+/g, " ").trim();
+    const words = (text(record.annotation.text).trim() || "(no words)").split(/\r\n?|\n/).map((line) => `> ${line}`.trimEnd());
+    return [`### ${index + 1}. Reply under comment ${record.re}, ${inboxCommentPlace(inboxCommentAnchor(record), root)}${quote ? `: "${quote}"` : ""} (id ${record.id})`, ...words].join("\n");
+  });
+  return [`# ${INBOX_COMMENT_REPLIES_TITLE}`, "My replies under comments I sent earlier; each heading names the comment it is under.", ...entries].join("\n\n");
 }
 
 /**

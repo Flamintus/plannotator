@@ -1,6 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import type { InboxAnnotationRecord } from './inbox-attachments';
+import type { InboxCommentReplyRecord } from './inbox-attachments';
 import {
+  INBOX_COMMENT_REPLIES_TITLE,
+  inboxCommentLastReplies,
+  inboxCommentRepliesFeedback,
+  inboxCommentReplyAnnotation,
+  inboxCommentReplyId,
+  isInboxCommentReplyId,
   INBOX_OPEN_COMMENTS_SENT,
   INBOX_OPEN_COMMENTS_TITLE,
   inboxCommentRounds,
@@ -11,8 +18,8 @@ import {
   inboxOpenCommentsFeedback,
 } from './inbox-comment-threads';
 
-const agent = (id: string) => ({ id, author: { kind: 'agent' } });
-const person = (id: string) => ({ id, author: { kind: 'person' } });
+const agent = (id: string, created_at = '2026-11-04T09:00:00.000Z') => ({ id, author: { kind: 'agent' }, created_at });
+const person = (id: string, created_at = '2026-11-04T09:00:00.000Z') => ({ id, author: { kind: 'person' }, created_at });
 
 function record(id: string, fields: Partial<InboxAnnotationRecord> & { annotation?: Record<string, unknown> } = {}): InboxAnnotationRecord {
   return {
@@ -143,14 +150,14 @@ describe('the resolved state', () => {
 });
 
 describe('the open comments a reply sends again', () => {
-  const ses = (id: string, session: string) => ({ id, author: { kind: 'agent', session } });
+  const ses = (id: string, session: string) => ({ id, author: { kind: 'agent', session }, created_at: '2026-11-04T09:00:00.000Z' });
   const to = new Map([
     ['msg_p1', 'ses_a'],
     ['msg_p2', 'ses_a'],
     ['msg_q1', 'ses_b'],
   ]);
   const sentTo = (message: { id: string }) => to.get(message.id) ?? null;
-  const carried = (messages: { id: string; author: { kind: string; session?: string } }[], records: InboxAnnotationRecord[], session: string) =>
+  const carried = (messages: { id: string; author: { kind: string; session?: string }; created_at: string }[], records: InboxAnnotationRecord[], session: string) =>
     inboxCommentsToCarry(messages, inboxCommentThreads(messages, records), session, sentTo).map((t) => t.id);
 
   test('the first reply to a session after it answered sends its open comments again, not the resolved ones', () => {
@@ -222,5 +229,90 @@ describe('the open comments a reply sends again', () => {
     const named = text.split('\n').filter((line) => line.startsWith('### ')).map((line) => /\(id (\w+)\)$/.exec(line)![1]);
     expect(named).toEqual(ids.slice(-INBOX_OPEN_COMMENTS_SENT));
     expect(text).toContain('3 older open comments');
+  });
+});
+
+describe('replies under a sent comment', () => {
+  // Round 1: msg_p1 carries c1; the agent answers (msg_a2); round 2: msg_p2 carries the person's reply r1.
+  const messages = [
+    agent('msg_a1', '2026-11-04T10:00:00.000Z'),
+    person('msg_p1', '2026-11-04T10:01:00.000Z'),
+    agent('msg_a2', '2026-11-04T10:05:00.000Z'),
+    person('msg_p2', '2026-11-04T10:09:00.000Z'),
+  ];
+  const comment = record('c1', { sent_reply_id: 'msg_p1', created_at: '2026-11-04T10:00:30.000Z' });
+  const agentReply = (id: string, created_at: string, re = 'c1'): InboxCommentReplyRecord => ({
+    id,
+    project_id: 'prj_1',
+    thread_id: 'msg_a1',
+    re,
+    from: { kind: 'agent', host: 'claude-code', session: 'ses_a', name: 'Claude Code' },
+    text: `answer ${id}`,
+    created_at,
+  });
+  const personReply = (id: string, fields: Partial<InboxAnnotationRecord> = {}) =>
+    record(id, { re: 'c1', annotation: { id, type: 'COMMENT', originalText: 'words of c1', text: `reply ${id}`, inReplyTo: 'c1' }, ...fields });
+
+  test("one flat list under the comment, oldest first: the agent's and the person's sent ones, each with its author and round", () => {
+    const threads = inboxCommentThreads(
+      messages,
+      [comment, personReply('r1', { sent_reply_id: 'msg_p2', created_at: '2026-11-04T10:08:00.000Z' }), personReply('draft')],
+      [agentReply('rep_a', '2026-11-04T10:04:00.000Z'), agentReply('rep_b', '2026-11-04T10:10:00.000Z')],
+    );
+    // The person's reply is not a comment of its own, and a draft is not sent yet.
+    expect(threads.map((t) => t.id)).toEqual(['c1']);
+    expect(threads[0]!.replies.map((r) => [r.id, r.author.kind, r.round])).toEqual([
+      ['rep_a', 'agent', 1],
+      ['r1', 'person', 2],
+      // Written after round 2's Send: round 2, though the comment it is under is round 1.
+      ['rep_b', 'agent', 2],
+    ]);
+    expect(threads[0]!.replies[0]).toMatchObject({ author: { kind: 'agent', name: 'Claude Code', session: 'ses_a', host: 'claude-code' }, text: 'answer rep_a' });
+    expect(threads[0]!.replies[1]).toMatchObject({ text: 'reply r1' });
+  });
+
+  test('a Send that carries only a reply is a round', () => {
+    expect(Object.fromEntries(inboxCommentRounds(messages, [comment, personReply('r1', { sent_reply_id: 'msg_p2' })]))).toEqual({ msg_p1: 1, msg_p2: 2 });
+  });
+
+  test('a reply newer than the resolution opens the comment again; an older one does not', () => {
+    const resolved = { ...comment, resolved_at: '2026-11-04T10:06:00.000Z' };
+    expect(inboxCommentThreads(messages, [resolved], [agentReply('rep_a', '2026-11-04T10:04:00.000Z')])[0]!.state).toBe('resolved');
+    expect(inboxCommentThreads(messages, [resolved], [agentReply('rep_b', '2026-11-04T10:07:00.000Z')])[0]!.state).toBe('open');
+    expect(inboxCommentThreads(messages, [resolved, personReply('r1', { sent_reply_id: 'msg_p2', created_at: '2026-11-04T10:08:00.000Z' })])[0]!.state).toBe('open');
+    // A draft is not sent: what the agent reads stays resolved.
+    expect(inboxCommentThreads(messages, [resolved, personReply('draft', { created_at: '2026-11-04T10:08:00.000Z' })])[0]!.state).toBe('resolved');
+  });
+
+  test("the newest reply's time by comment: drafts count (the window draws them), removed ones do not", () => {
+    const last = inboxCommentLastReplies(
+      [comment, personReply('draft', { created_at: '2026-11-04T10:08:00.000Z' }), personReply('gone', { created_at: '2026-11-04T10:20:00.000Z', removed_at: '2026-11-04T10:21:00.000Z' })],
+      [agentReply('rep_a', '2026-11-04T10:04:00.000Z')],
+    );
+    expect(Object.fromEntries(last)).toEqual({ c1: '2026-11-04T10:08:00.000Z' });
+  });
+
+  test("the person's reply takes the comment's place and keeps its own words", () => {
+    const parent = record('c1', {
+      annotation: { id: 'c1', type: 'DELETION', blockId: 'b3', startOffset: 4, endOffset: 9, originalText: 'Friday', text: 'no', author: 'Swift Tater', images: [{ path: '/x.png', name: 'x' }], inboxCode: { lineStart: 2, lineEnd: 3, code: 'x' }, diagramAnchor: { v: 1 } },
+    });
+    const reply = inboxCommentReplyAnnotation(parent, { id: 'r1', text: 'Tuesday then', createdA: 5, mentions: ['pi'] });
+    expect(reply).toEqual({ blockId: 'b3', startOffset: 4, endOffset: 9, originalText: 'Friday', inboxCode: { lineStart: 2, lineEnd: 3, code: 'x' }, diagramAnchor: { v: 1 }, id: 'r1', type: 'COMMENT', text: 'Tuesday then', createdA: 5, mentions: ['pi'], inReplyTo: 'c1' });
+  });
+
+  test('as feedback: one entry per reply, under the id of its comment, where it is, and its own id', () => {
+    expect(inboxCommentRepliesFeedback([comment], '/repo')).toBe('');
+    const onFile = personReply('r2', { message: undefined, attachment_id: 'att_1', path: '/repo/notes.md', created_at: '2026-11-04T10:09:00.000Z', annotation: { originalText: 'Ship on\nFriday.', text: 'Tuesday.\nEU first.', inReplyTo: 'c9' }, re: 'c9' });
+    const text = inboxCommentRepliesFeedback([onFile, personReply('r1', { created_at: '2026-11-04T10:08:00.000Z' })], '/repo');
+    expect(text.startsWith(`# ${INBOX_COMMENT_REPLIES_TITLE}\n`)).toBe(true);
+    const headings = text.split('\n').filter((line) => line.startsWith('### '));
+    expect(headings).toEqual(['### 1. Reply under comment c1, on message msg_a1: "words of c1" (id r1)', '### 2. Reply under comment c9, on notes.md: "Ship on Friday." (id r2)']);
+    expect(text).toContain('> Tuesday.\n> EU first.');
+  });
+
+  test("an agent's reply id is its own kind", () => {
+    const id = inboxCommentReplyId(0);
+    expect(isInboxCommentReplyId(id)).toBe(true);
+    expect(isInboxCommentReplyId('c1')).toBe(false);
   });
 });

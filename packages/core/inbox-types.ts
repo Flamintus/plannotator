@@ -15,7 +15,7 @@
  */
 
 import type { QuestionAnswer, QuestionKind } from "./question-block";
-import type { InboxAnnotationRecord, InboxAttachment, InboxAttachmentKind, InboxInlineImage } from "./inbox-attachments";
+import type { InboxAnnotationRecord, InboxAttachment, InboxAttachmentKind, InboxCommentReplyRecord, InboxInlineImage } from "./inbox-attachments";
 import type { InboxDeliverNowBy, InboxRowDelivery } from "./inbox-delivery";
 import type { InboxCard } from "./inbox-cards";
 import type { InboxSteps } from "./inbox-steps";
@@ -1554,10 +1554,11 @@ export interface InboxThread {
 
 /**
  * `card`: a Board card (approval "inbox-board"); `steps`: one agent session's
- * steps in a thread (approval "inbox-thread-steps"). A reader that does not
- * know a kind skips its lines.
+ * steps in a thread (approval "inbox-thread-steps"); `comment_reply`: an
+ * agent's reply under a sent comment (experimental "persistent-comments").
+ * A reader that does not know a kind skips its lines.
  */
-export type InboxRecordKind = "project" | "message" | "question" | "annotation" | "card" | "steps";
+export type InboxRecordKind = "project" | "message" | "question" | "annotation" | "card" | "steps" | "comment_reply";
 
 /** One line of the store: a full snapshot of one record. */
 export type InboxLine =
@@ -1566,7 +1567,8 @@ export type InboxLine =
   | { v: 1; seq: number; at: string; kind: "question"; id: string; record: InboxQuestionRecord }
   | { v: 1; seq: number; at: string; kind: "annotation"; id: string; record: InboxAnnotationRecord }
   | { v: 1; seq: number; at: string; kind: "card"; id: string; record: InboxCard }
-  | { v: 1; seq: number; at: string; kind: "steps"; id: string; record: InboxSteps };
+  | { v: 1; seq: number; at: string; kind: "steps"; id: string; record: InboxSteps }
+  | { v: 1; seq: number; at: string; kind: "comment_reply"; id: string; record: InboxCommentReplyRecord };
 
 // ─────────────────────────────── Health ───────────────────────────────
 

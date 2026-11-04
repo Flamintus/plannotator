@@ -218,6 +218,33 @@ export interface InboxAnnotationRecord {
    * "persistent-comments", inbox-comment-threads.ts).
    */
   resolved_at?: string | null;
+  /**
+   * The person's reply under a sent comment: that comment's id (additive;
+   * experimental "persistent-comments", inbox-comment-threads.ts). A draft
+   * until a Send carries it, like any comment; its target and anchor are the
+   * comment's, so an older reader sees a comment on the same words.
+   */
+  re?: string;
+}
+
+/**
+ * An agent's reply under a comment the person sent (experimental
+ * "persistent-comments"; send_message's `comment_replies`): its own record kind,
+ * `comment_reply` in `comment-replies.jsonl`, which a reader that does not
+ * know the kind skips. Written once: never edited, removed, sent or
+ * resolved, and never the person's (`re` and `from`, as a Shape answer's).
+ */
+export interface InboxCommentReplyRecord {
+  /** `rep_…` (inboxCommentReplyId). */
+  id: string;
+  project_id: string;
+  thread_id: string;
+  /** The sent comment it is under. */
+  re: string;
+  /** The agent session that wrote it, as a message's author. */
+  from: { kind: "agent"; host: string | null; session: string | null; name: string | null };
+  text: string;
+  created_at: string;
 }
 
 export const INBOX_ANNOTATION_CURRENT = "current";
