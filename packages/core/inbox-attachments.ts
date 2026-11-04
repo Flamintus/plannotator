@@ -230,6 +230,18 @@ export interface InboxAnnotationRecord {
    * comment's, so an older reader sees a comment on the same words.
    */
   re?: string;
+  /**
+   * A sub-thread: the person's comment on a passage of one message of a
+   * comment thread (a sent comment, a reply under one, or another
+   * sub-thread), named by that message's id (additive; experimental
+   * "persistent-comments", inbox-comment-threads.ts). A draft until a Send
+   * carries it, then a thread of its own: replies, resolution, sub-threads.
+   * Its target is its thread's first comment's, so it lives where that
+   * comment does; the passage is its annotation's `originalText`.
+   */
+  parent?: string;
+  /** A sub-thread's passage: where it starts in its parent's words as drawn (packages/core/passage.ts). */
+  quote_offset?: number;
 }
 
 /**

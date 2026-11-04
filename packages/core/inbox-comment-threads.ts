@@ -26,14 +26,21 @@
  *   (`InboxCommentReplyRecord`, send_message's `comment_replies`) and the person's
  *   (a comment record whose `re` names it, a draft until a Send carries it,
  *   sent as its own section, `inboxCommentRepliesFeedback`), each with its
- *   author and round.
+ *   author and round;
+ * - its sub-threads, as crit's: the person's comment on a passage of one
+ *   message of a thread (the comment, a reply under it, or another
+ *   sub-thread), a comment record whose `parent` names that message and
+ *   whose `quote_offset` places the passage in its words (passage.ts). Once
+ *   sent it is a thread of its own, at any depth: replies, resolution (its
+ *   own, whatever its parent's), sub-threads. The agent reads the words the
+ *   passage is in with it (`parent`), so it never has to look them up.
  *
- * Browser-safe and zero-dep. Built to grow: a comment on a passage of another
- * comment is a field of `InboxCommentThread` the record does not carry yet.
+ * Browser-safe and zero-dep.
  */
 
 import { INBOX_MESSAGE_COMMENT_TEXT_MAX, readInboxVideoTime, type InboxAnnotationRecord, type InboxCommentReplyRecord } from "./inbox-attachments";
 import { formatInboxVideoTime } from "./inbox-types";
+import { passageContext } from "./passage";
 import { ulid } from "./ulid";
 
 /** Where a sent comment is. */
@@ -70,6 +77,24 @@ export interface InboxCommentThread {
   unanchored: boolean;
   /** The replies under it, oldest first: the agent's, and the person's that a Send carried. */
   replies: InboxCommentReply[];
+  /** A sub-thread: the message whose passage it is on (`quote` is the passage); absent on a comment on a file, a message or a guided review. */
+  parent?: InboxSubThreadParent;
+}
+
+/** One message of a comment thread, as a sub-thread on a passage of it reads it. */
+export interface InboxCommentMessage {
+  /** `comment`: a comment or a sub-thread (a thread of its own); `reply`: a reply under one (`under`). */
+  kind: "comment" | "reply";
+  under?: string;
+  author: InboxCommentAuthor;
+  /** Its words, whole. */
+  text: string;
+}
+
+/** The message a sub-thread is on: its id, where the passage starts in its words, and the message (absent when it is not found). */
+export interface InboxSubThreadParent extends Partial<InboxCommentMessage> {
+  id: string;
+  quote_offset: number;
 }
 
 /** Who wrote a reply under a comment. */
@@ -129,6 +154,62 @@ export function isInboxCommentReplyRecord(value: unknown): value is InboxComment
 /** Whether a comment record is the person's reply under another comment (`re`). */
 export function isInboxCommentReply(record: Pick<InboxAnnotationRecord, "re">): boolean {
   return typeof record.re === "string" && record.re !== "";
+}
+
+/** Whether a comment record is a sub-thread: the person's comment on a passage of a message of a thread (`parent`). */
+export function isInboxSubThread(record: Pick<InboxAnnotationRecord, "parent">): boolean {
+  return typeof record.parent === "string" && record.parent !== "";
+}
+
+/**
+ * Whether a comment record sits under another message of a thread, a reply
+ * or a sub-thread: never painted on the file or the message, since its place
+ * there is its thread's first comment's, and sent in its own section.
+ */
+export function isInboxCommentUnderAnother(record: Pick<InboxAnnotationRecord, "re" | "parent">): boolean {
+  return isInboxCommentReply(record) || isInboxSubThread(record);
+}
+
+/**
+ * Every message of the comment threads a sub-thread can be on, by id: the
+ * person's sent comments, replies and sub-threads (`records`, drafts left
+ * out: a passage is commented once its words reached the agent) and the
+ * agents' replies.
+ */
+export function inboxCommentMessages(records: readonly InboxAnnotationRecord[], agentReplies: readonly InboxCommentReplyRecord[] = []): Map<string, InboxCommentMessage> {
+  const out = new Map<string, InboxCommentMessage>();
+  for (const record of records) {
+    if (!isInboxCommentSent(record)) continue;
+    const words = text(record.annotation.text);
+    out.set(record.id, isInboxCommentReply(record) ? { kind: "reply", under: record.re!, author: { kind: "person" }, text: words } : { kind: "comment", author: { kind: "person" }, text: words });
+  }
+  for (const reply of agentReplies) out.set(reply.id, { kind: "reply", under: reply.re, author: reply.from, text: reply.text });
+  return out;
+}
+
+/**
+ * The messages that have an open sub-thread under them, at any depth, by id:
+ * the sub-thread's parent, the comment a reply on the way is under, and so on
+ * up to the thread's first comment. A resolved comment or sub-thread among
+ * them stays unfolded while one is open, as in crit.
+ */
+export function inboxOpenSubThreadPaths(
+  records: readonly Pick<InboxAnnotationRecord, "id" | "re" | "parent">[],
+  agentReplies: readonly Pick<InboxCommentReplyRecord, "id" | "re">[],
+  isOpen: (id: string) => boolean,
+): Set<string> {
+  const up = new Map<string, string>();
+  for (const record of records) {
+    const above = isInboxCommentReply(record) ? record.re : isInboxSubThread(record) ? record.parent : undefined;
+    if (above) up.set(record.id, above);
+  }
+  for (const reply of agentReplies) up.set(reply.id, reply.re);
+  const out = new Set<string>();
+  for (const record of records) {
+    if (!isInboxSubThread(record) || !isOpen(record.id)) continue;
+    for (let id: string | undefined = record.parent; id !== undefined && !out.has(id); id = up.get(id)) out.add(id);
+  }
+  return out;
 }
 
 /** A sent comment is open until the person resolves it. */
@@ -284,8 +365,10 @@ export function inboxCommentThreads(
     add(reply.re, { id: reply.id, author: reply.from, round: inboxCommentReplyRound(messages, rounds, reply.created_at), message_id: reply.message_id, text: reply.text, at: reply.created_at });
   }
   const last = inboxCommentLastReplies(records.filter(isInboxCommentSent), agentReplies);
+  const messagesById = inboxCommentMessages(records, agentReplies);
   const out: (InboxCommentThread & { created_at: string })[] = sent.map((record) => {
     const annotation = record.annotation;
+    const parent = isInboxSubThread(record) ? { id: record.parent!, quote_offset: inboxQuoteOffset(record), ...messagesById.get(record.parent!) } : null;
     return {
       id: record.id,
       reply_id: record.sent_reply_id!,
@@ -297,11 +380,18 @@ export function inboxCommentThreads(
       unanchored: typeof record.unanchored_at === "string",
       // By time; replies written in the same millisecond keep the order they were written in (a stable sort).
       replies: (replies.get(record.id) ?? []).sort((a, b) => a.at.localeCompare(b.at)),
+      ...(parent ? { parent } : {}),
       created_at: record.created_at,
     };
   });
   out.sort((a, b) => a.round - b.round || a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
   return out.map(({ created_at: _created, ...thread }) => thread);
+}
+
+/** A sub-thread's `quote_offset`, 0 when it has none that reads as one. */
+export function inboxQuoteOffset(record: Pick<InboxAnnotationRecord, "quote_offset">): number {
+  const offset = record.quote_offset;
+  return Number.isInteger(offset) && (offset as number) >= 0 ? (offset as number) : 0;
 }
 
 /**
@@ -331,6 +421,19 @@ export function inboxCommentReplyAnnotation(comment: Pick<InboxAnnotationRecord,
   };
 }
 
+/**
+ * The annotation of the person's sub-thread on a passage of `parent`: its
+ * thread's first comment's place (as a reply's), the passage as its words
+ * (`originalText`), and `inReplyTo` the parent, so a panel draws it under
+ * that message's card with the passage at its head.
+ */
+export function inboxSubThreadAnnotation(
+  comment: Pick<InboxAnnotationRecord, "id" | "annotation">,
+  sub: { id: string; parent: string; quote: string; text: string; createdA: number; mentions?: readonly string[] },
+): Record<string, unknown> {
+  return { ...inboxCommentReplyAnnotation(comment, sub), originalText: sub.quote, inReplyTo: sub.parent };
+}
+
 function shownPath(path: string, root: string): string {
   const base = root.replace(/[\\/]+$/, "");
   return base !== "" && (path.startsWith(`${base}/`) || path.startsWith(`${base}\\`)) ? path.slice(base.length + 1) : path;
@@ -351,6 +454,32 @@ export function inboxCommentPlace(on: InboxCommentAnchor, root: string): string 
   if (on.at !== undefined) parts.push(`at ${formatInboxVideoTime(on.at)}`);
   return parts.join(" ");
 }
+
+/** How a message a passage is on is named: "comment <id>", or "reply <id> under comment <id>". */
+function messageName(parent: InboxSubThreadParent): string {
+  if (parent.kind === "reply") return `reply ${parent.id}${parent.under ? ` under comment ${parent.under}` : ""}`;
+  return parent.kind === "comment" ? `comment ${parent.id}` : parent.id;
+}
+
+/**
+ * Where a sent comment is, as `inboxCommentPlace` says it, and for a
+ * sub-thread the message whose passage it is on first: "on a passage of
+ * reply rep_… under comment c1 (on notes.md lines 3-4 when commented)".
+ */
+export function inboxCommentThreadPlace(thread: Pick<InboxCommentThread, "on" | "parent">, root: string): string {
+  const place = inboxCommentPlace(thread.on, root);
+  return thread.parent ? `on a passage of ${messageName(thread.parent)} (${place})` : place;
+}
+
+/** A sub-thread's passage in the words around it, as an agent reads it: about `max` characters, `…` where cut. */
+export function inboxSubThreadWords(thread: Pick<InboxCommentThread, "parent" | "quote">, max: number): string | null {
+  const parent = thread.parent;
+  if (!parent || parent.text === undefined) return null;
+  return passageContext(parent.text, { quote: thread.quote, offset: parent.quote_offset }, max);
+}
+
+/** The most of a passage's surrounding words a feedback entry carries, in characters. */
+export const INBOX_SUB_THREAD_WORDS_SENT = 600;
 
 /** What sending comments again needs of a message: who wrote it, and an agent's session. */
 export interface InboxCommentCarryMessage extends InboxCommentRoundMessage {
@@ -408,10 +537,11 @@ export function inboxOpenCommentsFeedback(threads: readonly InboxCommentThread[]
   const shown = threads.slice(-INBOX_OPEN_COMMENTS_SENT);
   const older = threads.length - shown.length;
   const entries = shown.map((thread, index) => {
-    const place = `${inboxCommentPlace(thread.on, root)}${thread.unanchored ? ", unanchored (its words were not in the file when the person last opened it)" : ""}`;
+    const place = `${inboxCommentThreadPlace(thread, root)}${thread.unanchored ? ", unanchored (its words were not in the file when the person last opened it)" : ""}`;
     const quote = thread.quote.replace(/\s+/g, " ").trim();
+    const words = inboxSubThreadWords(thread, INBOX_SUB_THREAD_WORDS_SENT);
     const comment = (thread.text.trim() || "(no words)").split(/\r\n?|\n/).map((line) => `> ${line}`.trimEnd());
-    return [`### ${index + 1}. Round ${thread.round}, ${place}${quote ? `: "${quote}"` : ""} (id ${thread.id})`, ...comment].join("\n");
+    return [`### ${index + 1}. Round ${thread.round}, ${place}${quote ? `: "${quote}"` : ""} (id ${thread.id})`, ...(words ? [`In: "${words}"`] : []), ...comment].join("\n");
   });
   const intro = "The person has not resolved these comments from earlier rounds yet.";
   const rest = older > 0 ? [`${older} older open comment${older === 1 ? " is" : "s are"} not repeated here: read_thread lists every comment.`] : [];
@@ -426,20 +556,30 @@ export function inboxOpenCommentsFeedback(threads: readonly InboxCommentThread[]
 export const INBOX_COMMENT_REPLIES_TITLE = "Feedback on comment threads";
 
 /**
- * The person's replies under comments a Send carries, as a section of its
- * feedback: one entry per reply, under the comment it answers (its id, where
- * it is, its words), then the reply; each heading ends with the reply's own
- * id, as every entry of a Send does. Empty when there is none.
+ * The person's replies and sub-threads a Send carries, as a section of its
+ * feedback, oldest first: a reply under the comment it answers (its id,
+ * where it is, its words); a sub-thread under the message whose passage it
+ * is on, with the passage and, when `messages` holds that message, the words
+ * around it (`In: "…"`); then the person's words. Each heading ends with the
+ * entry's own id, as every entry of a Send does. Empty when there is none.
  */
-export function inboxCommentRepliesFeedback(records: readonly InboxAnnotationRecord[], root: string): string {
-  const replies = records.filter(isInboxCommentReply).sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
-  if (replies.length === 0) return "";
-  const entries = replies.map((record, index) => {
+export function inboxCommentRepliesFeedback(records: readonly InboxAnnotationRecord[], root: string, messages: ReadonlyMap<string, InboxCommentMessage> = new Map()): string {
+  const under = records.filter(isInboxCommentUnderAnother).sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+  if (under.length === 0) return "";
+  const entries = under.map((record, index) => {
     const quote = (text(record.annotation.originalText) || text(record.annotation.selectedText) || text(record.annotation.originalCode)).replace(/\s+/g, " ").trim();
     const words = (text(record.annotation.text).trim() || "(no words)").split(/\r\n?|\n/).map((line) => `> ${line}`.trimEnd());
-    return [`### ${index + 1}. Reply under comment ${record.re}, ${inboxCommentPlace(inboxCommentAnchor(record), root)}${quote ? `: "${quote}"` : ""} (id ${record.id})`, ...words].join("\n");
+    if (isInboxCommentReply(record)) {
+      return [`### ${index + 1}. Reply under comment ${record.re}, ${inboxCommentPlace(inboxCommentAnchor(record), root)}${quote ? `: "${quote}"` : ""} (id ${record.id})`, ...words].join("\n");
+    }
+    const sub = { on: inboxCommentAnchor(record), quote, parent: { id: record.parent!, quote_offset: inboxQuoteOffset(record), ...messages.get(record.parent!) } };
+    const around = inboxSubThreadWords(sub, INBOX_SUB_THREAD_WORDS_SENT);
+    return [`### ${index + 1}. Comment ${inboxCommentThreadPlace(sub, root)}${quote ? `: "${quote}"` : ""} (id ${record.id})`, ...(around ? [`In: "${around}"`] : []), ...words].join("\n");
   });
-  return [`# ${INBOX_COMMENT_REPLIES_TITLE}`, "My replies under comments I sent earlier; each heading names the comment it is under.", ...entries].join("\n\n");
+  const intro = under.some(isInboxSubThread)
+    ? "My replies under comments I sent earlier, and my comments on a passage of one of their messages; each heading names the message it is under."
+    : "My replies under comments I sent earlier; each heading names the comment it is under.";
+  return [`# ${INBOX_COMMENT_REPLIES_TITLE}`, intro, ...entries].join("\n\n");
 }
 
 /**

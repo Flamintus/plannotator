@@ -58,6 +58,7 @@
     "./inbox-reply-draft": "./inbox-reply-draft.ts",
     "./inbox-review": "./inbox-review.ts",
     "./inbox-comment-threads": "./inbox-comment-threads.ts",
+    "./passage": "./passage.ts",
     "./diagram-anchor": "./diagram-anchor.ts",
     "./image-region": "./image-region.ts",
     "./open-in-apps": "./open-in-apps.ts",

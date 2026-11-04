@@ -18,6 +18,9 @@ import {
   inboxCommentsToCarry,
   inboxMovedLines,
   inboxOpenCommentsFeedback,
+  inboxOpenSubThreadPaths,
+  inboxSubThreadAnnotation,
+  inboxCommentMessages,
 } from './inbox-comment-threads';
 
 const agent = (id: string, created_at = '2026-11-04T09:00:00.000Z') => ({ id, author: { kind: 'agent' }, created_at });
@@ -326,5 +329,98 @@ describe('replies under a sent comment', () => {
     expect(inboxCommentReplyText(' \n ')).toBeNull();
     expect(inboxCommentReplyText('x'.repeat(INBOX_COMMENT_REPLY_TEXT_MAX + 1))).toBeNull();
     expect(inboxCommentReplyText(4)).toBeNull();
+  });
+});
+
+describe('sub-threads on a passage of a message of a thread', () => {
+  // Round 1: msg_p1 carries c1; the agent answers under it (rep_a); round 2: msg_p2 carries s1, on a passage of rep_a.
+  const messages = [
+    agent('msg_a1', '2026-11-04T10:00:00.000Z'),
+    person('msg_p1', '2026-11-04T10:01:00.000Z'),
+    agent('msg_a2', '2026-11-04T10:05:00.000Z'),
+    person('msg_p2', '2026-11-04T10:09:00.000Z'),
+  ];
+  const comment = record('c1', { sent_reply_id: 'msg_p1', created_at: '2026-11-04T10:00:30.000Z' });
+  const answer: InboxCommentReplyRecord = {
+    id: 'rep_a',
+    project_id: 'prj_1',
+    thread_id: 'msg_a1',
+    re: 'c1',
+    from: { kind: 'agent', host: 'claude-code', session: 'ses_a', name: 'Claude Code' },
+    message_id: 'msg_a2',
+    text: 'Step 1 tags the release. Step 2 rolls back through the feature-flag off switch. Step 3 pages support.',
+    created_at: '2026-11-04T10:04:00.000Z',
+  };
+  const sub = (id: string, parent: string, quote: string, fields: Partial<InboxAnnotationRecord> = {}) =>
+    record(id, {
+      parent,
+      quote_offset: answer.text.indexOf(quote),
+      annotation: { id, type: 'COMMENT', originalText: quote, text: `on ${quote}`, inReplyTo: parent },
+      ...fields,
+    });
+  const s1 = sub('s1', 'rep_a', 'off switch', { sent_reply_id: 'msg_p2', created_at: '2026-11-04T10:08:00.000Z' });
+
+  test("once sent it is a thread of its own, with its round, its passage, and the message it is on whole", () => {
+    const threads = inboxCommentThreads(messages, [comment, s1], [answer]);
+    expect(threads.map((t) => [t.id, t.round, t.quote])).toEqual([
+      ['c1', 1, 'words of c1'],
+      ['s1', 2, 'off switch'],
+    ]);
+    expect(threads[1]!.parent).toEqual({ id: 'rep_a', quote_offset: answer.text.indexOf('off switch'), kind: 'reply', under: 'c1', author: answer.from, text: answer.text });
+    expect(threads[0]!.parent).toBeUndefined();
+    // A draft is no thread yet.
+    expect(inboxCommentThreads(messages, [comment, sub('s2', 'c1', 'words')], [answer]).map((t) => t.id)).toEqual(['c1']);
+  });
+
+  test('it resolves alone, and a reply under it is its own, not its parent comment\'s', () => {
+    const reply = record('r1', { re: 's1', sent_reply_id: 'msg_p2', created_at: '2026-11-04T10:08:30.000Z', annotation: { id: 'r1', type: 'COMMENT', originalText: 'off switch', text: 'and page me', inReplyTo: 's1' } });
+    const threads = inboxCommentThreads(messages, [{ ...comment, resolved_at: '2026-11-04T10:07:00.000Z' }, s1, reply], [answer]);
+    expect(threads.map((t) => [t.id, t.state, t.replies.map((r) => r.id)])).toEqual([
+      // rep_a was written before the resolution: c1 stays resolved, and s1 is open.
+      ['c1', 'resolved', ['rep_a']],
+      ['s1', 'open', ['r1']],
+    ]);
+  });
+
+  test('an open one keeps every message above it unfolded, up to its first comment; a resolved one keeps none', () => {
+    const s3 = sub('s3', 's1', 'off', { sent_reply_id: 'msg_p2' });
+    const records = [comment, s1, s3];
+    expect([...inboxOpenSubThreadPaths(records, [answer], () => true)].sort()).toEqual(['c1', 'rep_a', 's1']);
+    expect([...inboxOpenSubThreadPaths(records, [answer], (id) => id !== 's3')].sort()).toEqual(['c1', 'rep_a']);
+    expect(inboxOpenSubThreadPaths(records, [answer], () => false).size).toBe(0);
+    // A loop written by a broken writer ends.
+    expect([...inboxOpenSubThreadPaths([sub('x', 'y', 'a'), sub('y', 'x', 'a')], [], () => true)].sort()).toEqual(['x', 'y']);
+  });
+
+  test("its annotation takes its thread's place, the passage as its words, under its parent", () => {
+    const parent = record('c1', { annotation: { id: 'c1', type: 'COMMENT', blockId: 'b3', startOffset: 4, endOffset: 9, originalText: 'Friday', text: 'no', inReplyTo: 'x' } });
+    expect(inboxSubThreadAnnotation(parent, { id: 's9', parent: 'rep_a', quote: 'off switch', text: 'which one?', createdA: 5 })).toEqual({
+      blockId: 'b3', startOffset: 4, endOffset: 9, originalText: 'off switch', id: 's9', type: 'COMMENT', text: 'which one?', createdA: 5, inReplyTo: 'rep_a',
+    });
+  });
+
+  test('a Send carries it under the message it is on, with its passage, the words around it and its own id', () => {
+    const draft = sub('s4', 'rep_a', 'off switch', { created_at: '2026-11-04T10:08:00.000Z' });
+    const reply = record('r2', { re: 'c1', created_at: '2026-11-04T10:07:00.000Z', annotation: { id: 'r2', type: 'COMMENT', originalText: 'words of c1', text: 'thanks' } });
+    const text = inboxCommentRepliesFeedback([draft, reply], '/repo', inboxCommentMessages([comment], [answer]));
+    const lines = text.split('\n');
+    expect(lines.filter((line) => line.startsWith('### '))).toEqual([
+      '### 1. Reply under comment c1, on message msg_a1: "words of c1" (id r2)',
+      '### 2. Comment on a passage of reply rep_a under comment c1 (on message msg_a1): "off switch" (id s4)',
+    ]);
+    expect(lines[lines.indexOf('### 2. Comment on a passage of reply rep_a under comment c1 (on message msg_a1): "off switch" (id s4)') + 1]).toBe(`In: "${answer.text}"`);
+    expect(text).toContain('> on off switch');
+    // Without the messages (a phone's Send), the entry still names its parent and passage.
+    expect(inboxCommentRepliesFeedback([draft], '/repo')).not.toContain('In: ');
+  });
+
+  test('each round sends an open one again with the words its passage is in, even once its parent is resolved', () => {
+    const later = [...messages, { id: 'msg_a3', author: { kind: 'agent', session: 'ses_a' }, created_at: '2026-11-04T10:12:00.000Z' }];
+    const threads = inboxCommentThreads(later, [{ ...comment, resolved_at: '2026-11-04T10:06:00.000Z' }, s1], [answer]);
+    const carried = inboxCommentsToCarry(later, threads, 'ses_a', (m) => (m.author.kind === 'person' ? 'ses_a' : null));
+    expect(carried.map((t) => t.id)).toEqual(['s1']);
+    const text = inboxOpenCommentsFeedback(carried, '/repo');
+    expect(text).toContain('### 1. Round 2, on a passage of reply rep_a under comment c1 (on message msg_a1): "off switch" (id s1)\nIn: "');
+    expect(text).toContain('feature-flag off switch');
   });
 });
