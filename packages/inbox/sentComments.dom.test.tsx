@@ -3,18 +3,22 @@
  * window draws them: the whole window (InboxApp) over a REAL Inbox in a temp
  * data dir (its own process, tests/helpers/inbox-dom-server.ts) started with
  * PLANNOTATOR_EXPERIMENTAL=persistent-comments. What is proved: a comment on
- * an agent's message, once sent, stays highlighted and is listed under the
- * message with its round; a comment on a file, once sent, stays in the file's
- * panel with its round and without edit or delete, and when the agent's edit
- * took its words away the window shows it Unanchored and keeps that in the
- * store; and the person resolves a sent comment, from under the message or
- * from its card, and opens it again: resolved, it leaves the highlights and
- * folds, and the store keeps it; and replies sit under a sent comment, the
- * agent's and the person's (a draft until the next Send), under the message
- * and on the file's card, never painted; and words selected in a sent
- * message of a thread (the agent's reply, a card's words) open a comment on
- * that passage, a sub-thread drawn under that message, its passage marked,
- * and a resolved comment stays in view while a sub-thread under it is open.
+ * an agent's message, once sent, stays highlighted and is drawn as a box
+ * right under the block its passage is in (a list item's inside its list),
+ * with its round, and one whose passage is not drawn at the message's end,
+ * said so; a comment on a file, once sent, stays in the file's panel with
+ * its round and without edit or delete, and a Markdown file draws it as a
+ * box under its block too; when the agent's edit took its words away the
+ * window shows it Unanchored and keeps that in the store; and the person
+ * resolves a sent comment, from its box or from its card, and opens it
+ * again: resolved, it leaves the highlights and folds in place to one
+ * "Resolved" line (a press opens it to be read), and the store keeps it;
+ * and replies sit in a sent comment's box, the agent's and the person's (a
+ * draft until the next Send), and on the file's card, never painted; and
+ * words selected in a sent message of a thread (the agent's reply, a card's
+ * words) open a comment on that passage, a sub-thread drawn as a box under
+ * that message, its passage marked, and a resolved comment stays unfolded
+ * while a sub-thread under it is open, then folds with it.
  * The server side is proved in packages/server/inbox-persistent-comments.test.ts,
  * inbox-comment-replies.test.ts and inbox-comment-subthreads.test.ts.
  *
@@ -92,7 +96,7 @@ beforeAll(async () => {
   mkdirSync(join(dir, 'bin'));
   writeFileSync(join(dir, 'bin', 'tailscale'), '#!/bin/sh\nexit 1\n');
   chmodSync(join(dir, 'bin', 'tailscale'), 0o755);
-  child = Bun.spawn(['bun', SERVER_SCRIPT, join(dir, 'data'), join(dir, 'projects'), '9'], {
+  child = Bun.spawn(['bun', SERVER_SCRIPT, join(dir, 'data'), join(dir, 'projects'), '10'], {
     env: { ...process.env, DOM_TESTS: '0', PLANNOTATOR_DATA_DIR: join(dir, 'data'), PLANNOTATOR_EXPERIMENTAL: 'persistent-comments', HOME: dir, PATH: `${join(dir, 'bin')}:${process.env.PATH}` },
     stdin: 'pipe',
     stdout: 'pipe',
@@ -175,15 +179,18 @@ async function renderApp(hash: string) {
   return host;
 }
 
-/** A comment on selected words, as the window's viewer makes it. */
-function words(id: string, originalText: string, text: string) {
-  return { id, blockId: 'block-1', startOffset: 0, endOffset: originalText.length, type: 'COMMENT', text, originalText, createdA: 1 };
+/** A comment on selected words, as the window's viewer makes it: `blockId`, the block they are in (a message of one paragraph: `block-0`; notes.md's paragraph: `block-1`). */
+function words(id: string, originalText: string, text: string, blockId = 'block-1') {
+  return { id, blockId, startOffset: 0, endOffset: originalText.length, type: 'COMMENT', text, originalText, createdA: 1 };
 }
 
-test.skipIf(!hasDom)("a sent comment on an agent's message stays highlighted, and is listed under the message with its round", async () => {
-  const { sent } = await command<{ sent: string }>({ send: { project: world.project, session: 'ses_sent_msg', body: 'The backoff is now two, four and eight seconds.' } });
-  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('sent-msg-1', 'two, four and eight seconds', 'Cap the total wait.') });
-  await postJson(`/api/inbox/messages/${sent}/reply`, { idempotency_key: 'k-msg', feedback: '# Feedback', annotation_ids: ['sent-msg-1'] });
+test.skipIf(!hasDom)("a sent comment on an agent's message stays highlighted, and is a box right under the block its passage is in, with its round", async () => {
+  // block-0 the paragraph, block-1 and block-2 the list's items, block-3 the last paragraph.
+  const body = 'The backoff is now two, four and eight seconds.\n\n- Retries stop after three.\n- Then it pages the on-call.\n\nThat is all.';
+  const { sent } = await command<{ sent: string }>({ send: { project: world.project, session: 'ses_sent_msg', body } });
+  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('sent-msg-1', 'pages the on-call', 'Cap the total wait.', 'block-2') });
+  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('sent-msg-2', 'two, four and eight seconds', 'Why these?', 'block-0') });
+  await postJson(`/api/inbox/messages/${sent}/reply`, { idempotency_key: 'k-msg', feedback: '# Feedback', annotation_ids: ['sent-msg-1', 'sent-msg-2'] });
 
   const el = await renderApp(`#thread=${sent}`);
   // A message the person answered may open folded: its sent comments are in its body.
@@ -194,9 +201,34 @@ test.skipIf(!hasDom)("a sent comment on an agent's message stays highlighted, an
   await until(() => row() !== null, 'the sent comment under the message');
   expect(row()!.querySelector('[data-sent-round="1"]')).not.toBeNull();
   expect(row()!.textContent).toContain('Cap the total wait.');
+  expect(row()!.querySelector('.ib-sentb-head')!.textContent).toContain('pages the on-call');
+  // In the flow: right after the list item it is on, inside the list, before the next item; the other under the first paragraph.
+  const slot = row()!.closest<HTMLElement>('[data-viewer-below-block]')!;
+  expect(slot.dataset.belowBlock).toBe('block-2');
+  expect(slot.previousElementSibling!.textContent).toContain('Then it pages the on-call.');
+  expect(slot.parentElement!.hasAttribute('data-pinpoint-group')).toBe(true);
+  const first = el.querySelector<HTMLElement>('[data-sent-comment="sent-msg-2"]')!.closest<HTMLElement>('[data-viewer-below-block]')!;
+  expect(first.previousElementSibling!.textContent).toBe('The backoff is now two, four and eight seconds.');
+  expect(first.nextElementSibling!.hasAttribute('data-pinpoint-group')).toBe(true);
+  expect(el.querySelector(`[data-message-id="${sent}"] [data-sent-lost]`)).toBeNull();
   await until(() => el.querySelector(`[data-message-id="${sent}"] [data-bind-id="sent-msg-1"], [data-message-id="${sent}"] [data-highlight-id="sent-msg-1"]`) !== null, "the sent comment's highlight");
   // Its words are there: nothing to keep.
   expect(posted.some((p) => p.path.includes('/unanchored'))).toBe(false);
+}, 30_000);
+
+test.skipIf(!hasDom)("a sent comment whose passage is not drawn in the message is at the message's end, said so", async () => {
+  const { sent } = await command<{ sent: string }>({ send: { project: world.project, session: 'ses_lost_msg', body: 'Deploys run at night.' } });
+  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('lost-msg-1', 'at night', 'Who watches?', 'block-7') });
+  await postJson(`/api/inbox/messages/${sent}/reply`, { idempotency_key: 'k-lost', feedback: '# Feedback', annotation_ids: ['lost-msg-1'] });
+
+  const el = await renderApp(`#thread=${sent}`);
+  await until(() => el.querySelector(`[data-message-article="${sent}"]`) !== null, 'the thread');
+  const article = el.querySelector<HTMLElement>(`[data-message-article="${sent}"]`)!;
+  if (article.hasAttribute('data-folded')) act(() => article.querySelector<HTMLButtonElement>('[data-fold-head]')!.click());
+  const lost = () => el.querySelector<HTMLElement>(`[data-message-id="${sent}"] [data-sent-lost]`);
+  await until(() => lost()?.querySelector('[data-sent-comment="lost-msg-1"]') != null, 'the comment at the end');
+  expect(lost()!.closest('[data-viewer-below-block]')).toBeNull();
+  expect(lost()!.querySelector('.ib-sentb-lost')).not.toBeNull();
 }, 30_000);
 
 test.skipIf(!hasDom)("a sent comment on a file stays in its panel with its round, read-only, and is kept Unanchored once the agent's edit took its words away", async () => {
@@ -226,27 +258,32 @@ async function storedRecord(threadId: string, id: string): Promise<InboxAnnotati
   return model.sent_comments.find((r) => r.id === id);
 }
 
-test.skipIf(!hasDom)("resolved under the message, a sent comment leaves its words and waits behind \"1 resolved\"; Reopen brings it back", async () => {
+test.skipIf(!hasDom)('resolved from its box, a sent comment leaves its words and folds in place to one "Resolved" line; a press opens it to be read, Reopen brings it back', async () => {
   const { sent } = await command<{ sent: string }>({ send: { project: world.project, session: 'ses_resolve_msg', body: 'Retries now back off for a minute at most.' } });
-  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('res-msg-1', 'a minute at most', 'Why a minute?') });
+  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('res-msg-1', 'a minute at most', 'Why a minute?', 'block-0') });
   await postJson(`/api/inbox/messages/${sent}/reply`, { idempotency_key: 'k-res-msg', feedback: '# Feedback', annotation_ids: ['res-msg-1'] });
 
   const el = await renderApp(`#thread=${sent}`);
   await until(() => el.querySelector(`[data-message-article="${sent}"]`) !== null, 'the thread');
   const article = el.querySelector<HTMLElement>(`[data-message-article="${sent}"]`)!;
   if (article.hasAttribute('data-folded')) act(() => article.querySelector<HTMLButtonElement>('[data-fold-head]')!.click());
-  const row = () => el.querySelector(`[data-sent-comments] [data-sent-comment="res-msg-1"]`);
+  const row = () => el.querySelector<HTMLElement>(`[data-sent-comments] [data-sent-comment="res-msg-1"]`);
   const highlight = () => el.querySelector(`[data-message-id="${sent}"] [data-bind-id="res-msg-1"], [data-message-id="${sent}"] [data-highlight-id="res-msg-1"]`);
   await until(() => row() !== null && highlight() !== null, 'the sent comment and its highlight');
 
   act(() => row()!.querySelector<HTMLButtonElement>('[data-sent-resolve]')!.click());
-  await until(() => row() === null && highlight() === null, 'the resolved comment folded away');
-  const toggle = el.querySelector<HTMLButtonElement>('[data-sent-comments] [data-sent-resolved-toggle]')!;
-  expect(toggle.textContent).toBe('1 resolved');
+  await until(() => row()?.hasAttribute('data-sent-folded') === true && highlight() === null, 'the resolved comment folded, its highlight gone');
+  // Folded in place, under its paragraph: one line, its words and buttons out of view.
+  expect(row()!.closest('[data-viewer-below-block]')).not.toBeNull();
+  expect(row()!.textContent).toContain('Resolved');
+  expect(row()!.textContent).not.toContain('Why a minute?');
+  expect(row()!.querySelector('[data-sent-resolve]')).toBeNull();
   expect(typeof (await storedRecord(sent, 'res-msg-1'))?.resolved_at).toBe('string');
 
-  act(() => toggle.click());
-  await until(() => row()?.hasAttribute('data-sent-resolved') === true, 'the resolved row shown');
+  act(() => row()!.querySelector<HTMLButtonElement>('[data-sent-unfold]')!.click());
+  await until(() => row()?.hasAttribute('data-sent-folded') === false, 'the resolved comment opened to be read');
+  expect(row()!.hasAttribute('data-sent-resolved')).toBe(true);
+  expect(row()!.textContent).toContain('Why a minute?');
   expect(row()!.querySelector('[data-sent-resolve]')!.textContent).toBe('Reopen');
   act(() => row()!.querySelector<HTMLButtonElement>('[data-sent-resolve]')!.click());
   await until(() => highlight() !== null && row()?.hasAttribute('data-sent-resolved') === false, 'the comment open again, highlighted');
@@ -262,12 +299,19 @@ test.skipIf(!hasDom)('resolved from its card, a sent comment on a file folds to 
   const highlight = () => document.querySelector('[data-bind-id="res-file-1"], [data-highlight-id="res-file-1"]');
   await until(() => card() !== null && highlight() !== null, 'the sent card and its highlight');
   expect(card()!.textContent).toContain('Say more.');
+  // In the document too: a box right under the paragraph it is on.
+  const box = () => document.querySelector<HTMLElement>('.ib-docscroll [data-below-block="block-1"] [data-sent-comment="res-file-1"]');
+  await until(() => box() !== null, 'the box under its paragraph');
+  expect(box()!.closest('[data-viewer-below-block]')!.previousElementSibling!.textContent).toBe('The plan, in short.');
+  expect(box()!.textContent).toContain('Say more.');
 
   act(() => card()!.querySelector<HTMLButtonElement>('[data-sent-resolve]')!.click());
   await until(() => card()?.querySelector('[data-sent-resolved]') != null, 'the Resolved chip');
   expect(card()!.textContent).not.toContain('Say more.');
   expect(card()!.querySelector('[data-sent-resolve]')!.textContent).toBe('Reopen');
   await until(() => highlight() === null, 'the highlight gone');
+  // The box in the document folds with it, in place.
+  await until(() => box()?.hasAttribute('data-sent-folded') === true, 'the box folded');
   expect(typeof (await storedRecord(world.filed, 'res-file-1'))?.resolved_at).toBe('string');
 
   act(() => card()!.querySelector<HTMLButtonElement>('[data-sent-resolve]')!.click());
@@ -284,7 +328,7 @@ async function type(el: HTMLTextAreaElement, value: string) {
 
 test.skipIf(!hasDom)("under the message, the agent's reply sits under its comment, and the person's Reply saves a draft there for the next Send", async () => {
   const { sent } = await command<{ sent: string }>({ send: { project: world.project, session: 'ses_reply_msg', body: 'Deploys now run at night.' } });
-  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('rep-msg-1', 'at night', 'Who watches it?') });
+  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('rep-msg-1', 'at night', 'Who watches it?', 'block-0') });
   await postJson(`/api/inbox/messages/${sent}/reply`, { idempotency_key: 'k-rep-msg', feedback: '# Feedback', annotation_ids: ['rep-msg-1'] });
   const { replied } = await command<{ replied: string }>({ commentReply: { comment: 'rep-msg-1', session: 'ses_reply_msg', text: 'The on-call person, paged.' } });
 
@@ -366,7 +410,7 @@ const STEPS = 'Step 1 tags the release. Step 2 rolls back through the off switch
 
 test.skipIf(!hasDom)("under the message, words selected in the agent's reply open a comment on that passage, a draft under the reply with its passage marked", async () => {
   const { sent } = await command<{ sent: string }>({ send: { project: world.project, session: 'ses_sub_msg', body: 'Deploys roll out to every store.' } });
-  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('sub-msg-1', 'every store', 'How do we roll back?') });
+  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('sub-msg-1', 'every store', 'How do we roll back?', 'block-0') });
   await postJson(`/api/inbox/messages/${sent}/reply`, { idempotency_key: 'k-sub-msg', feedback: '# Feedback', annotation_ids: ['sub-msg-1'] });
   const { replied } = await command<{ replied: string }>({ commentReply: { comment: 'sub-msg-1', session: 'ses_sub_msg', text: STEPS } });
 
@@ -412,9 +456,9 @@ test.skipIf(!hasDom)("under the message, words selected in the agent's reply ope
   expect(feedback).toContain(`(id ${model.annotations[0]!.id})`);
 }, 30_000);
 
-test.skipIf(!hasDom)('a resolved comment stays in view, Reopen and all, while a sub-thread under it is open; resolving that one too folds both', async () => {
+test.skipIf(!hasDom)('a resolved comment stays unfolded, marked Resolved, while a sub-thread under it is open; resolving that one too folds both', async () => {
   const { sent } = await command<{ sent: string }>({ send: { project: world.project, session: 'ses_sub_res', body: 'Deploys roll out to every store.' } });
-  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('sub-res-1', 'every store', 'How do we roll back?') });
+  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('sub-res-1', 'every store', 'How do we roll back?', 'block-0') });
   await postJson(`/api/inbox/messages/${sent}/reply`, { idempotency_key: 'k-sub-res', feedback: '# Feedback', annotation_ids: ['sub-res-1'] });
   const { replied } = await command<{ replied: string }>({ commentReply: { comment: 'sub-res-1', session: 'ses_sub_res', text: STEPS } });
   await postJson(`/api/inbox/annotations/${replied}/subthreads`, { annotation: { id: 'sub-res-s', text: 'Which off switch?', quote: 'off switch', quote_offset: STEPS.indexOf('off switch') } });
@@ -432,23 +476,26 @@ test.skipIf(!hasDom)('a resolved comment stays in view, Reopen and all, while a 
 
   act(() => row()!.querySelector<HTMLButtonElement>('[data-sent-resolve="sub-res-1"]')!.click());
   await until(() => row()?.hasAttribute('data-sent-resolved') === true, 'the comment resolved');
-  // Still in view: its words, its reply, its open sub-thread, and Reopen; nothing behind "resolved".
+  // Unfolded, marked Resolved: its words, its reply, its open sub-thread (a box in its box), and Reopen.
+  expect(row()!.hasAttribute('data-sent-folded')).toBe(false);
+  expect(row()!.querySelector('[data-sent-resolved-chip]')).not.toBeNull();
   expect(row()!.textContent).toContain('How do we roll back?');
-  expect(sub()).not.toBeNull();
+  expect(row()!.contains(sub())).toBe(true);
+  expect(sub()!.parentElement!.closest('[data-sent-reply]')).not.toBeNull();
   expect(row()!.querySelector('[data-sent-resolve="sub-res-1"]')!.textContent).toBe('Reopen');
-  expect(el.querySelector('[data-sent-comments] [data-sent-resolved-toggle]')).toBeNull();
 
   act(() => sub()!.querySelector<HTMLButtonElement>('[data-sent-resolve="sub-res-s"]')!.click());
-  await until(() => row() === null, 'both folded away');
-  expect(el.querySelector('[data-sent-comments] [data-sent-resolved-toggle]')!.textContent).toBe('1 resolved');
+  await until(() => row()?.hasAttribute('data-sent-folded') === true, 'both folded');
+  expect(sub()).toBeNull();
+  expect(row()!.textContent).toContain('1 sub-thread');
   expect(typeof (await storedRecord(sent, 'sub-res-s'))?.resolved_at).toBe('string');
 
-  // Folded, the comment keeps its Reply: a reply under it opens it again.
-  act(() => el.querySelector<HTMLButtonElement>('[data-sent-comments] [data-sent-resolved-toggle]')!.click());
-  await until(() => row() !== null, 'the resolved row shown');
+  // Opened to be read, the sub-thread is folded too; the comment keeps its Reply: a reply under it opens it again.
+  act(() => row()!.querySelector<HTMLButtonElement>('[data-sent-unfold="sub-res-1"]')!.click());
+  await until(() => sub()?.hasAttribute('data-sent-folded') === true, 'the sub-thread folded inside');
   act(() => row()!.querySelector<HTMLButtonElement>('[data-sent-reply-to="sub-res-1"]')!.click());
   const area = () => el.querySelector<HTMLTextAreaElement>('[data-sent-replies="sub-res-1"] textarea');
-  await until(() => area() !== null, 'the box under the folded comment');
+  await until(() => area() !== null, 'the box under the resolved comment');
   await type(area()!, 'One more thing.');
   await act(async () => {
     el.querySelector<HTMLButtonElement>('[data-sent-replies="sub-res-1"] [data-sent-reply-save]')!.click();
