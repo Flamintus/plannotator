@@ -40,7 +40,7 @@
 
 import { INBOX_MESSAGE_COMMENT_TEXT_MAX, readInboxVideoTime, type InboxAnnotationRecord, type InboxCommentReplyRecord } from "./inbox-attachments";
 import { formatInboxVideoTime } from "./inbox-types";
-import { passageContext } from "./passage";
+import { passageWindow } from "./passage";
 import { ulid } from "./ulid";
 
 /** Where a sent comment is. */
@@ -471,11 +471,19 @@ export function inboxCommentThreadPlace(thread: Pick<InboxCommentThread, "on" | 
   return thread.parent ? `on a passage of ${messageName(thread.parent)} (${place})` : place;
 }
 
-/** A sub-thread's passage in the words around it, as an agent reads it: about `max` characters, `…` where cut. */
-export function inboxSubThreadWords(thread: Pick<InboxCommentThread, "parent" | "quote">, max: number): string | null {
+/**
+ * A sub-thread's passage in the words around it, as an agent reads it: about
+ * `max` characters, `…` where cut, and where the passage starts in them.
+ */
+export function inboxSubThreadWindow(thread: Pick<InboxCommentThread, "parent" | "quote">, max: number): { text: string; offset: number } | null {
   const parent = thread.parent;
   if (!parent || parent.text === undefined) return null;
-  return passageContext(parent.text, { quote: thread.quote, offset: parent.quote_offset }, max);
+  return passageWindow(parent.text, { quote: thread.quote, offset: parent.quote_offset }, max);
+}
+
+/** `inboxSubThreadWindow`'s words alone. */
+export function inboxSubThreadWords(thread: Pick<InboxCommentThread, "parent" | "quote">, max: number): string | null {
+  return inboxSubThreadWindow(thread, max)?.text ?? null;
 }
 
 /** The most of a passage's surrounding words a feedback entry carries, in characters. */

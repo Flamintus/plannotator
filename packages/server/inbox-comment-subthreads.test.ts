@@ -139,6 +139,10 @@ test("on a passage of the agent's reply: a draft in its thread's place, under th
   // Refused: on a draft (its own, here), on nothing, with no passage or no place for it, or an id another comment has.
   expect(await answer(await post(server, "/api/inbox/annotations/s1/subthreads", onPassage("s2", "Which off switch?", "off", "?")))).toEqual([409, "annotation_not_sent"]);
   expect(await answer(await post(server, "/api/inbox/annotations/c-none/subthreads", onPassage("s3", STEPS, "Step", "?")))).toEqual([404, "annotation_not_found"]);
+  // A draft reply the person removed is drawn nowhere: no message to comment on.
+  expect((await post(server, "/api/inbox/annotations/c-msg/replies", { annotation: { id: "r-gone", text: "Never mind." } })).status).toBe(200);
+  expect((await post(server, "/api/inbox/annotations/r-gone/remove", {})).status).toBe(200);
+  expect(await answer(await post(server, "/api/inbox/annotations/r-gone/subthreads", onPassage("s6", "Never mind.", "mind", "?")))).toEqual([404, "annotation_not_found"]);
   expect((await post(server, `/api/inbox/annotations/${steps}/subthreads`, { annotation: { id: "s4", text: "?", quote: " ", quote_offset: 0 } })).status).toBe(422);
   expect((await post(server, `/api/inbox/annotations/${steps}/subthreads`, { annotation: { id: "s5", text: "?", quote: "Step", quote_offset: -1 } })).status).toBe(422);
   expect((await post(server, "/api/inbox/annotations/c-file/subthreads", onPassage("s1", "Not on a Friday.", "Friday", "?"))).status).toBe(422);

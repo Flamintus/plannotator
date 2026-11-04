@@ -399,6 +399,17 @@ test.skipIf(!hasDom)("under the message, words selected in the agent's reply ope
   expect(model.annotations.map((r) => [r.parent, r.quote_offset, r.annotation.originalText, r.sent_reply_id])).toEqual([[replied, STEPS.indexOf('off switch'), 'off switch', null]]);
   // Its place is its thread's: nothing new painted on the message.
   expect(el.querySelectorAll(`[data-message-id="${sent}"] [data-bind-id="${model.annotations[0]!.id}"], [data-message-id="${sent}"] [data-highlight-id="${model.annotations[0]!.id}"]`)).toHaveLength(0);
+
+  // The window's Send carries it with the words its passage is in, under its own id.
+  const send = () => [...el.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.replace(/\s+/g, ' ').trim() === 'Send');
+  if (!send()) act(() => el.querySelector<HTMLButtonElement>('[data-reply-button]')!.click());
+  await until(() => send() !== undefined, 'the Send button');
+  act(() => send()!.click());
+  await until(() => posted.some((p) => p.path.endsWith('/reply')), 'the Send');
+  const feedback = String(posted.find((p) => p.path.endsWith('/reply'))!.body.feedback);
+  expect(feedback).toContain(`Comment on a passage of reply ${replied} under comment sub-msg-1`);
+  expect(feedback).toContain(`In: "${STEPS}"`);
+  expect(feedback).toContain(`(id ${model.annotations[0]!.id})`);
 }, 30_000);
 
 test.skipIf(!hasDom)('a resolved comment stays in view, Reopen and all, while a sub-thread under it is open; resolving that one too folds both', async () => {
@@ -431,6 +442,18 @@ test.skipIf(!hasDom)('a resolved comment stays in view, Reopen and all, while a 
   await until(() => row() === null, 'both folded away');
   expect(el.querySelector('[data-sent-comments] [data-sent-resolved-toggle]')!.textContent).toBe('1 resolved');
   expect(typeof (await storedRecord(sent, 'sub-res-s'))?.resolved_at).toBe('string');
+
+  // Folded, the comment keeps its Reply: a reply under it opens it again.
+  act(() => el.querySelector<HTMLButtonElement>('[data-sent-comments] [data-sent-resolved-toggle]')!.click());
+  await until(() => row() !== null, 'the resolved row shown');
+  act(() => row()!.querySelector<HTMLButtonElement>('[data-sent-reply-to="sub-res-1"]')!.click());
+  const area = () => el.querySelector<HTMLTextAreaElement>('[data-sent-replies="sub-res-1"] textarea');
+  await until(() => area() !== null, 'the box under the folded comment');
+  await type(area()!, 'One more thing.');
+  await act(async () => {
+    el.querySelector<HTMLButtonElement>('[data-sent-replies="sub-res-1"] [data-sent-reply-save]')!.click();
+  });
+  await until(() => row() !== null && !row()!.hasAttribute('data-sent-resolved'), 'the comment open again');
 }, 30_000);
 
 test.skipIf(!hasDom)("on a file, words selected in a sent card open a comment on that passage, a draft card under it", async () => {

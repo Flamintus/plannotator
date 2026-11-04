@@ -5093,7 +5093,8 @@ export class InboxStore {
    */
   saveSubThread(parentId: string, input: { id?: unknown; text?: unknown; mentions?: unknown; quote?: unknown; quote_offset?: unknown }): InboxAnnotationRecord {
     const named = this.annotations.get(parentId);
-    if (named && named.sent_reply_id === null && named.removed_at === null) {
+    if (named?.removed_at) throw new InboxError("annotation_not_found", `No comment ${parentId}.`);
+    if (named && named.sent_reply_id === null) {
       throw new InboxError("annotation_not_sent", `${parentId} is a draft: a passage is commented on once it is sent.`);
     }
     // The comment or sub-thread the parent is, or is a reply under: the new sub-thread lives where it does.

@@ -514,16 +514,19 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
     }
   }, [selectedId]);
 
+  // A selection let go that holds one card's words offers to comment on that passage; let go anywhere, since a drag
+  // past a card's last line ends outside the list.
+  useEffect(() => {
+    if (!canCommentPassage || !isOpen) return;
+    const doc = listRef.current?.ownerDocument ?? document;
+    const offer = () => setPassageOffer(listRef.current ? selectedPassage(listRef.current) : null);
+    doc.addEventListener('mouseup', offer);
+    return () => doc.removeEventListener('mouseup', offer);
+  }, [canCommentPassage, isOpen]);
+
   if (!isOpen) return null;
 
   const startReply = (parentId: string) => setReplyDraft((draft) => ({ parentId, text: draft?.text ?? '', opened: (draft?.opened ?? 0) + 1 }));
-  // A selection that ends inside one card's text offers to comment on that passage.
-  const offerPassage = canCommentPassage
-    ? () => {
-        const passage = listRef.current ? selectedPassage(listRef.current) : null;
-        setPassageOffer(passage);
-      }
-    : undefined;
   const commentOnPassage = (passage: SelectedPassage, initialChar?: string) => {
     setPassageOffer(null);
     // The words are quoted in the box now; the selection would stand over them.
@@ -676,7 +679,7 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
 
       {/* List */}
       <OverlayScrollArea className="flex-1 min-h-0">
-        <div ref={listRef} className="p-2 flex flex-col gap-1.5" onMouseUp={offerPassage}>
+        <div ref={listRef} className="p-2 flex flex-col gap-1.5">
         {directEdits?.map((item) => (
           <DirectEditsCard key={item.id} {...item} onDiscard={readOnly ? undefined : item.onDiscard} />
         ))}

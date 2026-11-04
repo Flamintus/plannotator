@@ -75,18 +75,27 @@ export function findPassage(text: string, passage: TextPassage): [number, number
 /**
  * `text` cut to about `max` characters around its passage, with `…` where it
  * was cut, whitespace runs read as one: what an agent reads of the words a
- * passage is in. The text from its start when the passage is not found.
+ * passage is in, and where the passage starts in that cut (its offset there).
+ * The text from its start when the passage is not found.
  */
-export function passageContext(text: string, passage: TextPassage, max: number): string {
+export function passageWindow(text: string, passage: TextPassage, max: number): { text: string; offset: number } {
   const flat = passageQuote(text);
-  if (flat.length <= max) return flat;
   const quote = passageQuote(passage.quote);
   const found = findPassage(flat, { quote, offset: passage.offset });
   const start = found ? found[0] : 0;
+  if (flat.length <= max) return { text: flat, offset: start };
   const end = found ? found[1] : 0;
   const room = Math.max(0, max - (end - start));
   let from = Math.max(0, start - Math.floor(room / 2));
   const to = Math.min(flat.length, Math.max(end, from + max));
   from = Math.max(0, Math.min(from, to - max));
-  return `${from > 0 ? '…' : ''}${flat.slice(from, to).trim()}${to < flat.length ? '…' : ''}`;
+  const piece = flat.slice(from, to);
+  const lead = piece.length - piece.trimStart().length;
+  const cut = from > 0 ? '…' : '';
+  return { text: `${cut}${piece.trim()}${to < flat.length ? '…' : ''}`, offset: cut.length + Math.max(0, start - from - lead) };
+}
+
+/** `passageWindow`'s words alone. */
+export function passageContext(text: string, passage: TextPassage, max: number): string {
+  return passageWindow(text, passage, max).text;
 }

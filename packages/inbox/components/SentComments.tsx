@@ -446,7 +446,7 @@ export function useSentFileComments(input: {
     reportUnanchored,
     onReply: replyAt,
     onCommentPassage,
-    cardPassages: onCommentPassage ? cardPassages : undefined,
+    cardPassages: sentIds.size > 0 ? cardPassages : undefined,
   };
 }
 
@@ -510,6 +510,16 @@ export function SentComments({
   const [offer, setOffer] = useState<SelectedPassage | null>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const closeOffer = useCallback(() => setOffer(null), []);
+  // A selection let go that holds one sent message's words offers to comment on that passage; let go anywhere, since a
+  // drag past the last line ends outside the list.
+  const offering = !!onSubThread && records.length > 0;
+  useEffect(() => {
+    if (!offering) return;
+    const doc = listRef.current?.ownerDocument ?? document;
+    const offerPassage = () => setOffer(listRef.current ? selectedPassage(listRef.current) : null);
+    doc.addEventListener('mouseup', offerPassage);
+    return () => doc.removeEventListener('mouseup', offerPassage);
+  }, [offering]);
   if (records.length === 0) return null;
   const folded = (id: string) => resolved.has(id) && !openBelow.has(id);
   const shown = records.filter((record) => !folded(record.id));
@@ -549,7 +559,8 @@ export function SentComments({
     const isResolved = resolved.has(record.id);
     const closed = folded(record.id);
     const under = closed ? [] : (replies.get(record.id) ?? []);
-    const replyBox = closed ? null : boxFor(record.id, false);
+    // A folded row keeps its Reply: a reply under a resolved comment opens it again.
+    const replyBox = boxFor(record.id, false);
     const isSub = isInboxSubThread(record);
     return (
       <li key={record.id} className="ib-sentc-item" data-sent-comment={record.id} data-sent-subthread={isSub ? '' : undefined} data-sent-resolved={isResolved || isResolvedRow ? '' : undefined}>
@@ -558,9 +569,9 @@ export function SentComments({
             {draft ? <span className="ib-sentc-chip">Not sent</span> : round !== undefined && <span className="ib-sentc-chip" data-sent-round={round}>Round {round}</span>}
             {typeof record.unanchored_at === 'string' && <span className="ib-sentc-chip" data-sent-unanchored="">Unanchored</span>}
             <span className="ib-sentc-quote">“{shortLabel(annotationQuote(annotation))}”</span>
-            {closed && <span className="ib-sentc-text">{annotation.text}</span>}
+            {(closed || !onSubThread) && <span className="ib-sentc-text">{annotation.text}</span>}
           </button>
-          {onReply && !draft && !closed && (
+          {onReply && !draft && (
             <button
               type="button"
               className="ib-sentc-act"
@@ -577,7 +588,8 @@ export function SentComments({
             </button>
           )}
         </div>
-        {!closed && <Said text={annotation.text ?? ''} bodyOf={draft || !onSubThread ? undefined : record.id} passages={passages.get(record.id)} />}
+        {/* Its words whole, where a passage of them can be selected (a live thread of this machine). */}
+        {!closed && onSubThread && <Said text={annotation.text ?? ''} bodyOf={draft ? undefined : record.id} passages={passages.get(record.id)} />}
         {!closed && subThreadsOf(record.id, root)}
         {(under.length > 0 || replyBox) && (
           <div className="ib-sentc-thread" data-sent-replies={record.id}>
@@ -599,8 +611,6 @@ export function SentComments({
       </li>
     );
   };
-  // A selection that ends inside one sent message's words offers to comment on that passage.
-  const offerPassage = onSubThread ? () => setOffer(listRef.current ? selectedPassage(listRef.current) : null) : undefined;
   const commentOn = (passage: SelectedPassage, initialChar?: string) => {
     setOffer(null);
     listRef.current?.ownerDocument.getSelection()?.removeAllRanges();
@@ -608,7 +618,7 @@ export function SentComments({
   };
   return (
     <>
-      <ul ref={listRef} className="ib-sentc" data-sent-comments="" aria-label="Comments you sent" onMouseUp={offerPassage}>
+      <ul ref={listRef} className="ib-sentc" data-sent-comments="" aria-label="Comments you sent">
         {shown.map((record) => thread(record, false))}
         {resolvedRows.length > 0 && (
           <li>

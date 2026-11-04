@@ -28,7 +28,7 @@ import {
   inboxCommentReplyText,
   inboxCommentThreadPlace,
   inboxCommentThreads,
-  inboxSubThreadWords,
+  inboxSubThreadWindow,
   type InboxCommentReply,
   type InboxCommentThread,
 } from "@plannotator/core/inbox-comment-threads";
@@ -54,14 +54,14 @@ export function threadComments(store: InboxStore, threadId: string, replies: Rea
   const comments = all
     .filter((comment) => replies === null || replies.has(comment.reply_id) || comment.unanchored || comment.replies.some((reply) => replies.has(reply.message_id)))
     .map((comment) => {
-      // A sub-thread's parent: the words around the passage (computed before the quote is clipped).
-      const around = inboxSubThreadWords(comment, INBOX_COMMENT_TEXT_CHARS);
+      // A sub-thread's parent: the words around the passage and its offset there (computed before the quote is clipped).
+      const around = inboxSubThreadWindow(comment, INBOX_COMMENT_TEXT_CHARS);
       return {
         ...comment,
         quote: clip(comment.quote, INBOX_COMMENT_QUOTE_CHARS),
         text: clip(comment.text, INBOX_COMMENT_TEXT_CHARS),
         replies: comment.replies.map((reply) => ({ ...reply, text: clip(reply.text, INBOX_COMMENT_TEXT_CHARS) })),
-        ...(comment.parent ? { parent: { ...comment.parent, ...(around !== null ? { text: around } : {}) } } : {}),
+        ...(comment.parent ? { parent: { ...comment.parent, ...(around !== null ? { text: around.text, quote_offset: around.offset } : {}) } } : {}),
       };
     });
   return { comments, elsewhere: all.length - comments.length };

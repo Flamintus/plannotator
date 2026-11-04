@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { findPassage, passageContext, passageOffset } from './passage';
+import { findPassage, passageContext, passageOffset, passageWindow } from './passage';
 
 describe('a passage of words as drawn', () => {
   const words = 'Step 2 rolls back.\n\n  Step 3 rolls back too, by the off switch.';
@@ -33,5 +33,12 @@ describe('a passage of words as drawn', () => {
     expect(around.startsWith('…') && around.endsWith('…')).toBe(true);
     expect(around.length).toBeLessThanOrEqual(62);
     expect(passageContext('Short words.\n', { quote: 'words', offset: 6 }, 60)).toBe('Short words.');
+  });
+
+  test('the cut says where the passage starts in it, so a reader of the cut finds it there', () => {
+    const long = `${'a '.repeat(200)}the off switch ${'b '.repeat(200)}`;
+    const cut = passageWindow(long, { quote: 'off switch', offset: passageOffset(long, long.indexOf('off')) }, 60);
+    expect(cut.text.slice(cut.offset).startsWith('off switch')).toBe(true);
+    expect(passageWindow('  Short  words.', { quote: 'words', offset: 6 }, 60)).toEqual({ text: 'Short words.', offset: 6 });
   });
 });

@@ -7698,7 +7698,7 @@ dialog.ib-zx .ib-listcol.ib-zx-list { position: relative; inset: auto; visibilit
 .ib-sentc-item { display: grid; min-width: 0; }
 .ib-sentc-head { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .ib-sentc-head .ib-sentc-row { flex: 1; min-width: 0; }
-.ib-sentc-item[data-sent-resolved] .ib-sentc-row { color: var(--muted-foreground); }
+.ib-sentc-item[data-sent-resolved] > .ib-sentc-head > .ib-sentc-row { color: var(--muted-foreground); }
 .ib-sentc-act, .ib-sentc-more { flex: none; padding: 2px 6px; border-radius: 6px; background: none; border: 0; color: var(--muted-foreground); font: inherit; font-size: 0.8em; cursor: pointer; }
 .ib-sentc-act:hover, .ib-sentc-act:focus-visible, .ib-sentc-more:hover, .ib-sentc-more:focus-visible { background: var(--muted); color: var(--foreground); }
 /* Replies under a sent comment, the agent's and the person's (a draft says Not sent), and the box Reply opens. */
@@ -7712,7 +7712,7 @@ dialog.ib-zx .ib-listcol.ib-zx-list { position: relative; inset: auto; visibilit
 .ib-sentc-reply > .ib-sentc-said { flex: 1 1 12em; }
 /* Sub-threads: the comments on a passage of a message, under it, at the same indent at each level; the passage of an
    open one is marked in the message's words. */
-.ib-sentc-reply > .ib-sentc-thread { flex-basis: 100%; }
+.ib-sentc-reply > .ib-sentc-thread { flex-basis: 100%; font-size: calc(1em / 0.9); }
 .ib-sentc-mark { background: color-mix(in oklab, var(--primary) 18%, transparent); color: inherit; border-radius: 2px; }
 .ib-sentc-boxquote { margin: 0; font-size: 0.85em; color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ib-sentc-box { display: grid; gap: 4px; padding: 4px 6px; }
