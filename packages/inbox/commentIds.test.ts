@@ -70,6 +70,14 @@ describe('comment ids in what a Send carries', () => {
     expect(headingOf(text, 'ann-diff')).toBe('### Line 12 (new) (id ann-diff)');
   });
 
+  test("a global comment on a guided review has no heading: its id ends the comment's text", () => {
+    const comment: CodeAnnotation = { id: 'ann-global', type: 'comment', scope: 'general', filePath: '', lineStart: 0, lineEnd: 0, side: 'new', text: 'Split the retry into its own PR.', createdAt: 1 };
+    const global = record('ann-global', { path: '', version: 'f'.repeat(64), guide: { title: 'Retry', file: '', side: 'new', line_start: 0, line_end: 0 } }, comment as unknown as Record<string, unknown>);
+    const text = send([global, onDiff('ann-diff', 12)]);
+    expect(text.split('\n')).toContain('Split the retry into its own PR. (id ann-global)');
+    expect(headingOf(text, 'ann-diff')).toBe('### Line 12 (new) (id ann-diff)');
+  });
+
   test('words on several lines keep their fence; the id ends the heading above it', () => {
     const text = send([onWords('ann-across', 'Ship it.\n\nThen tag it.')]);
     expect(text).toContain('### 1. Feedback on: (id ann-across)\n```\nShip it.\n\nThen tag it.\n```\n');
