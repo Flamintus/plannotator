@@ -76,14 +76,14 @@ describe("the gate", () => {
     expect(res.status).toBe(404);
     expect(((await res.json()) as { code: string }).code).toBe("not_found");
     const settings = (await (await fetch(`${base(server)}/api/inbox/settings`)).json()) as { experimental: unknown };
-    expect(settings.experimental).toEqual({ decision_mode: { on: false, env: null } });
+    expect(settings.experimental).toMatchObject({ decision_mode: { on: false, env: null } });
   });
 
   test("Settings turns it on and off, applied at once, and refuses a bad body", async () => {
     const { server } = await setup();
     const on = await post(server, "/api/inbox/settings", { experimental: { decision_mode: true } });
     expect(on.status).toBe(200);
-    expect(((await on.json()) as { experimental: unknown }).experimental).toEqual({ decision_mode: { on: true, env: null } });
+    expect(((await on.json()) as { experimental: unknown }).experimental).toMatchObject({ decision_mode: { on: true, env: null } });
     expect((await fetch(`${base(server)}/api/inbox/decisions`)).status).toBe(200);
     for (const bad of [true, { decision_mode: "yes" }, { decision_mode: true, other: true }, []]) {
       const refused = await post(server, "/api/inbox/settings", { experimental: bad });
@@ -118,7 +118,7 @@ describe("the gate", () => {
     process.env.PLANNOTATOR_EXPERIMENTAL = "other-thing, -decision-mode";
     expect((await fetch(`${base(server)}/api/inbox/decisions`)).status).toBe(404);
     const settings = (await (await fetch(`${base(server)}/api/inbox/settings`)).json()) as { experimental: unknown };
-    expect(settings.experimental).toEqual({ decision_mode: { on: false, env: false } });
+    expect(settings.experimental).toMatchObject({ decision_mode: { on: false, env: false } });
     process.env.PLANNOTATOR_EXPERIMENTAL = " Decision-Mode ";
     // While the env var decides, the switch is locked: a save is refused (409, like Over your tailnet) and writes nothing.
     const before = readFileSync(join(dataDir, "config.json"), "utf8");

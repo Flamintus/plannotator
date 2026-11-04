@@ -35,6 +35,7 @@ import { lastContactOf, noteSessionRead, staleThreadOf, staleThreadText } from "
 import { INBOX_BODY_CUT_BYTES, INBOX_EARLIER_PERSON_BYTES, INBOX_THREAD_WINDOW, clip, shortTime, sizeText, windowedThread, windowedThreadText } from "./inbox-mcp-read";
 import { registerInboxSearchTool } from "./inbox-mcp-search";
 import { registerInboxCardTool } from "./inbox-mcp-cards";
+import { threadComments, threadCommentsText } from "./inbox-mcp-comments";
 export { INBOX_BOARD_OFF_TEXT } from "./inbox-mcp-cards";
 import { checkStepsInput, INBOX_STEPS_OFF_TEXT, registerInboxStepsTool, rowSteps, STEPS_FIELD, stepsAgent, stepsProgressText, threadStepsText } from "./inbox-mcp-steps";
 export { INBOX_STEPS_OFF_TEXT } from "./inbox-mcp-steps";
@@ -285,6 +286,12 @@ export interface InboxMcpContext {
    * Absent: off.
    */
   codeReviewOn?: () => boolean;
+  /**
+   * Whether sent comments stay in view (experimental "persistent-comments",
+   * read on every request). On: read_thread lists the comments the person
+   * sent, with their ids, rounds and anchors (inbox-mcp-comments.ts). Absent: off.
+   */
+  persistentCommentsOn?: () => boolean;
 }
 
 
@@ -1112,9 +1119,10 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
             // The full records, as before the window (tests, scripts, a jq over the result).
             const thread = store.agentThread(threadId, reader)!;
             const replies = thread.messages.filter((m) => m.author.kind === "person").length;
+            const sentComments = context.persistentCommentsOn?.() ? threadComments(store, threadId) : [];
             return ok(
               `Thread ${threadId}${thread.subject ? ` (${thread.subject})` : ""}: ${thread.messages.length} message${thread.messages.length === 1 ? "" : "s"}, ${replies} from the person${thread.resolved_at ? ", resolved" : ""}.${naming?.line ?? ""}`,
-              { thread, url, ...(naming?.structured ?? {}) },
+              { thread, url, ...(naming?.structured ?? {}), ...(sentComments.length > 0 ? { comments: sentComments } : {}) },
             );
           }
           // Built first, so a refused read (a bad expand, before or after) marks nothing read.
@@ -1130,7 +1138,10 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
           // The thread's steps (approval "inbox-thread-steps"), the reader's own first: only while the person has steps on.
           const steps = context.stepsOn?.() ? threadStepsText(store, threadId, reader) : [];
           const lists = steps.length > 0 ? { steps: store.threadSteps(threadId).map(({ agent, steps: list, updated_at }) => ({ agent, steps: list, updated_at })) } : {};
-          return okComplete(windowedThreadText(result, order, naming?.line ?? "", steps), { ...result, ...(naming?.structured ?? {}), ...lists });
+          // The comments the person sent (experimental): a ranged read lists those its replies carried.
+          const comments = context.persistentCommentsOn?.() ? threadComments(store, threadId, input.after !== undefined || input.before !== undefined ? shown : null) : [];
+          const header = [...steps, ...threadCommentsText(comments, result.thread.project.root)];
+          return okComplete(windowedThreadText(result, order, naming?.line ?? "", header), { ...result, ...(naming?.structured ?? {}), ...lists, ...(comments.length > 0 ? { comments } : {}) });
         }
         if (input.expand || input.before !== undefined || input.after !== undefined) {
           throw new InboxError("validation_error", "expand, before and after read one thread: pass thread_id (or message_id).");

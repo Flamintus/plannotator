@@ -4854,6 +4854,34 @@ export class InboxStore {
     return next;
   }
 
+  /** The person's comments in a thread that a Send carried (not removed), oldest first. */
+  sentAnnotations(threadId: string): InboxAnnotationRecord[] {
+    const out: InboxAnnotationRecord[] = [];
+    for (const record of this.annotations.values()) {
+      if (record.thread_id === threadId && record.removed_at === null && record.sent_reply_id !== null) out.push(record);
+    }
+    return out.sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+  }
+
+  /**
+   * What the window saw of a sent comment (experimental "persistent-comments"):
+   * its words no longer found in the file it shows (`unanchored_at`), or found
+   * again (null). Kept, so it holds from one round to the next and an agent
+   * reads it. Nothing is written when it is already so.
+   */
+  markAnnotationUnanchored(id: string, unanchored: boolean): InboxAnnotationRecord {
+    const record = this.annotations.get(id);
+    if (!record) throw new InboxError("annotation_not_found", `No annotation ${id}.`);
+    if (record.sent_reply_id === null || record.removed_at !== null) {
+      throw new InboxError("validation_error", "Only a sent comment is marked unanchored; a draft shows it in the window alone.", { field: "id" });
+    }
+    if ((typeof record.unanchored_at === "string") === unanchored) return record;
+    const at = this.stamp();
+    const next = { ...record, unanchored_at: unanchored ? at : null };
+    this.appendAnnotation(next, at);
+    return next;
+  }
+
   /** The annotations a Send names: each in this thread and still waiting. */
   private planSentAnnotations(threadId: string, ids: unknown): InboxAnnotationRecord[] {
     if (ids === undefined || ids === null) return [];

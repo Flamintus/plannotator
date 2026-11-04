@@ -419,9 +419,9 @@ export interface PlannotatorConfig {
    * flag the person turns on). Read through `resolveExperimental`;
    * PLANNOTATOR_EXPERIMENTAL wins over this key. Written by the Inbox's
    * Settings → Capabilities → Experimental through POST /api/inbox/settings
-   * `{ experimental: { decision_mode } }`.
+   * `{ experimental: { decision_mode } }` (or `persistent_comments`).
    */
-  experimental?: { decisionMode?: boolean };
+  experimental?: { decisionMode?: boolean; persistentComments?: boolean };
   /**
    * The Board's one-time first-visit dialog (approval "inbox-board", intro
    * amendment): `shownAt` once a page on this computer or the owner's phone
@@ -1649,6 +1649,8 @@ export function resolveInboxAskAi(env: NodeJS.ProcessEnv = process.env): boolean
  */
 export const EXPERIMENTAL_FEATURES = {
   "decision-mode": "decisionMode",
+  /** The Inbox keeps the comments a Send carried in view, by round, and lists them in read_thread. */
+  "persistent-comments": "persistentComments",
 } as const;
 
 export type ExperimentalFeature = keyof typeof EXPERIMENTAL_FEATURES;

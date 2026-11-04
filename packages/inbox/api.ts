@@ -457,7 +457,12 @@ export function tailnetGuest(settings: Pick<SettingsModel, 'via' | 'guest'> | nu
 /** Settings → Capabilities → Experimental: each feature's switch, and whether the env var decides it. */
 export interface InboxExperimentalSettings {
   decision_mode: { on: boolean; env: boolean | null };
+  /** Sent comments kept in view (absent from an older Inbox). */
+  persistent_comments?: { on: boolean; env: boolean | null };
 }
+
+/** One experimental switch saved. */
+export type InboxExperimentalChange = { decision_mode: boolean } | { persistent_comments: boolean };
 
 /** One live agent session of a thread's project (New message, record 5.x). */
 export interface LiveSession {
@@ -1096,7 +1101,7 @@ export const inboxApi = {
   startTidy: (input: { sessions: readonly string[]; idempotency_key: string; project: string | null; surface: 'list' | 'board' }) =>
     post<{ run: InboxTidyRun | null; asked: string[] }>(inboxUrl('/tidy'), { ...input, sessions: [...input.sessions] }),
   saveCookieHost: (on: boolean) => post<{ cookie_host: InboxCookieHost }>(inboxUrl('/settings'), { cookie_host: on }),
-  saveExperimental: (change: { decision_mode: boolean }) =>
+  saveExperimental: (change: InboxExperimentalChange) =>
     post<{ experimental: InboxExperimentalSettings }>(inboxUrl('/settings'), { experimental: change }),
   /** The Board on or off (Settings → Capabilities): agents get the card action from their next session. */
   saveBoard: (on: boolean) => post<{ board: { on: boolean } }>(inboxUrl('/settings'), { board: { on } }),
@@ -1329,6 +1334,9 @@ export const inboxApi = {
     post<{ annotation: InboxAnnotationRecord }>(inboxUrl('/annotations', undefined, machineOf(attachmentId)), { attachment_id: attachmentId, version, annotation }),
   removeAnnotation: (id: string) =>
     post<{ annotation: InboxAnnotationRecord }>(inboxUrl(`/annotations/${encodeURIComponent(id)}/remove`, undefined, machineOf(id)), {}),
+  /** A sent comment's words not found in the file shown, or found again (experimental "persistent-comments"). */
+  markUnanchored: (id: string, unanchored: boolean) =>
+    post<{ annotation: InboxAnnotationRecord }>(inboxUrl(`/annotations/${encodeURIComponent(id)}/unanchored`, undefined, machineOf(id)), { unanchored }),
   /** "Open in": the file as it is now, in a catalog app or the default app, by the attachment's id (on this computer only). */
   openIn: (attachmentId: string, appId: string) =>
     post<{ ok: boolean; error?: string }>(inboxUrl('/open-in'), { attachment_id: attachmentId, app_id: appId }),
@@ -1605,6 +1613,8 @@ export interface AttachmentsModel {
   /** The images the messages show, captured as files (additive; absent from an older Inbox). */
   inline_images?: InboxAttachmentState[];
   annotations: InboxAnnotationRecord[];
+  /** The comments a Send carried, kept in view (experimental "persistent-comments"; absent while off or from an older Inbox). */
+  sent_comments?: InboxAnnotationRecord[];
 }
 
 /** One version of a file: its text, and for HTML the page as annotate serves it. */

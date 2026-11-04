@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { MentionSource } from '@plannotator/ui/utils/mentions';
 import {
   formatInboxVideoTime,
@@ -46,6 +46,7 @@ import {
 } from '../attachments';
 import { whenTime, formatBytes } from '../format';
 import { useRefRepo } from '../links';
+import { followCodeLines } from '../sentComments';
 import { inboxMarkdownImageBase } from '../images';
 import { ImageAttachmentView, type ImageSwipeEdges } from './ImageAttachmentView';
 import type { WheelHintGate } from '@plannotator/ui/components/ImageZoomStage';
@@ -170,6 +171,17 @@ export interface AttachmentPaneProps {
   attachments: readonly InboxAttachmentState[];
   /** The thread's annotations waiting for a Send. */
   records: readonly InboxAnnotationRecord[];
+  /**
+   * Comments that stay after Send (experimental "persistent-comments"): the
+   * thread's file comments a Send carried, drawn with the drafts, read-only,
+   * with their round (`rounds`, by the reply that carried them). What the
+   * pane finds of their words goes to `onUnanchoredReport`. Absent: none.
+   */
+  sent?: {
+    records: readonly InboxAnnotationRecord[];
+    rounds: ReadonlyMap<string, number>;
+    onUnanchoredReport: (report: { attempted: readonly string[]; unanchored: readonly string[] }) => void;
+  };
   /**
    * Tag agents with `@` in a comment (approval "inbox-tag-agents"): markdown, text and HTML files. The
    * image, video, code and diagram comment boxes take none yet.
@@ -1437,11 +1449,54 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   const videoRef = useRef<VideoAttachmentViewHandle>(null);
   // A PDF, any other file, and a kind this window does not know: offered as a download.
   const isDownload = kind === 'pdf' || kind === 'file' || tooLarge;
+  const sentRecords = props.sent?.records;
   const fileRecords = useMemo(
-    () => props.records.filter((r) => r.path === attachment.path && r.version === annotationVersion),
-    [props.records, attachment.path, annotationVersion],
+    () => [...props.records, ...(sentRecords ?? [])].filter((r) => r.path === attachment.path && r.version === annotationVersion),
+    [props.records, sentRecords, attachment.path, annotationVersion],
   );
-  const annotations = useMemo(() => fileRecords.map(annotationOf), [fileRecords]);
+  // Comments a Send carried (experimental "persistent-comments"): read-only cards with their round, and a code
+  // comment follows its lines when the agent added or removed lines above them (sentComments.ts).
+  const sentIds = useMemo(() => new Set((sentRecords ?? []).map((r) => r.id)), [sentRecords]);
+  const sentRounds = useMemo(() => {
+    const rounds = new Map<string, number>();
+    for (const record of sentRecords ?? []) {
+      const round = record.sent_reply_id ? props.sent?.rounds.get(record.sent_reply_id) : undefined;
+      if (round !== undefined) rounds.set(record.id, round);
+    }
+    return rounds;
+  }, [sentRecords, props.sent?.rounds]);
+  /** A sent comment's card: its round after the card's own header, and no edit or delete. */
+  const withSentRound = (header: ((annotation: Annotation) => ReactNode) | undefined) =>
+    sentIds.size === 0
+      ? header
+      : (annotation: Annotation) => {
+          const own = header?.(annotation) ?? null;
+          const round = sentRounds.get(annotation.id);
+          return round === undefined ? own : (
+            <>
+              {own}
+              <span className="ib-sentc-chip" data-sent-round={round}>
+                Round {round}
+              </span>
+            </>
+          );
+        };
+  const withSentParts = <T extends object>(parts: (annotation: Annotation) => T) => (annotation: Annotation) => (sentIds.has(annotation.id) ? { ...parts(annotation), actions: false } : parts(annotation));
+  const codeLines = useMemo(() => (kind === 'code' && view && sentIds.size > 0 ? view.text.split('\n') : null), [kind, view, sentIds]);
+  const annotations = useMemo(
+    () => fileRecords.map((r) => (codeLines && sentIds.has(r.id) ? followCodeLines(annotationOf(r), codeLines) : annotationOf(r))),
+    [fileRecords, codeLines, sentIds],
+  );
+  // The image and video views draw their own remove controls: a sent comment is in the panel only.
+  const ownAnnotations = useMemo(() => (sentIds.size === 0 ? annotations : annotations.filter((a) => !sentIds.has(a.id))), [annotations, sentIds]);
+  /** What the pane found of the comments' words: shown as Unanchored, and kept for a sent comment. */
+  const sentReport = useRef(props.sent?.onUnanchoredReport);
+  sentReport.current = props.sent?.onUnanchoredReport;
+  const reportUnanchored = useCallback((attempted: readonly string[], ids: Iterable<string>) => {
+    const lost = new Set(ids);
+    setUnanchored(lost);
+    sentReport.current?.({ attempted, unanchored: [...lost] });
+  }, []);
   // The document's blocks keep their identity across saves (the Viewer re-renders on a new array);
   // only code comments, which carry their own lines, derive blocks from the annotations.
   const documentBlocks = useMemo(() => (view && !isCode ? attachmentBlocks(kind, view.text, attachment.name) : []), [view, kind, isCode, attachment.name]);
@@ -1535,8 +1590,9 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   // Code comments drawn under their lines; one whose lines no longer read as they did is unanchored, and so is a text
   // comment left on a data or log file before it was drawn as code (inboxViewKind).
   const codeAnnotations = useMemo(
-    () => (isCode ? annotations.map((a) => codeAnnotationOf(a, attachment.name)).filter((a): a is NonNullable<typeof a> => a !== null) : []),
-    [isCode, annotations, attachment.name],
+    // A sent comment is in the panel only: the code view's own cards would offer to edit and delete it.
+    () => (isCode ? annotations.filter((a) => !sentIds.has(a.id)).map((a) => codeAnnotationOf(a, attachment.name)).filter((a): a is NonNullable<typeof a> => a !== null) : []),
+    [isCode, annotations, attachment.name, sentIds],
   );
   useEffect(() => {
     if (!isCode || !view) return;
@@ -1546,8 +1602,8 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
       const range = codeRangeOf(annotation);
       if (range ? !codeRangeMatches(range, lines.slice(range.lineStart - 1, range.lineEnd).join('\n')) : annotationOwnsHighlight(annotation)) moved.add(annotation.id);
     }
-    setUnanchored(moved);
-  }, [isCode, view, annotations]);
+    reportUnanchored(annotations.map((annotation) => annotation.id), moved);
+  }, [isCode, view, annotations, reportUnanchored]);
 
   // Paint the stored text highlights once per document read; a new comment paints itself.
   const painted = useRef<string | null>(null);
@@ -2085,7 +2141,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
               // A link the page's bridge handed over: another file of the thread, a page or image beside it, another site (htmlLinks.ts).
               onOpenLink={(href) => followLinkRef.current(href, pageFolder)}
               initialFragment={linkFragment?.id === attachment.id ? linkFragment.hash : undefined}
-              onUnanchoredChange={(ids) => setUnanchored(new Set(ids))}
+              onUnanchoredChange={(ids) => reportUnanchored(annotations.map((annotation) => annotation.id), ids)}
               fullViewport
               hideControls
               // Shift-click joins more elements to one comment, as in annotate (the viewer's own cap).
@@ -2173,7 +2229,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
               key={attachment.id}
               attachment={attachment}
               version={effectiveVersion}
-              annotations={annotations}
+              annotations={ownAnnotations}
               selectedId={selectedId}
               readOnly={props.readOnly}
               onSave={save}
@@ -2207,7 +2263,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
               ref={videoRef}
               attachment={attachment}
               version={effectiveVersion}
-              annotations={annotations}
+              annotations={ownAnnotations}
               selectedId={selectedId}
               onSelect={setSelectedId}
               readOnly={props.readOnly}
@@ -2317,7 +2373,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                 quickLabels={false}
                 refRepo={refRepo}
                 readOnly={props.readOnly}
-                onRestoreReport={(report) => setUnanchored(new Set(report.unanchored))}
+                onRestoreReport={(report) => reportUnanchored(report.attempted, report.unanchored)}
                 suggestComment={suggestion?.phrase ? (selected) => suggestionFor(view.text, suggestion, selected) : undefined}
               />
               </ImageResolverContext.Provider>
@@ -2376,7 +2432,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
             blocks={blocks}
             // A film's comments read by the moment they are at, each with its time (a click seeks there).
             compareAnnotations={isVideo ? compareVideoTimes : undefined}
-            renderCardHeader={
+            renderCardHeader={withSentRound(
               isVideo
                 ? (annotation) => {
                     const time = readInboxVideoTime(annotation);
@@ -2413,15 +2469,15 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                       </span>
                     );
                   }
-                : undefined
-            }
+                : undefined,
+            )}
             // The moment and the frame are in the card's header; the quote ("cut.mp4 at 1:42") and the image row would repeat them.
             // A drawing with no words is drawn as its picture: no quote, no image row, not the stand-in words the agent gets.
-            cardParts={(annotation) => {
+            cardParts={withSentParts((annotation) => {
               const wordless = isWordlessMarkup(annotation);
               if (isVideo && readInboxVideoTime(annotation) !== null) return wordless ? { quote: false, images: false, text: false } : { quote: false, images: false };
               return wordless ? { quote: false, images: false, text: false } : {};
-            }}
+            })}
             renderCardBody={(annotation) => (isWordlessMarkup(annotation) ? <MarkupPicture image={annotation.images![0]!} /> : null)}
             title={isVideo ? 'Comments' : undefined}
             // A linked page takes no comments: the panel lists the attached page's, and says so.

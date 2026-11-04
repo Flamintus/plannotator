@@ -159,7 +159,7 @@ import { CardChip } from './board/CardChip';
 import { boardViewOf, newCardProject, type BoardView } from './board/model';
 import { useComposeSessions } from './compose/useComposeSessions';
 import { composeActions, composeTargets, hostLabel, type ComposeAction } from './compose/model';
-import type { CardsModel, DraftView, InboxStorageModel, UpdateCheckFailing } from './api';
+import type { CardsModel, DraftView, InboxExperimentalChange, InboxStorageModel, UpdateCheckFailing } from './api';
 import { NO_RESTART_AGENTS, restartAgentsOf } from './restartAgents';
 import type { InboxRestartAgents } from '@plannotator/core/inbox-types';
 import { inboxTabCount, useTabCount } from './tabCount';
@@ -3889,11 +3889,16 @@ function Inbox() {
     }
   };
 
-  const toggleExperimental = async (next: boolean) => {
+  const toggleExperimental = async (change: InboxExperimentalChange) => {
     setSettingsError(null);
-    setSettings((current) => (current ? { ...current, experimental: { decision_mode: { on: next, env: current.experimental?.decision_mode.env ?? null } } } : current));
+    const [key, on] = Object.entries(change)[0] as ['decision_mode' | 'persistent_comments', boolean];
+    setSettings((current) =>
+      current
+        ? { ...current, experimental: { decision_mode: { on: false, env: null }, ...current.experimental, [key]: { on, env: current.experimental?.[key]?.env ?? null } } }
+        : current,
+    );
     try {
-      const saved = await inboxApi.saveExperimental({ decision_mode: next });
+      const saved = await inboxApi.saveExperimental(change);
       setSettings((current) => (current ? { ...current, experimental: saved.experimental } : current));
     } catch (cause) {
       setSettingsError(cause instanceof Error ? cause.message : 'The setting was not saved.');
@@ -5031,7 +5036,7 @@ function Inbox() {
         context={context}
         error={settingsError}
         onToggleTool={toggleTool}
-        onToggleExperimental={(next) => void toggleExperimental(next)}
+        onToggleExperimental={(change) => void toggleExperimental(change)}
         onToggleCookieHost={(next) => void toggleCookieHost(next)}
         landOnExperimental={route.experimental === true}
         onToggleBoard={(next) => void toggleBoard(next)}

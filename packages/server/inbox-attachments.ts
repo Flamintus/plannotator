@@ -223,6 +223,12 @@ export interface InboxAttachmentRoutesContext {
   streamIdleMs?: number;
   /** Ask for the thread's uncaptured message images to be copied in the background (inbox-message-images.ts); a read never waits for it. */
   scheduleImageCapture?: (threadId: string) => void;
+  /**
+   * Whether sent comments stay in the window (experimental
+   * "persistent-comments", read on every request): the thread's files list
+   * them as `sent_comments`, and the window may mark one unanchored. Absent: off.
+   */
+  persistentCommentsOn?: () => boolean;
 }
 
 type Version = "current" | "sent";
@@ -278,6 +284,8 @@ export function createInboxAttachmentRoutes(context: InboxAttachmentRoutesContex
         // The images the messages show, captured as files (additive: a reader that does not know it draws nothing extra).
         inline_images: await Promise.all(store.threadInlineImages(threadId).map(({ attachment, message }) => inboxAttachmentState(attachment, message.id, { hash: "small" }))),
         annotations: store.pendingAnnotations(threadId),
+        // The comments a Send carried, kept in view (experimental; additive: absent while off or from an older Inbox).
+        ...(context.persistentCommentsOn?.() ? { sent_comments: store.sentAnnotations(threadId) } : {}),
       });
     }
 
@@ -568,6 +576,17 @@ export function createInboxAttachmentRoutes(context: InboxAttachmentRoutesContex
       const body = await guardedBody(req);
       if (body instanceof Response) return body;
       return json({ annotation: store.removeAnnotation(remove[1]!) });
+    }
+
+    // A sent comment's words no longer found in the file the window shows, or found again (experimental "persistent-comments").
+    const unanchored = /^\/api\/inbox\/annotations\/([A-Za-z0-9_.:-]+)\/unanchored$/.exec(path);
+    if (unanchored) {
+      if (req.method !== "POST") return json({ error: "Use POST." }, 405);
+      if (!context.persistentCommentsOn?.()) return json({ error: "Sent comments are not kept in view.", code: "persistent_comments_off" }, 409);
+      const body = await guardedBody(req);
+      if (body instanceof Response) return body;
+      if (typeof body.unanchored !== "boolean") throw new InboxError("validation_error", "unanchored: a boolean.", { field: "unanchored" });
+      return json({ annotation: store.markAnnotationUnanchored(unanchored[1]!, body.unanchored) });
     }
 
     const deleteThread = /^\/api\/inbox\/threads\/([A-Za-z0-9_]+)\/delete$/.exec(path);

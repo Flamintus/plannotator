@@ -415,6 +415,8 @@ export interface InboxServerOptions {
   codeReview?: boolean;
   /** Shape, decided here instead of config.json `inboxShape` (tests). Absent: config.json decides on every request. */
   shape?: boolean;
+  /** Sent comments kept in view (experimental "persistent-comments"), decided here instead of config.json and PLANNOTATOR_EXPERIMENTAL (tests). */
+  persistentComments?: boolean;
   /**
    * `plannotator inbox --tailscale`: publish over the tailnet for this run
    * whatever PLANNOTATOR_INBOX_TAILSCALE / config.json `inboxTailscale` say
@@ -1130,6 +1132,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         stepsOn,
         // Code review: submit_guide's `review` field is listed and served only while the person has it on.
         codeReviewOn,
+        // Sent comments: read_thread lists them only while the person has them on (experimental).
+        persistentCommentsOn,
         ...(options.mcpNow ? { now: options.mcpNow } : {}),
       }),
     { legacy: "stateless", maxRequestBodySize: INBOX_MAX_REQUEST_BYTES },
@@ -2039,6 +2043,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
    * request, so a switch applies at once.
    */
   const decisionModeOn = () => resolveExperimental(loadConfig(), "decision-mode");
+  /** Sent comments kept in view, by round, and listed in read_thread (inbox-comment-threads.ts). */
+  const persistentCommentsOn = () => options.persistentComments ?? resolveExperimental(loadConfig(), "persistent-comments");
   /**
    * The Board (approval "inbox-board", 2026-10-26): on only when the person
    * turned it on (config.json `inboxBoard`), and only in a build that has the
@@ -2240,28 +2246,32 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   };
   const experimentalState = () => ({
     decision_mode: { on: decisionModeOn(), env: parseExperimentalEnv("decision-mode") ?? null },
+    persistent_comments: { on: persistentCommentsOn(), env: parseExperimentalEnv("persistent-comments") ?? null },
   });
 
-  /** Save `experimental: { decision_mode }`. `validateOnly`: check and write nothing. */
+  /** Each experimental switch Settings saves: its feature name, its config.json key, and how a refusal names it. */
+  const EXPERIMENTAL_SWITCHES = {
+    decision_mode: { feature: "decision-mode", key: "decisionMode", words: "decision mode" },
+    persistent_comments: { feature: "persistent-comments", key: "persistentComments", words: "keeping sent comments in view" },
+  } as const;
+
+  /** Save one switch, `experimental: { decision_mode }` or `{ persistent_comments }`. `validateOnly`: check and write nothing. */
   const saveExperimental = (input: unknown, validateOnly = false) => {
-    if (
-      !input ||
-      typeof input !== "object" ||
-      Array.isArray(input) ||
-      typeof (input as { decision_mode?: unknown }).decision_mode !== "boolean" ||
-      Object.keys(input).some((key) => key !== "decision_mode")
-    ) {
-      throw new InboxError("validation_error", "experimental: { decision_mode: boolean }.", { field: "experimental" });
+    const keys = input && typeof input === "object" && !Array.isArray(input) ? Object.keys(input) : [];
+    const name = keys.length === 1 && Object.hasOwn(EXPERIMENTAL_SWITCHES, keys[0]!) ? (keys[0] as keyof typeof EXPERIMENTAL_SWITCHES) : null;
+    if (!name || typeof (input as Record<string, unknown>)[name] !== "boolean") {
+      throw new InboxError("validation_error", "experimental: { decision_mode: boolean } or { persistent_comments: boolean }.", { field: "experimental" });
     }
-    const on = (input as { decision_mode: boolean }).decision_mode;
+    const on = (input as Record<string, boolean>)[name]!;
+    const { feature, key, words } = EXPERIMENTAL_SWITCHES[name];
     // The env var decides (like PLANNOTATOR_INBOX_TAILSCALE): saving to config.json would change nothing.
-    const env = parseExperimentalEnv("decision-mode");
+    const env = parseExperimentalEnv(feature);
     if (env !== undefined) {
-      throw new InboxError("experimental_env_decides", `PLANNOTATOR_EXPERIMENTAL is set in this Inbox's environment, so decision mode stays ${env ? "on" : "off"}.`, { field: "experimental" });
+      throw new InboxError("experimental_env_decides", `PLANNOTATOR_EXPERIMENTAL is set in this Inbox's environment, so ${words} stays ${env ? "on" : "off"}.`, { field: "experimental" });
     }
     if (validateOnly) return experimentalState();
-    saveConfig({ experimental: { decisionMode: on } });
-    if (loadConfig().experimental?.decisionMode !== on) throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
+    saveConfig({ experimental: { [key]: on } });
+    if (loadConfig().experimental?.[key] !== on) throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
     return experimentalState();
   };
 
@@ -4617,7 +4627,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     return served(req, "local");
   };
 
-  attachmentRoutes = createInboxAttachmentRoutes({ store, serverSession, readBody, streamIdleMs: options.streamIdleMs, scheduleImageCapture: imageCapture.schedule });
+  attachmentRoutes = createInboxAttachmentRoutes({ store, serverSession, readBody, streamIdleMs: options.streamIdleMs, scheduleImageCapture: imageCapture.schedule, persistentCommentsOn });
   const started = startOnLoopback(fetch, previous?.port ?? null);
   server = started.server;
   portChanged = started.portChanged;
