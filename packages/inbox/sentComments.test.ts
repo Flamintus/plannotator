@@ -1,7 +1,20 @@
 import { describe, expect, test } from 'bun:test';
 import type { InboxAnnotationRecord, InboxCommentReplyRecord } from '@plannotator/core/inbox-types';
 import { attachmentFeedback, codeCommentAnnotation, codeRangeOf } from './attachments';
-import { agentReplyAnnotation, commentOfCard, followCodeLines, sentReplyRounds, sentReplyRows, sentUnanchoredChanges, withSentWrites } from './sentComments';
+import { inboxCommentMessages } from '@plannotator/core/inbox-comment-threads';
+import {
+  agentReplyAnnotation,
+  commentOfCard,
+  followCodeLines,
+  hiddenUnderFolded,
+  openPassagesByParent,
+  sentReplyRounds,
+  sentReplyRows,
+  sentUnanchoredChanges,
+  sitsUnder,
+  subThreadsByParent,
+  withSentWrites,
+} from './sentComments';
 
 const sent = (id: string, unanchored_at: string | null = null) => ({ id, unanchored_at, sent_reply_id: 'msg_p1' }) as unknown as InboxAnnotationRecord;
 
@@ -104,5 +117,45 @@ describe('replies under a sent comment, as the window draws them', () => {
     expect(messagesPart).not.toContain('mine r1');
     expect(threadsPart).toContain('### 1. Reply under comment c1, on message msg_a1: "Friday" (id r1)');
     expect(threadsPart).toContain('> mine r1');
+  });
+});
+
+describe('sub-threads in the window', () => {
+  const at = (n: number) => `2026-11-04T10:0${n}:00.000Z`;
+  const rec = (id: string, fields: Partial<InboxAnnotationRecord>) =>
+    ({ id, removed_at: null, sent_reply_id: 'msg_p1', created_at: at(1), annotation: { id, originalText: 'q', text: `words of ${id}` }, ...fields }) as InboxAnnotationRecord;
+  const answer = { id: 'rep_a', re: 'c1', text: 'Step 2 rolls back through the off switch.', from: { kind: 'agent', host: null, session: 'ses_a', name: 'Claude Code' }, created_at: at(2) } as InboxCommentReplyRecord;
+  const s1 = rec('s1', { parent: 'rep_a', quote_offset: 33, created_at: at(3), annotation: { id: 's1', originalText: 'off switch', text: 'Which off switch?' } });
+  const s2 = rec('s2', { parent: 'rep_a', quote_offset: 7, created_at: at(4), sent_reply_id: null, annotation: { id: 's2', originalText: 'rolls back', text: 'How fast?' } });
+  const nested = rec('s3', { parent: 's1', quote_offset: 6, created_at: at(5), annotation: { id: 's3', originalText: 'off switch', text: 'The runbook one.' } });
+
+  test('each message lists its sub-threads, oldest first, drafts too; a removed one is gone', () => {
+    const by = subThreadsByParent([nested, s2, s1, rec('gone', { parent: 'rep_a', removed_at: at(6) }), rec('c1', {})]);
+    expect([...by].map(([parent, list]) => [parent, list.map((r) => r.id)])).toEqual([
+      ['s1', ['s3']],
+      ['rep_a', ['s1', 's2']],
+    ]);
+  });
+
+  test("a message's words mark its sub-threads still open, not a resolved one", () => {
+    const marks = openPassagesByParent(subThreadsByParent([s1, s2, nested]), new Set(['s1']));
+    expect(marks.get('rep_a')).toEqual([{ quote: 'rolls back', offset: 7 }]);
+    expect(marks.get('s1')).toEqual([{ quote: 'off switch', offset: 6 }]);
+  });
+
+  test('a folded thread hides what is under it, at any depth; nothing else is hidden', () => {
+    const up = sitsUnder([rec('c1', {}), s1, nested], [answer]);
+    expect(Object.fromEntries(up)).toEqual({ s1: 'rep_a', s3: 's1', rep_a: 'c1' });
+    expect([...hiddenUnderFolded(['rep_a', 's1', 's3'], up, new Set(['c1']))].sort()).toEqual(['rep_a', 's1', 's3']);
+    expect([...hiddenUnderFolded(['rep_a', 's1', 's3'], up, new Set(['s1']))]).toEqual(['s3']);
+    expect(hiddenUnderFolded(['rep_a', 's1', 's3'], up, new Set()).size).toBe(0);
+  });
+
+  test("a Send carries a sub-thread in the threads' section, with the words its passage is in, and nowhere else", () => {
+    const draft = { ...s1, sent_reply_id: null, message: { at: at(0) }, message_id: 'msg_a1', path: 'msg_a1' } as InboxAnnotationRecord;
+    const text = attachmentFeedback([draft], [], new Map(), '/repo', { commentMessages: inboxCommentMessages([], [answer]) });
+    expect(text.startsWith('# Feedback on comment threads')).toBe(true);
+    expect(text).toContain('### 1. Comment on a passage of reply rep_a under comment c1 (on message msg_a1): "off switch" (id s1)\nIn: "Step 2 rolls back through the off switch."\n> Which off switch?');
+    expect(text).not.toContain('# Feedback on your messages');
   });
 });

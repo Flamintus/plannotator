@@ -6,11 +6,14 @@
  * a code comment follows its lines when the agent adds or removes lines above
  * them; what the window finds of their words is kept, so an agent reads
  * which ones lost their place; the person resolves them, or opens them
- * again; and replies sit under them, the agents' and the person's, in one
- * flat list per comment.
+ * again; replies sit under them, the agents' and the person's, in one flat
+ * list per comment; and sub-threads, the person's comments on a passage of
+ * one of those messages, sit under the message they are on, each a thread
+ * of its own.
  */
 
-import { inboxCommentReplyAnnotation, inboxCommentReplyRound, inboxMovedLines, isInboxCommentReply, type InboxCommentThreadMessage } from '@plannotator/core/inbox-comment-threads';
+import { inboxCommentReplyAnnotation, inboxCommentReplyRound, inboxMovedLines, inboxQuoteOffset, isInboxCommentReply, isInboxSubThread, type InboxCommentThreadMessage } from '@plannotator/core/inbox-comment-threads';
+import type { TextPassage } from '@plannotator/core/passage';
 import { inboxAgentName, type InboxAnnotationRecord, type InboxCommentReplyRecord } from '@plannotator/core/inbox-types';
 import type { Annotation } from '@plannotator/ui/types';
 import { codeRangeMatches, codeRangeOf } from './attachments';
@@ -119,4 +122,64 @@ export function commentOfCard(id: string, records: readonly InboxAnnotationRecor
   if (agent) return agent.re;
   const record = records.find((r) => r.id === id);
   return record && isInboxCommentReply(record) ? record.re! : id;
+}
+
+/** The sub-threads on each message (a comment, a reply or a sub-thread), by its id, oldest first: the person's sent ones and their drafts. */
+export function subThreadsByParent(records: readonly InboxAnnotationRecord[]): Map<string, InboxAnnotationRecord[]> {
+  const out = new Map<string, InboxAnnotationRecord[]>();
+  for (const record of records) {
+    if (!isInboxSubThread(record) || record.removed_at !== null) continue;
+    out.set(record.parent!, [...(out.get(record.parent!) ?? []), record]);
+  }
+  for (const list of out.values()) list.sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+  return out;
+}
+
+/** A sub-thread's passage, as its parent's words mark it. */
+export function subThreadPassage(record: InboxAnnotationRecord): TextPassage {
+  const quote = record.annotation.originalText;
+  return { quote: typeof quote === 'string' ? quote : '', offset: inboxQuoteOffset(record) };
+}
+
+/** The passages to mark in each message's words, by its id: its sub-threads still open (a draft too); a resolved one is not marked. */
+export function openPassagesByParent(subThreads: ReadonlyMap<string, readonly InboxAnnotationRecord[]>, resolved: ReadonlySet<string>): Map<string, TextPassage[]> {
+  const out = new Map<string, TextPassage[]>();
+  for (const [parent, list] of subThreads) {
+    const open = list.filter((record) => !resolved.has(record.id)).map(subThreadPassage);
+    if (open.length > 0) out.set(parent, open);
+  }
+  return out;
+}
+
+/**
+ * The cards that a folded thread hides, by id: every reply or sub-thread
+ * with a folded comment or sub-thread above it (`up` names what each sits
+ * under: a reply's comment, a sub-thread's parent). A thread folds when it is
+ * resolved with nothing open below it, so an open sub-thread is never hidden.
+ */
+export function hiddenUnderFolded(ids: Iterable<string>, up: ReadonlyMap<string, string>, folded: ReadonlySet<string>): Set<string> {
+  const out = new Set<string>();
+  if (folded.size === 0) return out;
+  for (const id of ids) {
+    const seen = new Set<string>();
+    for (let above = up.get(id); above !== undefined && !seen.has(above); above = up.get(above)) {
+      seen.add(above);
+      if (folded.has(above)) {
+        out.add(id);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/** What each reply or sub-thread sits under, by its id: a reply's comment, a sub-thread's parent. */
+export function sitsUnder(records: readonly InboxAnnotationRecord[], agentReplies: readonly InboxCommentReplyRecord[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const record of records) {
+    if (isInboxCommentReply(record)) out.set(record.id, record.re!);
+    else if (isInboxSubThread(record)) out.set(record.id, record.parent!);
+  }
+  for (const reply of agentReplies) out.set(reply.id, reply.re);
+  return out;
 }

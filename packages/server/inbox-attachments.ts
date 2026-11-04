@@ -228,7 +228,7 @@ export interface InboxAttachmentRoutesContext {
    * "persistent-comments", read on every request): the thread's files list
    * them as `sent_comments` with the agents' replies under them
    * (`comment_replies`), and the window may mark one unanchored, or the
-   * person resolve one or reply under it. Absent: off.
+   * person resolve one, reply under it or comment on a passage of it. Absent: off.
    */
   persistentCommentsOn?: () => boolean;
 }
@@ -612,6 +612,17 @@ export function createInboxAttachmentRoutes(context: InboxAttachmentRoutesContex
       if (body instanceof Response) return body;
       const annotation = body.annotation && typeof body.annotation === "object" && !Array.isArray(body.annotation) ? (body.annotation as Record<string, unknown>) : {};
       return json({ annotation: store.saveCommentReply(reply[1]!, annotation) });
+    }
+
+    // The person's sub-thread on a passage of a message of a comment thread, a draft the next Send carries (experimental "persistent-comments").
+    const subThread = /^\/api\/inbox\/annotations\/([A-Za-z0-9_.:-]+)\/subthreads$/.exec(path);
+    if (subThread) {
+      if (req.method !== "POST") return json({ error: "Use POST." }, 405);
+      if (!context.persistentCommentsOn?.()) return json({ error: "Sent comments are not kept in view.", code: "persistent_comments_off" }, 409);
+      const body = await guardedBody(req);
+      if (body instanceof Response) return body;
+      const annotation = body.annotation && typeof body.annotation === "object" && !Array.isArray(body.annotation) ? (body.annotation as Record<string, unknown>) : {};
+      return json({ annotation: store.saveSubThread(subThread[1]!, annotation) });
     }
 
     const deleteThread = /^\/api\/inbox\/threads\/([A-Za-z0-9_]+)\/delete$/.exec(path);

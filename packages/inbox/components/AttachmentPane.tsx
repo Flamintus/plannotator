@@ -1458,7 +1458,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
     // A comment opened again: the markdown and HTML viewers paint it again (the others draw from their props).
     repaint: (list) => viewerRef.current?.applySharedAnnotations(list.filter(annotationOwnsHighlight)),
   });
-  const { annotations, panelAnnotations, ownAnnotations, sentIds, withSentRound, withSentParts, withSentBody, sentFooter, reportUnanchored, onReply } = sentFile;
+  const { annotations, panelAnnotations, ownAnnotations, sentIds, withSentRound, withSentParts, withSentBody, sentFooter, reportUnanchored, onReply, onCommentPassage, cardPassages } = sentFile;
   // The document's blocks keep their identity across saves (the Viewer re-renders on a new array);
   // only code comments, which carry their own lines, derive blocks from the annotations.
   const documentBlocks = useMemo(() => (view && !isCode ? attachmentBlocks(kind, view.text, attachment.name) : []), [view, kind, isCode, attachment.name]);
@@ -2446,6 +2446,8 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
             renderCardBody={withSentBody((annotation) => (isWordlessMarkup(annotation) ? <MarkupPicture image={annotation.images![0]!} /> : null))}
             renderCardFooter={sentFooter}
             onReply={onReply}
+            onCommentPassage={onCommentPassage}
+            cardPassages={cardPassages}
             title={isVideo ? 'Comments' : undefined}
             // A linked page takes no comments: the panel lists the attached page's, and says so.
             titleNote={isVideo ? 'By time' : linkedTop ? `Off on ${linkedTop.name}` : undefined}

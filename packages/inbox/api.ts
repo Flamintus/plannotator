@@ -1344,6 +1344,9 @@ export const inboxApi = {
   /** The person's reply under a sent comment, new or edited: a draft the next Send carries (experimental "persistent-comments"). */
   saveCommentReply: (commentId: string, reply: { id: string; text: string; mentions?: readonly string[] }) =>
     post<{ annotation: InboxAnnotationRecord }>(inboxUrl(`/annotations/${encodeURIComponent(commentId)}/replies`, undefined, machineOf(commentId)), { annotation: reply }),
+  /** The person's sub-thread on a passage of a message of a comment thread (`parentId`): a draft the next Send carries (experimental "persistent-comments"). */
+  saveSubThread: (parentId: string, sub: { id: string; text: string; quote: string; quote_offset: number; mentions?: readonly string[] }) =>
+    post<{ annotation: InboxAnnotationRecord }>(inboxUrl(`/annotations/${encodeURIComponent(parentId)}/subthreads`, undefined, machineOf(parentId)), { annotation: sub }),
   /** "Open in": the file as it is now, in a catalog app or the default app, by the attachment's id (on this computer only). */
   openIn: (attachmentId: string, appId: string) =>
     post<{ ok: boolean; error?: string }>(inboxUrl('/open-in'), { attachment_id: attachmentId, app_id: appId }),

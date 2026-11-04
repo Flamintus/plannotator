@@ -7,6 +7,8 @@
  *    whether its words are gone from the file, its state and the replies
  *    under it (each with its author and round), as lines of the transcript
  *    and as a list (`InboxCommentThread`, packages/core/inbox-comment-threads.ts).
+ *    A sub-thread names the message whose passage it is on and gives the
+ *    words around the passage, so the agent never has to look them up.
  *    Quotes, comments and replies are clipped: the person's reply that
  *    carried each one (`reply`) has it whole.
  *  - send_message's `comment_replies`: with its message, the agent's reply
@@ -21,7 +23,15 @@
 import * as z from "zod";
 import { inboxStoredAgentName } from "@plannotator/core/inbox-format";
 import { inboxAgentName } from "@plannotator/core/inbox-types";
-import { INBOX_COMMENT_REPLY_TEXT_MAX, inboxCommentPlace, inboxCommentReplyText, inboxCommentThreads, type InboxCommentReply, type InboxCommentThread } from "@plannotator/core/inbox-comment-threads";
+import {
+  INBOX_COMMENT_REPLY_TEXT_MAX,
+  inboxCommentReplyText,
+  inboxCommentThreadPlace,
+  inboxCommentThreads,
+  inboxSubThreadWords,
+  type InboxCommentReply,
+  type InboxCommentThread,
+} from "@plannotator/core/inbox-comment-threads";
 import { InboxError } from "@plannotator/shared/inbox/schema";
 import type { InboxStore } from "@plannotator/shared/inbox/store";
 import { clip } from "./inbox-mcp-read";
@@ -43,12 +53,17 @@ export function threadComments(store: InboxStore, threadId: string, replies: Rea
   const all = inboxCommentThreads(messages, store.sentAnnotations(threadId), store.commentReplies(threadId));
   const comments = all
     .filter((comment) => replies === null || replies.has(comment.reply_id) || comment.unanchored || comment.replies.some((reply) => replies.has(reply.message_id)))
-    .map((comment) => ({
-      ...comment,
-      quote: clip(comment.quote, INBOX_COMMENT_QUOTE_CHARS),
-      text: clip(comment.text, INBOX_COMMENT_TEXT_CHARS),
-      replies: comment.replies.map((reply) => ({ ...reply, text: clip(reply.text, INBOX_COMMENT_TEXT_CHARS) })),
-    }));
+    .map((comment) => {
+      // A sub-thread's parent: the words around the passage (computed before the quote is clipped).
+      const around = inboxSubThreadWords(comment, INBOX_COMMENT_TEXT_CHARS);
+      return {
+        ...comment,
+        quote: clip(comment.quote, INBOX_COMMENT_QUOTE_CHARS),
+        text: clip(comment.text, INBOX_COMMENT_TEXT_CHARS),
+        replies: comment.replies.map((reply) => ({ ...reply, text: clip(reply.text, INBOX_COMMENT_TEXT_CHARS) })),
+        ...(comment.parent ? { parent: { ...comment.parent, ...(around !== null ? { text: around } : {}) } } : {}),
+      };
+    });
   return { comments, elsewhere: all.length - comments.length };
 }
 
@@ -75,7 +90,8 @@ export function threadCommentsText({ comments, elsewhere }: { comments: readonly
         `- ${c.id}`,
         `round ${c.round} (reply ${c.reply_id})`,
         c.state,
-        inboxCommentPlace(c.on, root),
+        inboxCommentThreadPlace(c, root),
+        ...(c.parent?.text !== undefined ? [`in ${JSON.stringify(c.parent.text)}`] : []),
         ...(c.unanchored ? ["unanchored: its words were not in the file when the person last opened it"] : []),
         `${JSON.stringify(c.quote)} → ${JSON.stringify(c.text)}`,
       ].join(" · "),

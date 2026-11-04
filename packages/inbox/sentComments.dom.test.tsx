@@ -11,9 +11,12 @@
  * from its card, and opens it again: resolved, it leaves the highlights and
  * folds, and the store keeps it; and replies sit under a sent comment, the
  * agent's and the person's (a draft until the next Send), under the message
- * and on the file's card, never painted. The server side is proved in
- * packages/server/inbox-persistent-comments.test.ts and
- * inbox-comment-replies.test.ts.
+ * and on the file's card, never painted; and words selected in a sent
+ * message of a thread (the agent's reply, a card's words) open a comment on
+ * that passage, a sub-thread drawn under that message, its passage marked,
+ * and a resolved comment stays in view while a sub-thread under it is open.
+ * The server side is proved in packages/server/inbox-persistent-comments.test.ts,
+ * inbox-comment-replies.test.ts and inbox-comment-subthreads.test.ts.
  *
  * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
@@ -89,7 +92,7 @@ beforeAll(async () => {
   mkdirSync(join(dir, 'bin'));
   writeFileSync(join(dir, 'bin', 'tailscale'), '#!/bin/sh\nexit 1\n');
   chmodSync(join(dir, 'bin', 'tailscale'), 0o755);
-  child = Bun.spawn(['bun', SERVER_SCRIPT, join(dir, 'data'), join(dir, 'projects'), '6'], {
+  child = Bun.spawn(['bun', SERVER_SCRIPT, join(dir, 'data'), join(dir, 'projects'), '9'], {
     env: { ...process.env, DOM_TESTS: '0', PLANNOTATOR_DATA_DIR: join(dir, 'data'), PLANNOTATOR_EXPERIMENTAL: 'persistent-comments', HOME: dir, PATH: `${join(dir, 'bin')}:${process.env.PATH}` },
     stdin: 'pipe',
     stdout: 'pipe',
@@ -341,4 +344,121 @@ test.skipIf(!hasDom)("on a file, the agent's reply is a card under its comment's
     [...document.querySelectorAll('[data-annotation-reply] [data-annotation-id]')].find((node) => node.textContent?.includes('Thanks, that reads well.')) ?? null;
   await until(() => draft() !== null, "the person's draft card under the comment");
   expect(draft()!.closest('[data-annotation-reply]')?.getAttribute('data-annotation-depth')).toBe('1');
+}, 30_000);
+
+/** Select `quote` in a message's words and let the mouse go there. */
+async function selectIn(body: HTMLElement, quote: string) {
+  const text = [...body.childNodes].find((node): node is Text => node.nodeType === 3 && (node as Text).data.includes(quote))!;
+  const range = document.createRange();
+  range.setStart(text, text.data.indexOf(quote));
+  range.setEnd(text, text.data.indexOf(quote) + quote.length);
+  window.getSelection()!.removeAllRanges();
+  window.getSelection()!.addRange(range);
+  await act(async () => {
+    body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+  });
+}
+
+/** The selection toolbar's Comment (the Inbox names its buttons by aria-label). */
+const toolbarComment = () => [...document.querySelectorAll<HTMLButtonElement>('.annotation-toolbar button')].find((b) => (b.getAttribute('aria-label') ?? b.title) === 'Comment')!;
+
+const STEPS = 'Step 1 tags the release. Step 2 rolls back through the off switch. Step 3 pages support.';
+
+test.skipIf(!hasDom)("under the message, words selected in the agent's reply open a comment on that passage, a draft under the reply with its passage marked", async () => {
+  const { sent } = await command<{ sent: string }>({ send: { project: world.project, session: 'ses_sub_msg', body: 'Deploys roll out to every store.' } });
+  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('sub-msg-1', 'every store', 'How do we roll back?') });
+  await postJson(`/api/inbox/messages/${sent}/reply`, { idempotency_key: 'k-sub-msg', feedback: '# Feedback', annotation_ids: ['sub-msg-1'] });
+  const { replied } = await command<{ replied: string }>({ commentReply: { comment: 'sub-msg-1', session: 'ses_sub_msg', text: STEPS } });
+
+  const el = await renderApp(`#thread=${sent}`);
+  await until(() => el.querySelector(`[data-message-article="${sent}"]`) !== null, 'the thread');
+  const article = el.querySelector<HTMLElement>(`[data-message-article="${sent}"]`)!;
+  if (article.hasAttribute('data-folded')) act(() => article.querySelector<HTMLButtonElement>('[data-fold-head]')!.click());
+  const body = () => el.querySelector<HTMLElement>(`[data-sent-reply="${replied}"] [data-passage-body="${replied}"]`);
+  await until(() => body() !== null, "the agent's reply's words");
+
+  await selectIn(body()!, 'off switch');
+  await until(() => document.querySelector('[data-pn-annotation-toolbar-row]') !== null, 'the selection toolbar');
+  await act(async () => {
+    toolbarComment().click();
+  });
+  const passageBox = () => el.querySelector<HTMLElement>(`[data-sent-reply="${replied}"] [data-sent-passage-box]`);
+  await until(() => passageBox() !== null, 'the box under the reply');
+  expect(passageBox()!.textContent).toContain('off switch');
+  await type(passageBox()!.querySelector('textarea')!, 'Which off switch?');
+  await act(async () => {
+    passageBox()!.querySelector<HTMLButtonElement>('[data-sent-reply-save]')!.click();
+  });
+  await until(() => posted.some((p) => p.path.includes(`/annotations/${replied}/subthreads`)), 'the sub-thread saved on the reply');
+  const draft = () => el.querySelector(`[data-sent-reply="${replied}"] [data-sent-subthread]`);
+  await until(() => draft() !== null && passageBox() === null, 'the draft sub-thread under the reply');
+  expect(draft()!.textContent).toContain('Not sent');
+  expect(draft()!.textContent).toContain('Which off switch?');
+  expect([...body()!.querySelectorAll('mark[data-passage-mark]')].map((m) => m.textContent)).toEqual(['off switch']);
+  const model = JSON.parse((await loopback(`/api/inbox/threads/${sent}/attachments`)).text) as { annotations: InboxAnnotationRecord[] };
+  expect(model.annotations.map((r) => [r.parent, r.quote_offset, r.annotation.originalText, r.sent_reply_id])).toEqual([[replied, STEPS.indexOf('off switch'), 'off switch', null]]);
+  // Its place is its thread's: nothing new painted on the message.
+  expect(el.querySelectorAll(`[data-message-id="${sent}"] [data-bind-id="${model.annotations[0]!.id}"], [data-message-id="${sent}"] [data-highlight-id="${model.annotations[0]!.id}"]`)).toHaveLength(0);
+}, 30_000);
+
+test.skipIf(!hasDom)('a resolved comment stays in view, Reopen and all, while a sub-thread under it is open; resolving that one too folds both', async () => {
+  const { sent } = await command<{ sent: string }>({ send: { project: world.project, session: 'ses_sub_res', body: 'Deploys roll out to every store.' } });
+  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('sub-res-1', 'every store', 'How do we roll back?') });
+  await postJson(`/api/inbox/messages/${sent}/reply`, { idempotency_key: 'k-sub-res', feedback: '# Feedback', annotation_ids: ['sub-res-1'] });
+  const { replied } = await command<{ replied: string }>({ commentReply: { comment: 'sub-res-1', session: 'ses_sub_res', text: STEPS } });
+  await postJson(`/api/inbox/annotations/${replied}/subthreads`, { annotation: { id: 'sub-res-s', text: 'Which off switch?', quote: 'off switch', quote_offset: STEPS.indexOf('off switch') } });
+  const last = JSON.parse((await loopback(`/api/inbox/threads/${sent}`)).text) as { thread: { messages: { id: string; author: { kind: string } }[] } };
+  await postJson(`/api/inbox/messages/${last.thread.messages.filter((m) => m.author.kind === 'agent').at(-1)!.id}/reply`, { idempotency_key: 'k-sub-res-2', feedback: '# Feedback on comment threads', annotation_ids: ['sub-res-s'] });
+
+  const el = await renderApp(`#thread=${sent}`);
+  await until(() => el.querySelector(`[data-message-article="${sent}"]`) !== null, 'the thread');
+  const article = el.querySelector<HTMLElement>(`[data-message-article="${sent}"]`)!;
+  if (article.hasAttribute('data-folded')) act(() => article.querySelector<HTMLButtonElement>('[data-fold-head]')!.click());
+  const row = () => el.querySelector<HTMLElement>('[data-sent-comments] [data-sent-comment="sub-res-1"]');
+  const sub = () => el.querySelector<HTMLElement>('[data-sent-comments] [data-sent-comment="sub-res-s"]');
+  await until(() => row() !== null && sub() !== null, 'the comment and its sub-thread');
+  expect(sub()!.querySelector('[data-sent-round="2"]')).not.toBeNull();
+
+  act(() => row()!.querySelector<HTMLButtonElement>('[data-sent-resolve="sub-res-1"]')!.click());
+  await until(() => row()?.hasAttribute('data-sent-resolved') === true, 'the comment resolved');
+  // Still in view: its words, its reply, its open sub-thread, and Reopen; nothing behind "resolved".
+  expect(row()!.textContent).toContain('How do we roll back?');
+  expect(sub()).not.toBeNull();
+  expect(row()!.querySelector('[data-sent-resolve="sub-res-1"]')!.textContent).toBe('Reopen');
+  expect(el.querySelector('[data-sent-comments] [data-sent-resolved-toggle]')).toBeNull();
+
+  act(() => sub()!.querySelector<HTMLButtonElement>('[data-sent-resolve="sub-res-s"]')!.click());
+  await until(() => row() === null, 'both folded away');
+  expect(el.querySelector('[data-sent-comments] [data-sent-resolved-toggle]')!.textContent).toBe('1 resolved');
+  expect(typeof (await storedRecord(sent, 'sub-res-s'))?.resolved_at).toBe('string');
+}, 30_000);
+
+test.skipIf(!hasDom)("on a file, words selected in a sent card open a comment on that passage, a draft card under it", async () => {
+  await postJson('/api/inbox/annotations', { attachment_id: world.attachment, version: 'current', annotation: words('sub-file-1', 'The plan, in short.', 'Say more about the rollback, please.') });
+  await postJson(`/api/inbox/messages/${world.filed}/reply`, { idempotency_key: 'k-sub-file', feedback: '# Feedback', annotation_ids: ['sub-file-1'] });
+
+  await renderApp(`#thread=${world.filed}&file=${world.attachment}`);
+  const body = () => document.querySelector<HTMLElement>('[data-annotation-id="sub-file-1"] [data-passage-body="sub-file-1"]');
+  await until(() => body() !== null, "the sent card's words");
+  await selectIn(body()!, 'the rollback');
+  await until(() => document.querySelector('[data-pn-annotation-toolbar-row]') !== null, 'the selection toolbar');
+  await act(async () => {
+    toolbarComment().click();
+  });
+  const area = () => document.querySelector<HTMLTextAreaElement>('[data-annotation-panel] textarea[aria-label="Comment on passage"]');
+  await until(() => area() !== null, 'the box under the card');
+  await type(area()!, 'Which rollback?');
+  await act(async () => {
+    area()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true, cancelable: true }));
+  });
+  await until(() => posted.some((p) => p.path.includes('/annotations/sub-file-1/subthreads')), 'the sub-thread saved on the card');
+  const draft = () => [...document.querySelectorAll('[data-annotation-reply] [data-annotation-id]')].find((node) => node.textContent?.includes('Which rollback?')) ?? null;
+  await until(() => draft() !== null, 'the draft card under the comment');
+  expect(draft()!.closest('[data-annotation-reply]')?.getAttribute('data-annotation-depth')).toBe('1');
+  // Its passage is at its head, and marked in the comment's words.
+  expect(draft()!.textContent).toContain('"the rollback"');
+  expect([...body()!.querySelectorAll('mark[data-passage-mark]')].map((m) => m.textContent)).toEqual(['the rollback']);
+  // Never painted on the file.
+  const id = draft()!.getAttribute('data-annotation-id')!;
+  expect(document.querySelector(`[data-bind-id="${id}"], [data-highlight-id="${id}"]`)).toBeNull();
 }, 30_000);

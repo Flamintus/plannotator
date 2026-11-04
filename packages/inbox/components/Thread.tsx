@@ -2215,9 +2215,9 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
   // Comments on the text of agents' messages (approval "inbox-message-comments"), by message.
   const messageComments = useMemo(() => {
     const byMessage = new Map<string, Annotation[]>();
-    // A resolved one leaves its words, and a reply's place is its comment's (SentComments.tsx).
+    // A resolved one leaves its words, and a reply's or sub-thread's place is its comment's (SentComments.tsx).
     for (const record of [...records, ...sentComments.open]) {
-      if (!record.message || record.re) continue;
+      if (!record.message || record.re || record.parent) continue;
       byMessage.set(record.message_id, [...(byMessage.get(record.message_id) ?? []), annotationOf(record)]);
     }
     return byMessage;
@@ -2494,6 +2494,8 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
     }
     return attachmentFeedback(pending, allFiles, texts, thread.project.root, {
       personMessageIds,
+      // A sub-thread carries the words its passage is in (experimental "persistent-comments").
+      commentMessages: sentComments.commentMessages,
       // A comment that tags agents is marked in the export (approval "inbox-tag-agents").
       tagNames: (ids) => ids.map((id) => tagOpts.find((o) => o.id === id)?.label ?? 'an agent'),
     });
@@ -5647,12 +5649,11 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
                 {isAgent && sentComments.byMessage.has(message.id) && (
                   <SentComments
                     records={sentComments.byMessage.get(message.id)!}
-                    rounds={sentComments.rounds}
-                    resolved={sentComments.resolved}
-                    replies={sentComments.replies}
+                    tree={sentComments.tree}
                     onOpen={openRecord}
                     onResolve={liveMessage(message) ? sentComments.resolve : undefined}
                     onReply={liveMessage(message) ? sentComments.reply : undefined}
+                    onSubThread={liveMessage(message) ? sentComments.subThread : undefined}
                   />
                 )}
                 {/* An agent's files, and the person's own (compose): the same tiles and viewers. */}

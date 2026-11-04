@@ -181,8 +181,11 @@ import {
   inboxCommentThreads,
   inboxCommentsToCarry,
   inboxOpenCommentsFeedback,
+  inboxQuoteOffset,
+  inboxSubThreadAnnotation,
   isInboxCommentReply,
   isInboxCommentReplyRecord,
+  isInboxSubThread,
 } from "@plannotator/core/inbox-comment-threads";
 import type { InboxReviewVerdictRecord } from "@plannotator/core/inbox-review";
 import {
@@ -4704,9 +4707,9 @@ export class InboxStore {
    * blob's hash.
    */
   saveAnnotation(input: { attachment_id: string; version: unknown; annotation: unknown }): InboxAnnotationRecord {
-    // An edit of the person's reply under a comment stays a reply (commentReplyDraftOf).
+    // An edit of the person's reply or sub-thread stays one (commentReplyDraftOf).
     const reply = this.commentReplyDraftOf(input.annotation);
-    if (reply) return this.saveCommentReply(reply.re!, input.annotation as Record<string, unknown>);
+    if (reply) return this.saveCommentDraftAgain(reply, input.annotation as Record<string, unknown>);
     const hit = this.attachment(input.attachment_id);
     if (!hit) throw new InboxError("attachment_not_found", `No attachment ${input.attachment_id}.`);
     // A PDF and a plain file are downloads: there is nothing in the window to comment on.
@@ -4893,7 +4896,7 @@ export class InboxStore {
    */
   saveMessageAnnotation(messageId: string, annotation: unknown): InboxAnnotationRecord {
     const reply = this.commentReplyDraftOf(annotation);
-    if (reply) return this.saveCommentReply(reply.re!, annotation as Record<string, unknown>);
+    if (reply) return this.saveCommentDraftAgain(reply, annotation as Record<string, unknown>);
     const message = this.messages.get(messageId);
     if (!message) throw new InboxError("message_not_found", `No message ${messageId}.`);
     if (message.author.kind !== "agent") {
@@ -5062,7 +5065,7 @@ export class InboxStore {
       throw new InboxError("annotation_closed", "This annotation was already sent or removed.");
     }
     const at = this.stamp();
-    const { unanchored_at: _unanchored, resolved_at: _resolved, ...target } = comment;
+    const { unanchored_at: _unanchored, resolved_at: _resolved, parent: _parent, quote_offset: _offset, ...target } = comment;
     const record: InboxAnnotationRecord = {
       ...target,
       id: input.id,
@@ -5078,14 +5081,73 @@ export class InboxStore {
   }
 
   /**
-   * The person's reply under a comment that an annotation edits, or null: a
-   * reply edited through its target's route (the window's list and the
-   * file's panel save every comment so) keeps its place under the comment.
+   * The person's sub-thread, a new one or an edit of one still waiting
+   * (experimental "persistent-comments"): a comment on a passage of one
+   * message of a comment thread (`parentId`: a sent comment, a reply under
+   * one, the agent's or the person's, or a sent sub-thread), a draft the next
+   * Send carries like any other, then a thread of its own. Its target is its
+   * thread's first comment's (`inboxSubThreadAnnotation`), so it needs nothing
+   * of the viewer; `quote` is the passage as drawn and `quote_offset` where
+   * it starts in the message's words (packages/core/passage.ts). A draft is
+   * no parent: its words have not reached the agent.
+   */
+  saveSubThread(parentId: string, input: { id?: unknown; text?: unknown; mentions?: unknown; quote?: unknown; quote_offset?: unknown }): InboxAnnotationRecord {
+    const named = this.annotations.get(parentId);
+    if (named && named.sent_reply_id === null && named.removed_at === null) {
+      throw new InboxError("annotation_not_sent", `${parentId} is a draft: a passage is commented on once it is sent.`);
+    }
+    // The comment or sub-thread the parent is, or is a reply under: the new sub-thread lives where it does.
+    const comment = this.sentComment(parentId);
+    if (!isInboxAnnotationId(input.id)) throw new InboxError("validation_error", "annotation.id: a short id.", { field: "annotation.id" });
+    const text = inboxCommentReplyText(input.text);
+    if (text === null) throw new InboxError("validation_error", `annotation.text: the comment (1 to ${INBOX_COMMENT_REPLY_TEXT_MAX} characters).`, { field: "annotation.text" });
+    const quote = typeof input.quote === "string" ? input.quote.trim() : "";
+    if (quote === "" || quote.length > INBOX_MESSAGE_COMMENT_QUOTE_MAX) {
+      throw new InboxError("validation_error", `annotation.quote: the passage (1 to ${INBOX_MESSAGE_COMMENT_QUOTE_MAX} characters).`, { field: "annotation.quote" });
+    }
+    const offset = input.quote_offset;
+    if (!Number.isInteger(offset) || (offset as number) < 0) throw new InboxError("validation_error", "annotation.quote_offset: a whole number from 0.", { field: "annotation.quote_offset" });
+    const mentions = Array.isArray(input.mentions) ? input.mentions.filter((m): m is string => typeof m === "string") : undefined;
+    const message = this.messages.get(comment.message_id);
+    if (message && this.closedByArchive(message)) throw new InboxError("thread_resolved", "This thread is resolved; reopen it to annotate.");
+    const existing = this.annotations.get(input.id);
+    if (existing && existing.parent !== parentId) throw new InboxError("validation_error", "annotation.id: already used by another comment.", { field: "annotation.id" });
+    if (existing && (existing.sent_reply_id !== null || existing.removed_at !== null)) {
+      throw new InboxError("annotation_closed", "This annotation was already sent or removed.");
+    }
+    const at = this.stamp();
+    const { unanchored_at: _unanchored, resolved_at: _resolved, re: _re, parent: _parent, quote_offset: _offset, ...target } = comment;
+    const createdAt = existing?.created_at ?? at;
+    const record: InboxAnnotationRecord = {
+      ...target,
+      id: input.id,
+      annotation: inboxSubThreadAnnotation(comment, { id: input.id, parent: parentId, quote, text, createdA: Date.parse(createdAt), mentions }),
+      parent: parentId,
+      quote_offset: offset as number,
+      created_at: createdAt,
+      updated_at: at,
+      removed_at: null,
+      sent_reply_id: null,
+    };
+    this.appendAnnotation(record, at);
+    return record;
+  }
+
+  /**
+   * The person's reply or sub-thread that an annotation edits, or null: one
+   * edited through its target's route (the window's list and the file's
+   * panel save every comment so) keeps its place under its message.
    */
   private commentReplyDraftOf(annotation: unknown): InboxAnnotationRecord | null {
     const id = annotation && typeof annotation === "object" ? (annotation as Record<string, unknown>).id : undefined;
     const existing = typeof id === "string" ? this.annotations.get(id) : undefined;
-    return existing && isInboxCommentReply(existing) ? existing : null;
+    return existing && (isInboxCommentReply(existing) || isInboxSubThread(existing)) ? existing : null;
+  }
+
+  /** A reply or sub-thread saved again through its target's route, with its new words: it stays under its message, on its passage. */
+  private saveCommentDraftAgain(existing: InboxAnnotationRecord, annotation: Record<string, unknown>): InboxAnnotationRecord {
+    if (isInboxCommentReply(existing)) return this.saveCommentReply(existing.re!, annotation);
+    return this.saveSubThread(existing.parent!, { ...annotation, quote: existing.annotation.originalText, quote_offset: inboxQuoteOffset(existing) });
   }
 
   /**

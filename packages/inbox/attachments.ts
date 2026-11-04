@@ -10,7 +10,7 @@ import { shouldStripFrontmatter } from '@plannotator/core/annotatable';
 import { diagramAnchorLocationLine, parseDiagramAnchor } from '@plannotator/core/diagram-anchor';
 import { codeFenceFor } from '@plannotator/core/markdown-structure';
 import { cutText, sliceText } from '@plannotator/core/inbox-questions';
-import { inboxCommentRepliesFeedback, isInboxCommentReply } from '@plannotator/core/inbox-comment-threads';
+import { inboxCommentRepliesFeedback, isInboxCommentUnderAnother, type InboxCommentMessage } from '@plannotator/core/inbox-comment-threads';
 import {
   formatInboxVideoTime,
   INBOX_VIDEO_BLOCK_ID,
@@ -663,9 +663,11 @@ export const ATTACHMENT_AND_IMAGE_FEEDBACK_HEADING = {
  * `<attachment id>\0<version>`, so line numbers name the lines the person read.
  * Every comment's heading ends with its id (`commentIdSuffix`), the record's
  * own, so the same comment reads the same id in every Send that carries it.
- * The person's replies under their sent comments (experimental
- * "persistent-comments", a record's `re`) go last, in a section of their own,
- * each under the id of the comment it answers (`inboxCommentRepliesFeedback`).
+ * The person's replies under their sent comments and sub-threads on a
+ * passage of a thread's message (experimental "persistent-comments", a
+ * record's `re` or `parent`) go last, in a section of their own, each under
+ * the id of the message it is under (`inboxCommentRepliesFeedback`); a
+ * sub-thread with the words its passage is in, from `commentMessages`.
  */
 export function attachmentFeedback(
   records: readonly InboxAnnotationRecord[],
@@ -680,11 +682,13 @@ export function attachmentFeedback(
      * which comment carried a tag ("Tagged Pi"). Absent: tags are not named.
      */
     tagNames?: (ids: readonly string[]) => string[];
+    /** The messages of the thread's comment threads, by id: a sub-thread's entry quotes the words its passage is in. */
+    commentMessages?: ReadonlyMap<string, InboxCommentMessage>;
   } = {},
 ): string {
   if (records.length === 0) return '';
-  const threads = inboxCommentRepliesFeedback(records, projectRoot);
-  const own = threads ? records.filter((record) => !isInboxCommentReply(record)) : records;
+  const threads = inboxCommentRepliesFeedback(records, projectRoot, options.commentMessages);
+  const own = threads ? records.filter((record) => !isInboxCommentUnderAnother(record)) : records;
   const messages = messageFeedback(own);
   let inlineImages = false;
   const groups = new Map<string, { annotations: Annotation[]; markdown?: string; blocks: Block[]; video?: { durationMs?: number } }>();
