@@ -277,4 +277,46 @@ describe("annotate approval submission", () => {
     });
     expect(discard).toBe(ANNOTATE_NO_FEEDBACK_SENTENCE);
   });
+
+  // The payload is what the agent gets: a section that drops the ids leaves
+  // the agent unable to name those comments in a later round.
+  test("names every comment by its id, in every section and in a picked message", () => {
+    const markdown = "# Retry\n\nRetry forever.";
+    const blocks = parseMarkdownToBlocks(markdown);
+    const comment = (id: string): Annotation => ({
+      id,
+      blockId: blocks[1]!.id,
+      startOffset: 0,
+      endOffset: 5,
+      type: AnnotationType.COMMENT,
+      text: "Bound it.",
+      originalText: "Retry",
+      createdA: 1,
+    });
+    const code: CodeAnnotation = { id: "code-1", type: "comment", filePath: "src/retry.ts", lineStart: 8, lineEnd: 8, side: "new", text: "Cap it.", createdAt: 1 };
+    const editor: EditorAnnotation = { id: "editor-1", filePath: "src/config.ts", selectedText: "MAX", lineStart: 3, lineEnd: 3, comment: "Configurable.", createdAt: 1 };
+    const base = {
+      blocks,
+      annotations: [comment("doc-1")],
+      globalAttachments: [],
+      linkedDocuments: new Map<string, LinkedDocAnnotationEntry>([["/docs/runbook.md", { annotations: [comment("linked-1")], globalAttachments: [], markdown }]]),
+      editorAnnotations: [editor],
+      codeAnnotations: [code],
+      title: "File Feedback",
+      subject: "file",
+      sourceConverted: false,
+      directEditsSection: "",
+      savedFileChangesSection: "",
+    };
+    const named = (feedback: string, id: string) => feedback.split("\n").some((line) => /^#{2,3} \d+\. /.test(line) && line.endsWith(` (id ${id})`));
+
+    const feedback = buildCompleteAnnotateFeedback(base);
+    for (const id of ["doc-1", "linked-1", "code-1", "editor-1"]) expect(named(feedback, id)).toBe(true);
+
+    const picked = buildCompleteAnnotateFeedback({
+      ...base,
+      messageEntries: [{ messageId: "m1", text: markdown, annotations: [comment("msg-1")], globalAttachments: [], blocks }],
+    });
+    for (const id of ["msg-1", "editor-1"]) expect(named(picked, id)).toBe(true);
+  });
 });

@@ -92,15 +92,18 @@ export interface CompleteAnnotateFeedbackInput {
   approvalFraming?: boolean;
 }
 
+/** The payload is what the agent gets: every entry names its comment by id. */
+const AGENT_EXPORT = { commentIds: true } as const;
+
 export function buildCompleteAnnotateFeedback(
   input: CompleteAnnotateFeedbackInput,
 ): string {
   let annotationsText: string;
 
   if (input.messageEntries) {
-    annotationsText = exportMessageAnnotations(input.messageEntries);
+    annotationsText = exportMessageAnnotations(input.messageEntries, AGENT_EXPORT);
     if (input.editorAnnotations.length > 0) {
-      annotationsText += `\n\n${exportEditorAnnotations(input.editorAnnotations)}`;
+      annotationsText += `\n\n${exportEditorAnnotations(input.editorAnnotations, AGENT_EXPORT)}`;
     }
   } else {
     const hasLinkedAnnotations = Array.from(input.linkedDocuments.values()).some(
@@ -126,7 +129,7 @@ export function buildCompleteAnnotateFeedback(
             input.globalAttachments,
             input.title,
             input.subject,
-            { sourceConverted: input.sourceConverted },
+            { sourceConverted: input.sourceConverted, ...AGENT_EXPORT },
           )
         : "";
 
@@ -143,13 +146,13 @@ export function buildCompleteAnnotateFeedback(
             ? { ...entry, blocks: blocksForDocument(filepath, entry.markdown) }
             : entry);
         }
-        annotationsText += exportLinkedDocAnnotations(enriched, input.linkedDocumentsHeading);
+        annotationsText += exportLinkedDocAnnotations(enriched, input.linkedDocumentsHeading, AGENT_EXPORT);
       }
       if (hasEditorAnnotations) {
-        annotationsText += exportEditorAnnotations(input.editorAnnotations);
+        annotationsText += exportEditorAnnotations(input.editorAnnotations, AGENT_EXPORT);
       }
       if (hasCodeAnnotations) {
-        annotationsText += exportCodeFileAnnotations(input.codeAnnotations);
+        annotationsText += exportCodeFileAnnotations(input.codeAnnotations, AGENT_EXPORT);
       }
       // The secondary sections open with a blank line to separate them from
       // the section before; with no primary section that line led the payload.

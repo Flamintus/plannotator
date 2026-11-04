@@ -759,7 +759,23 @@ export const wrapFeedbackForAgent = (feedback: string): string =>
 
 export interface ExportAnnotationsOptions {
   sourceConverted?: boolean;
+  /** End each entry's heading with its comment's id (`commentIdSuffix`), for
+   *  feedback an agent receives: the id is the annotation's own, so it stays
+   *  the same for as long as the comment exists. Off by default, so every
+   *  other copy (Ask AI's context, a PR review body, a host's own export)
+   *  is byte-identical to before. */
+  commentIds?: boolean;
 }
+
+/** The short ids Plannotator mints for comments (a UUID, `global-…`, the
+ *  Inbox's `ann-code-…`): the same shape the Inbox store accepts. */
+const COMMENT_ID_RE = /^[A-Za-z0-9_.:-]{1,200}$/;
+
+/** ` (id <annotation id>)`, the end of an exported entry's heading, or ''
+ *  for an id that is not such a short id (an older or foreign writer), so
+ *  nothing in an id can add a line to agent-read feedback. */
+export const commentIdSuffix = (id: unknown): string =>
+  typeof id === 'string' && COMMENT_ID_RE.test(id) ? ` (id ${id})` : '';
 
 /** Compute the end line of a block from its content and type. */
 const blockEndLine = (block: Block): number => {
@@ -1209,7 +1225,7 @@ const labelSummaryBlock = (sortedAnns: any[], level: number): string => {
 const renderAnnotationEntries = (
   sortedAnns: any[],
   blocks: Block[] | undefined,
-  opts: { subject: string; level: number; injectedSkills: Set<string> },
+  opts: { subject: string; level: number; injectedSkills: Set<string>; commentIds?: boolean },
 ): string => {
   const { subject, injectedSkills } = opts;
   const hashes = (n: number) => '#'.repeat(n);
@@ -1319,29 +1335,30 @@ const renderAnnotationEntries = (
       if (lineLabel) output += `(${lineLabel}) `;
     }
 
+    const id = opts.commentIds ? commentIdSuffix(ann.id) : '';
     switch (ann.type) {
       case 'DELETION':
-        output += `Remove this\n`;
+        output += `Remove this${id}\n`;
         output += `\`\`\`\n${ann.originalText}\n\`\`\`\n`;
         output += `> I don't want this in the ${subject}.\n`;
         break;
 
       case 'COMMENT':
         if (ann.isQuickLabel) {
-          output += `[${ann.text}] ${commentHeadingLine(ann)}\n`;
+          output += `[${ann.text}] ${commentHeadingLine(ann)}${id}\n`;
           output += diagramLocationExportLine(ann);
           if (ann.quickLabelTip) {
             output += `> ${ann.quickLabelTip}\n`;
           }
         } else {
-          output += `${commentHeadingLine(ann)}\n`;
+          output += `${commentHeadingLine(ann)}${id}\n`;
           output += diagramLocationExportLine(ann);
           output += `> ${ann.text}\n`;
         }
         break;
 
       case 'GLOBAL_COMMENT':
-        output += `General feedback about the ${subject}\n`;
+        output += `General feedback about the ${subject}${id}\n`;
         output += `> ${ann.text}\n`;
         break;
     }
@@ -1426,7 +1443,7 @@ export const exportAnnotations = (
     output += `I've reviewed this ${subject} and have ${annotations.length} piece${annotations.length > 1 ? 's' : ''} of feedback:\n\n`;
   }
 
-  output += renderAnnotationEntries(sortedAnns, blocks, { subject, level: 2, injectedSkills });
+  output += renderAnnotationEntries(sortedAnns, blocks, { subject, level: 2, injectedSkills, commentIds: opts.commentIds });
 
   output += `---\n`;
 
@@ -1469,6 +1486,7 @@ export const BUNDLE_DOC_EXPORT_HEADING: LinkedDocExportHeading = {
 export const exportLinkedDocAnnotations = (
   docAnnotations: Map<string, LinkedDocAnnotationEntry>,
   heading: LinkedDocExportHeading = LINKED_DOC_EXPORT_HEADING,
+  opts: Pick<ExportAnnotationsOptions, 'commentIds'> = {},
 ): string => {
   let output = `\n# ${heading.title}\n\n${heading.intro}\n\n`;
 
@@ -1504,7 +1522,7 @@ export const exportLinkedDocAnnotations = (
       output += `I've reviewed this document and have ${annotations.length} piece${annotations.length !== 1 ? 's' : ''} of feedback:\n\n`;
     }
 
-    output += renderAnnotationEntries(sortedAnns, docBlocks, { subject: 'document', level: 3, injectedSkills });
+    output += renderAnnotationEntries(sortedAnns, docBlocks, { subject: 'document', level: 3, injectedSkills, commentIds: opts.commentIds });
     output += labelSummaryBlock(sortedAnns, 3);
   }
 
@@ -1512,7 +1530,10 @@ export const exportLinkedDocAnnotations = (
   return output;
 };
 
-export const exportEditorAnnotations = (editorAnnotations: EditorAnnotation[]): string => {
+export const exportEditorAnnotations = (
+  editorAnnotations: EditorAnnotation[],
+  opts: Pick<ExportAnnotationsOptions, 'commentIds'> = {},
+): string => {
   if (editorAnnotations.length === 0) return '';
 
   let output = `\n# Editor File Annotations\n\nThe following annotations reference code files in the project.\n\n`;
@@ -1522,7 +1543,7 @@ export const exportEditorAnnotations = (editorAnnotations: EditorAnnotation[]): 
       ? `line ${ann.lineStart}`
       : `lines ${ann.lineStart}-${ann.lineEnd}`;
 
-    output += `## ${index + 1}. ${ann.filePath} (${lineRange})\n`;
+    output += `## ${index + 1}. ${ann.filePath} (${lineRange})${opts.commentIds ? commentIdSuffix(ann.id) : ''}\n`;
     output += `\`\`\`\n${ann.selectedText}\n\`\`\`\n`;
 
     if (ann.comment) {
@@ -1536,7 +1557,10 @@ export const exportEditorAnnotations = (editorAnnotations: EditorAnnotation[]): 
   return output;
 };
 
-export const exportCodeFileAnnotations = (annotations: CodeAnnotation[]): string => {
+export const exportCodeFileAnnotations = (
+  annotations: CodeAnnotation[],
+  opts: Pick<ExportAnnotationsOptions, 'commentIds'> = {},
+): string => {
   if (annotations.length === 0) return '';
 
   let output = `\n# Code File Feedback\n\nThe following feedback is on code files referenced from the reviewed document.\n\n`;
@@ -1553,7 +1577,7 @@ export const exportCodeFileAnnotations = (annotations: CodeAnnotation[]): string
       ? `line ${ann.lineStart}`
       : `lines ${ann.lineStart}-${ann.lineEnd}`;
 
-    output += `## ${index + 1}. ${ann.filePath} (${lineRange})\n`;
+    output += `## ${index + 1}. ${ann.filePath} (${lineRange})${opts.commentIds ? commentIdSuffix(ann.id) : ''}\n`;
     if (ann.originalCode) {
       output += `\`\`\`\n${ann.originalCode}\n\`\`\`\n`;
     }
@@ -1716,7 +1740,10 @@ const fencedBlock = (text: string, language = ''): string => {
   return `${fence}${language}\n${text}\n${fence}\n`;
 };
 
-export const exportMessageAnnotations = (entries: MessageAnnotationEntry[]): string => {
+export const exportMessageAnnotations = (
+  entries: MessageAnnotationEntry[],
+  opts: Pick<ExportAnnotationsOptions, 'commentIds'> = {},
+): string => {
   const nonEmpty = entries.filter((entry) => {
     const linkedDocCount = entry.linkedDocs
       ? Array.from(entry.linkedDocs.values()).reduce(
@@ -1752,6 +1779,7 @@ export const exportMessageAnnotations = (entries: MessageAnnotationEntry[]): str
         entry.globalAttachments,
         `Feedback for Message ${index + 1}`,
         'message',
+        opts,
       );
       output += '\n';
     }
@@ -1762,12 +1790,12 @@ export const exportMessageAnnotations = (entries: MessageAnnotationEntry[]): str
         )
       : false;
     if (entry.linkedDocs && hasLinkedDocFeedback) {
-      output += exportLinkedDocAnnotations(entry.linkedDocs);
+      output += exportLinkedDocAnnotations(entry.linkedDocs, undefined, opts);
       output += '\n';
     }
 
     if (entry.codeAnnotations?.length) {
-      output += exportCodeFileAnnotations(entry.codeAnnotations);
+      output += exportCodeFileAnnotations(entry.codeAnnotations, opts);
       output += '\n';
     }
   });

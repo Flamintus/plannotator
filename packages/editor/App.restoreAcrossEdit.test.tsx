@@ -311,6 +311,7 @@ describe.if(hasDom)("restoring a draft across a file edit", () => {
       [],
       "File Feedback",
       "file",
+      { commentIds: true },
     );
     expect(body.feedback).toContain(expected);
     expect(expected).toContain(`(line ${lineOf(ORIGINAL, "The retry loop")}) `);
