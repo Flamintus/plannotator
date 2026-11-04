@@ -47,10 +47,9 @@ import {
   isInboxCommentUnderAnother,
   isInboxSubThread,
   type InboxCommentMessage,
-  type InboxCommentThreadMessage,
 } from '@plannotator/core/inbox-comment-threads';
 import type { TextPassage } from '@plannotator/core/passage';
-import type { InboxAnnotationRecord, InboxCommentReplyRecord } from '@plannotator/core/inbox-types';
+import type { InboxAnnotationRecord, InboxCommentReplyRecord, InboxMessageWire } from '@plannotator/core/inbox-types';
 import type { Annotation, Block } from '@plannotator/ui/types';
 import { PassageToolbar } from '@plannotator/ui/components/PassageToolbar';
 import { PASSAGE_BODY_ATTRIBUTE, passageRanges, selectedPassage, splitByRanges, type SelectedPassage } from '@plannotator/ui/utils/passageSelection';
@@ -75,6 +74,7 @@ import {
   type SentReplyRow,
 } from '../sentComments';
 import { newUuid } from '../uuid';
+import { isRepliesOnly, isRoundAlone, repliedUnderWords, roundLineWords, sendRound } from '../roundLines';
 
 const NO_RECORDS: readonly InboxAnnotationRecord[] = [];
 const NO_REPLIES: readonly InboxCommentReplyRecord[] = [];
@@ -128,6 +128,12 @@ export interface SentCommentsTree {
   passages: ReadonlyMap<string, readonly TextPassage[]>;
 }
 
+/** How the thread draws a message once its comments live in their boxes (`useSentComments`' `lineOf`). */
+export type ThreadLine =
+  | { kind: 'round'; words: string; open: boolean; onToggle: () => void }
+  | { kind: 'folded'; words: string }
+  | { kind: 'replies'; words: string };
+
 /**
  * The thread's sent comments, from its files (`sent_comments` and
  * `comment_replies`, present only while the switch is on): their rounds, the
@@ -142,10 +148,11 @@ export interface SentCommentsTree {
  * `canResolve` is false. `drafts`: the thread's comments waiting for a Send
  * (a draft reply under a resolved comment shows it open again).
  * `messages`: every message of the comment threads, by id, for the Send's
- * export of a sub-thread (the words its passage is in).
+ * export of a sub-thread (the words its passage is in). `lineOf`: the line a
+ * message is drawn as in the thread, or in it (roundLines.ts, RoundLine.tsx).
  */
 export function useSentComments(input: {
-  messages: readonly InboxCommentThreadMessage[];
+  messages: readonly InboxMessageWire[];
   files: AttachmentsModel | null;
   drafts: readonly InboxAnnotationRecord[];
   patchDrafts: (update: (records: InboxAnnotationRecord[]) => InboxAnnotationRecord[]) => void;
@@ -271,7 +278,38 @@ export function useSentComments(input: {
       };
     };
   };
+  // A Send's line, read once per message; and which of those lines show the text the agent got.
+  const sendRounds = useMemo(() => new Map(messages.map((message) => [message.id, sendRound(message)])), [messages]);
+  const [roundsShown, setRoundsShown] = useState<ReadonlySet<string>>(NO_IDS);
+  const toggleRound = useCallback((id: string) => {
+    setRoundsShown((current) => {
+      const next = new Set(current);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+  }, []);
+  /**
+   * How the thread draws a message (roundLines.ts): `round`, a Send whose
+   * comments all live in their boxes, as one line in its place (`open`: the
+   * text the agent got shown under it); `folded`, a Send with more in it,
+   * whose boxed sections fold into one line under its words; `replies`, an
+   * agent's message with no body, its replies' line. Null: as before (the
+   * switch off, its files not read yet, or nothing in boxes). `sent`: the
+   * answers and action items the Send carried, as the window lists them.
+   */
+  const lineOf = (message: InboxMessageWire, sent: { answers: number; actions: number }): ThreadLine | null => {
+    if (isRepliesOnly(message)) {
+      const under = new Set(agentReplies.filter((reply) => reply.message_id === message.id).map((reply) => reply.re));
+      return { kind: 'replies', words: repliedUnderWords(under.size) };
+    }
+    const round = files?.sent_comments ? sendRounds.get(message.id) : null;
+    if (!round) return null;
+    const words = roundLineWords(round.counts, rounds.get(message.id));
+    if (!isRoundAlone(message, round, sent)) return { kind: 'folded', words };
+    return { kind: 'round', words, open: roundsShown.has(message.id), onToggle: () => toggleRound(message.id) };
+  };
   return {
+    lineOf,
     records,
     open,
     rounds,

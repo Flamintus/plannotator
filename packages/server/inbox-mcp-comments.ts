@@ -12,7 +12,9 @@
  *    Quotes, comments and replies are clipped: the person's reply that
  *    carried each one (`reply`) has it whole.
  *  - send_message's `comment_replies`: with its message, the agent's reply
- *    under each comment, by the comment's id, whoever wrote it. Nothing
+ *    under each comment, by the comment's id, whoever wrote it; the message
+ *    may then have no body (the person reads the replies under their
+ *    comments, and the window draws such a message as one line). Nothing
  *    resolves or removes one: only the person does. A field, not an action
  *    of its own: the agent tool's description has no room left for one under
  *    Claude Code's 2,048 characters (with the Board and steps on), and the
@@ -109,7 +111,7 @@ export const INBOX_COMMENT_REPLIES_MAX = 100;
  * 2,048 characters, which an action of its own would pass).
  */
 export const COMMENT_REPLIES_DESCRIPTION =
-  'With this message, your reply under each comment the person sent: `[{ "comment_id": "…", "text": "…" }]`, one per comment. comment_id is the `(id …)` ending the comment\'s heading in their reply (read_thread lists them too; the id of a reply under a comment answers that comment). Each text shows under its comment: what you changed for it, your answer, or why you did not do it; keep `body` to the round\'s summary. Send with reply_to into their thread. Only the person resolves a comment.';
+  'With this message, your reply under each comment the person sent: `[{ "comment_id": "…", "text": "…" }]`, one per comment. comment_id is the `(id …)` ending the comment\'s heading in their reply (read_thread lists them too; the id of a reply under a comment answers that comment). Each text shows under its comment: what you changed for it, your answer, or why you did not do it. Leave `body` out when the replies say it all; write one only for what is not about a comment. Send with reply_to into their thread. Only the person resolves a comment.';
 
 /** The `comment_replies` field: send_message's, only while sent comments stay in view. */
 export const COMMENT_REPLIES_FIELD = z

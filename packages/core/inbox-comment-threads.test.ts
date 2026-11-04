@@ -21,6 +21,8 @@ import {
   inboxOpenSubThreadPaths,
   inboxSubThreadAnnotation,
   inboxCommentMessages,
+  inboxCommentRepliesCount,
+  inboxOpenCommentsCount,
 } from './inbox-comment-threads';
 
 const agent = (id: string, created_at = '2026-11-04T09:00:00.000Z') => ({ id, author: { kind: 'agent' }, created_at });
@@ -422,5 +424,42 @@ describe('sub-threads on a passage of a message of a thread', () => {
     const text = inboxOpenCommentsFeedback(carried, '/repo');
     expect(text).toContain('### 1. Round 2, on a passage of reply rep_a under comment c1 (on message msg_a1): "off switch" (id s1)\nIn: "');
     expect(text).toContain('feature-flag off switch');
+  });
+});
+
+// What regresses: the window's one line about a Send (packages/inbox/roundLines.ts) reads these counts back from the
+// text the agent got; a change to the sections' headings would make it count wrong, or nothing.
+describe('what a section carried, read back from its text', () => {
+  test("open comments: one per entry, the older ones it counts too, never a comment's own words", () => {
+    const threads = inboxCommentThreads(
+      [agent('msg_a1'), person('msg_p1')],
+      [
+        record('c1', { sent_reply_id: 'msg_p1', annotation: { originalText: 'every store', text: '### 9. Looks like a heading (id c9)' } }),
+        record('c2', { sent_reply_id: 'msg_p1', annotation: { originalText: 'Friday', text: 'Not on a Friday.' } }),
+      ],
+    );
+    expect(inboxOpenCommentsCount(inboxOpenCommentsFeedback(threads, '/repo'))).toBe(2);
+    const many = Array.from({ length: INBOX_OPEN_COMMENTS_SENT + 3 }, (_, i) => record(`c${String(i).padStart(2, '0')}`, { sent_reply_id: 'msg_p1', created_at: `2026-11-04T10:${String(i).padStart(2, '0')}:00.000Z` }));
+    expect(inboxOpenCommentsCount(inboxOpenCommentsFeedback(inboxCommentThreads([agent('msg_a1'), person('msg_p1')], many), '/repo'))).toBe(INBOX_OPEN_COMMENTS_SENT + 3);
+    expect(inboxOpenCommentsCount('')).toBe(0);
+  });
+
+  test('replies and sub-threads, each by its entry', () => {
+    const answer: InboxCommentReplyRecord = {
+      id: 'rep_a', project_id: 'prj_1', thread_id: 'msg_a1', re: 'c1', from: { kind: 'agent', host: 'claude-code', session: 'ses_a', name: 'Claude Code' },
+      message_id: 'msg_a2', text: 'Step 2 rolls back through the off switch.', created_at: '2026-11-04T10:04:00.000Z',
+    };
+    const comment = record('c1', { sent_reply_id: 'msg_p1' });
+    const text = inboxCommentRepliesFeedback(
+      [
+        record('r1', { re: 'c1', created_at: '2026-11-04T10:07:00.000Z', annotation: { id: 'r1', type: 'COMMENT', originalText: 'words of c1', text: '### 3. Reply under comment c1 (id r9)' } }),
+        record('r2', { re: 'c1', created_at: '2026-11-04T10:07:30.000Z', annotation: { id: 'r2', type: 'COMMENT', originalText: 'words of c1', text: 'and page me' } }),
+        record('s1', { parent: 'rep_a', quote_offset: 30, created_at: '2026-11-04T10:08:00.000Z', annotation: { id: 's1', type: 'COMMENT', originalText: 'off switch', text: 'which one?' } }),
+      ],
+      '/repo',
+      inboxCommentMessages([comment], [answer]),
+    );
+    expect(inboxCommentRepliesCount(text)).toEqual({ replies: 2, subThreads: 1 });
+    expect(inboxCommentRepliesCount('')).toEqual({ replies: 0, subThreads: 0 });
   });
 });

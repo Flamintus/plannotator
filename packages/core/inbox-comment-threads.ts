@@ -590,6 +590,37 @@ export function inboxCommentRepliesFeedback(records: readonly InboxAnnotationRec
   return [`# ${INBOX_COMMENT_REPLIES_TITLE}`, intro, ...entries].join("\n\n");
 }
 
+/** An entry's heading in the two sections above: `### N. …`, ending with the entry's own id. */
+const SECTION_ENTRY = /^### \d+\. (.*) \(id [^\s()]+\)$/;
+
+/**
+ * How many open comments a section of `inboxOpenCommentsFeedback` sent
+ * again: its entries and the older ones it counts. Read back from the text
+ * the agent got, for the window's line about the reply (packages/inbox/roundLines.ts).
+ */
+export function inboxOpenCommentsCount(section: string): number {
+  let count = 0;
+  for (const line of section.split("\n")) {
+    if (SECTION_ENTRY.test(line)) count += 1;
+    const older = /^(\d+) older open comments? (?:is|are) not repeated here/.exec(line);
+    if (older) count += Number(older[1]);
+  }
+  return count;
+}
+
+/** The replies and the sub-threads a section of `inboxCommentRepliesFeedback` carried, read back from its text as above. */
+export function inboxCommentRepliesCount(section: string): { replies: number; subThreads: number } {
+  let replies = 0;
+  let subThreads = 0;
+  for (const line of section.split("\n")) {
+    const entry = SECTION_ENTRY.exec(line)?.[1];
+    if (entry === undefined) continue;
+    if (entry.startsWith("Reply under comment ")) replies += 1;
+    else if (entry.startsWith("Comment ")) subThreads += 1;
+  }
+  return { replies, subThreads };
+}
+
 /**
  * Where a run of lines moved to: the start (from 1) of the `count` lines of
  * `lines` that `matches` accepts, nearest to `start`, or null when no run

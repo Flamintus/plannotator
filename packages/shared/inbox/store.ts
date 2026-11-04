@@ -259,6 +259,13 @@ export interface InboxSendInput {
    * told to have ended when it stops polling.
    */
   wakes?: boolean;
+  /**
+   * The message carries the agent's replies under the person's comments
+   * (send_message's `comment_replies`, experimental "persistent-comments",
+   * written right after it): its body may be empty, the replies being what
+   * it says.
+   */
+  carries_comment_replies?: boolean;
 }
 
 export interface InboxSendResult {
@@ -3399,7 +3406,8 @@ export class InboxStore {
    */
   sendMessage(input: InboxSendInput): InboxSendResult {
     const body = input.body;
-    if (typeof body !== "string" || body.trim() === "") throw new InboxError("validation_error", "body: a message needs a body.", { field: "body" });
+    // A message of replies under comments alone has none (carries_comment_replies).
+    if (typeof body !== "string" || (body.trim() === "" && input.carries_comment_replies !== true)) throw new InboxError("validation_error", "body: a message needs a body.", { field: "body" });
     // One line of plain text, checked before anything else (a reply ignores
     // its subject, but leaked tool-call text means the call itself was
     // malformed): nothing is written, so a corrected retry with the same

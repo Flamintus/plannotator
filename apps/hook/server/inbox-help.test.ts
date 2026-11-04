@@ -238,7 +238,7 @@ describe("the guide against what it describes", () => {
   });
 
   // What regresses: a guide that names send_message's comment_replies while the Inbox does not take it (the switch
-  // off), or, on, a send_message argument the guide leaves out.
+  // off), or, on, a send_message argument the guide leaves out, or a body it calls required when the Inbox does not.
   test("with kept comments off the guide names no comment_replies; on, it covers send_message's field as served", async () => {
     expect(help).not.toContain("comment_replies");
     const helpComments = formatInboxHelp({ command: COMMAND, dataDir: DATA_DIR, platform: "linux", comments: true });
@@ -257,6 +257,11 @@ describe("the guide against what it describes", () => {
         const covered = (INBOX_FILLED_ARGUMENTS as readonly string[]).includes(property) || section.includes(`\`${property}\``);
         expect(covered, `send_message's argument ${property} is not in the guide`).toBe(true);
       }
+      // Served, a message of replies alone has no body: the guide must not say a body is always required.
+      const required = (tools.find((tool) => tool.name === "send_message")!.inputSchema as { required?: string[] }).required ?? [];
+      expect(required).not.toContain("body");
+      expect(section).not.toContain("`body` is required;");
+      expect(help).toContain("`body` is required;");
     } finally {
       await client.close();
       server.stop();

@@ -142,6 +142,8 @@ import { useThreadSteps, type StepsSubscribe } from '../steps/useThreadSteps';
 import { replyKeysToRenew, routeSendAnnotations, sendTargetAnswerIds, sendTargetsOf, wordsMessage, type SendTarget, type SentContents } from '../sendTargets';
 import { useSentComments } from './SentComments';
 import { unfoldOpenThreads } from '../sentComments';
+import { RoundFold, RoundRow } from './RoundLine';
+import { splitRoundFeedback } from '../roundLines';
 
 export { routeSendAnnotations, sendTargetsOf, type SendTarget };
 
@@ -372,6 +374,7 @@ export function MessageBody({
   inlineRefOf,
   replyFiles,
   belowBlocks,
+  roundLine,
 }: {
   /**
    * The action items this person's message carried (approval
@@ -483,6 +486,13 @@ export function MessageBody({
    * message (SentComments.tsx). Absent: none.
    */
   belowBlocks?: (blocks: readonly Block[]) => { below: (block: Block) => React.ReactNode; after: React.ReactNode };
+  /**
+   * The person's Send whose comments live in their boxes (experimental
+   * "persistent-comments"; roundLines.ts): the feedback sections the boxes
+   * hold fold into one line under the words, these its words; a press shows
+   * them as sent. Absent: the feedback is drawn whole.
+   */
+  roundLine?: string;
 }) {
   // A person's message ends with the skills block the window pasted when it
   // was sent: folded behind one quiet line (SkillsLine). An agent's message
@@ -513,11 +523,15 @@ export function MessageBody({
   const feedback = useMemo(() => (ownReply ? splitReplyFeedback(replyParts ? restText : wordsText) : null), [ownReply, replyParts, restText, wordsText]);
   const shown = useMemo(() => linkFiles(feedback && !replyParts ? feedback.words : wordsText), [linkFiles, feedback, replyParts, wordsText]);
   const restShown = useMemo(() => (replyParts ? linkFiles(feedback ? feedback.words : restText) : ''), [linkFiles, feedback, replyParts, restText]);
-  const feedbackShown = useMemo(() => (feedback ? linkFiles(feedback.feedback) : ''), [linkFiles, feedback]);
+  // With a round's line, the sections the boxes hold go behind it (RoundLine.tsx); the rest is drawn as before.
+  const round = useMemo(() => (roundLine && feedback ? splitRoundFeedback(feedback.feedback) : null), [roundLine, feedback]);
+  const feedbackShown = useMemo(() => (feedback ? linkFiles(round ? round.rest : feedback.feedback) : ''), [linkFiles, feedback, round]);
+  const roundShown = useMemo(() => (round?.boxed ? linkFiles(round.boxed) : ''), [linkFiles, round]);
   const blocks = useMemo(() => parseMarkdownToBlocks(shown, { frontmatter: false, keepBlankLines: ownReply }), [shown, ownReply]);
   const slots = belowBlocks?.(blocks);
   const restBlocks = useMemo(() => (restShown ? parseMarkdownToBlocks(restShown, { frontmatter: false, keepBlankLines: ownReply }) : []), [restShown, ownReply]);
   const feedbackBlocks = useMemo(() => (feedbackShown ? parseMarkdownToBlocks(feedbackShown, { frontmatter: false, keepBlankLines: ownReply }) : []), [feedbackShown, ownReply]);
+  const roundBlocks = useMemo(() => (roundShown ? parseMarkdownToBlocks(roundShown, { frontmatter: false, keepBlankLines: ownReply }) : []), [roundShown, ownReply]);
   const refRepo = useRefRepo(repo);
   // The body's images go through a host resolver that names the same URL ui's
   // default would (the window's resolver, `inboxImageSrcResolver`), only so ui
@@ -889,7 +903,7 @@ export function MessageBody({
     <SoftLineBreaksContext.Provider value={ownReply}>
     <div className="ib-body" data-message-id={message.id} data-text-comments={comments ? '' : undefined} data-sent-reply={replyParts ? '' : undefined} ref={bodyRef} onMouseUpCapture={comments?.onOpen ? readPress : undefined} onClick={comments?.onOpen ? openHighlight : undefined}>
       {refCard}
-      {(!(replyParts || actionsSent || feedbackShown) || shown !== '') && (
+      {(!(replyParts || actionsSent || feedbackShown || roundShown) || shown !== '') && (
       <Viewer
         ref={viewerRef}
         blocks={blocks}
@@ -937,6 +951,11 @@ export function MessageBody({
       {actionsSent && <ReplyActions actions={sentActions!} sent onJump={onJumpQuestion} />}
       {replyParts && restShown && <div data-sent-rest="">{readOnlyViewer(restBlocks, restShown)}</div>}
       {feedbackShown && <div data-reply-feedback="">{readOnlyViewer(feedbackBlocks, feedbackShown)}</div>}
+      {roundShown && roundLine && (
+        <RoundFold words={roundLine}>
+          <div data-reply-feedback="">{readOnlyViewer(roundBlocks, roundShown)}</div>
+        </RoundFold>
+      )}
       {skills && <SkillsLine split={skills} />}
       {tagLabels && (
         <div className="ib-tg-marks" ref={tagLayerRef} aria-hidden="true" data-tag-marks="">
@@ -5393,7 +5412,11 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
             before.push(<TidyNote key={message.id} agent={message.to ? toName(message, message.to) : 'the agent'} time={time} fullWhen={fullWhen} />);
             return before;
           }
-          const open = one || !fold.folded.has(message.id);
+          // The thread kept for the conversation (experimental "persistent-comments"; RoundLine.tsx): a Send whose comments
+          // live in their boxes, or an agent's replies under them, is one line in place of the message, never folded.
+          const line = sentComments.lineOf(message, { answers: sentAnswersByReply.get(message.id)?.length ?? 0, actions: sentActionsByReply.get(message.id)?.length ?? 0 });
+          const lineHead = line && line.kind !== 'folded' ? line : null;
+          const open = one || !fold.folded.has(message.id) || lineHead !== null;
           if (!open) {
             const holdings = holdingsOf(message, {
               delivered: isDelivered(message, root),
@@ -5524,12 +5547,26 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
               data-author={message.author.kind}
               data-message-article={message.id}
               data-open={one ? undefined : ''}
+              data-round-line={lineHead?.kind}
               data-new={isNew ? '' : undefined}
               data-sighted={sightedIds.has(message.id) ? '' : undefined}
               data-arrival={arrivalIds.has(message.id) ? '' : undefined}
               data-arrived={arrivedIds.has(message.id) ? '' : undefined}
               tabIndex={-1}
             >
+              {lineHead ? (
+                <RoundRow
+                  mark={isAgent ? <AuthorMark author={message.author} big /> : <span className="ib-mk ib-big"><Icon name="comment" /></span>}
+                  who={name}
+                  words={lineHead.words}
+                  time={time}
+                  fullWhen={fullWhen}
+                  isNew={isNew}
+                  open={lineHead.kind === 'round' && lineHead.open}
+                  onToggle={lineHead.kind === 'round' ? lineHead.onToggle : undefined}
+                  controls={`ib-round-${message.id}`}
+                />
+              ) : (
               <MessageMenu
                 {...copyHost}
                 message={message}
@@ -5587,7 +5624,8 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
                   </div>
                 )}
               />
-              <div className="ib-msg" data-revealed={revealed ? '' : undefined}>
+              )}
+              <div className="ib-msg" id={lineHead ? `ib-round-${message.id}` : undefined} data-revealed={revealed ? '' : undefined}>
                 {count && (
                   <div className="ib-hatts" id={bandId} role="region" aria-label="Attachments in this message" hidden={!filesOpen} onKeyDown={closeHeaderOnEscape(message.id)} data-header-band={message.id}>
                     {filesOpen && (
@@ -5606,7 +5644,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
                     )}
                   </div>
                 )}
-                {(message.reask?.length ?? 0) > 0 ? (
+                {lineHead && !(lineHead.kind === 'round' && lineHead.open) ? null : (message.reask?.length ?? 0) > 0 ? (
                   <ReaskNote
                     message={message}
                     agent={message.to ? toName(message, message.to) : reaskNoteAgent(askedBy(message)?.author, asker)}
@@ -5647,6 +5685,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
                       : undefined
                   }
                   belowBlocks={isAgent ? sentComments.slotsFor(message.id, { live: liveMessage(message), onOpen: openRecord }) : undefined}
+                  roundLine={line?.kind === 'folded' ? line.words : undefined}
                   comments={
                     isAgent && liveMessage(message)
                       ? {

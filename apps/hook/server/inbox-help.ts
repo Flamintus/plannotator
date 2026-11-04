@@ -94,12 +94,15 @@ export const INBOX_REPLACES_EXAMPLE = [
  */
 export const INBOX_HELP_CODE_EXAMPLES = ["run.sh", "build.mjs", "app.ts", "main.py", "View.swift", "Makefile"] as const;
 
+/** send_message's rule on `body`; with `comment_replies` served, a message of replies alone has none (`toolBlock`). */
+const SEND_BODY_REQUIRED = "`body` is required";
+
 /** One block per MCP tool, in INBOX_MCP_TOOLS order. */
 export const TOOL_GUIDE: Record<InboxMcpToolName, InboxToolGuide> = {
   send_message: {
     args: ["body", "subject", "thread", "reply_to", "supersedes", "done", "attachments", "idempotency_key"],
     lines: [
-      "Post a markdown message to the person. `body` is required; question blocks in it render as answerable cards (see \"Asking the reviewer questions\").",
+      `Post a markdown message to the person. ${SEND_BODY_REQUIRED}; question blocks in it render as answerable cards (see "Asking the reviewer questions").`,
       "- `subject`: used when the message starts a thread; one line of plain text (a line break or leaked tool-call text such as `</subject>` is refused with `validation_error`). Default: the first question's prompt, else the first line.",
       "- `thread`, `reply_to`: where it lands (see \"Threads\"). `thread` is a name: a message id there (`msg_…`) is refused with `validation_error`. To write in an existing thread, pass its id as `reply_to`; beside `reply_to`, leave `thread` out unless you are naming a thread the person started.",
       "- Name a thread the person started: on your reply into it (`reply_to`), pass `thread` with a few words saying what it is about. The first name you give sets it, once; later ones are ignored. Only the session the thread is addressed to may name it (or, once the person sent it to another session, also the first agent that replied). Until then read_thread says `name_this_thread: true`, and a reply without a name says so in its result. The result's `named_thread` is the name set, or null while the thread stays unnamed. A name another open thread of the project already has is refused (`naming_refused: \"thread_name_taken\"`, an invalid one `\"invalid_thread_name\"`): pick another name and reply again with it.",
@@ -279,7 +282,8 @@ function toolBlock(name: InboxMcpToolName, steps = false, codeReview = false, co
   const extra = [...(withSteps ? ["steps"] : []), ...(withReplies ? ["comment_replies"] : []), ...(withReview ? ["review"] : [])];
   const args = guide.args.length > 0 ? [`Arguments: ${[...guide.args, ...extra].map(code).join(", ")}.`, ""] : [];
   const lines = [
-    ...guide.lines,
+    // A message of replies under comments alone has no body.
+    ...(withReplies ? guide.lines.map((line) => line.replace(SEND_BODY_REQUIRED, `${SEND_BODY_REQUIRED}, unless the message carries \`comment_replies\``)) : guide.lines),
     ...(withSteps ? ["- `steps`: your steps in the thread this message lands in, sent with it (see steps)."] : []),
     ...(withReplies ? [`- \`comment_replies\`: ${COMMENT_REPLIES_DESCRIPTION} An id that names no sent comment of that thread refuses the whole send, naming the entry. The result's \`comment_replies\` lists each reply's \`reply_id\` and \`comment_id\`; read_thread lists the replies under each comment.`] : []),
     ...(withReview ? [`- \`review\`: ${INBOX_REVIEW_FIELD_DESCRIPTION}`] : []),

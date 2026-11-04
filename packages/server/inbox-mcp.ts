@@ -455,6 +455,8 @@ export type AgentSendInput = {
   supersedes?: string[];
   /** Its own action items of the thread the agent saw done (`<message id>/<key>`, or `<message id>`). */
   done?: string[];
+  /** Not a tool field: the message carries the agent's replies under comments (send_message's `comment_replies`), so its body may be empty. */
+  carries_comment_replies?: boolean;
   agent_session?: string;
   agent_name?: string;
   agent_host?: string;
@@ -757,6 +759,7 @@ export async function sendAgentMessage(
       supersedes: input.supersedes ?? null,
       done: input.done ?? null,
       ...(wakes ? { wakes: true } : {}),
+      ...(input.carries_comment_replies ? { carries_comment_replies: true } : {}),
     });
   } catch (error) {
     await captured?.discard();
@@ -1011,7 +1014,8 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
       description: SEND_MESSAGE_DESCRIPTION,
       inputSchema: z
         .object({
-          body: z.string().min(1).describe(SEND_BODY_DESCRIPTION),
+          // A message that carries the agent's replies under comments may have no body (experimental "persistent-comments").
+          body: context.persistentCommentsOn?.() ? z.string().optional().describe(SEND_BODY_DESCRIPTION) : z.string().min(1).describe(SEND_BODY_DESCRIPTION),
           ...SEND_ROUTING_FIELDS,
           attachments: z
             .array(z.string())
@@ -1037,10 +1041,21 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
         }
         // Replies under comments are checked before anything is sent too, so a message never lands without them.
         const replies = planCommentReplies(store, (input as { comment_replies?: { comment_id: string; text: string }[] }).comment_replies, input.reply_to);
+        // Replies under comments are a message on their own: the person reads each under its comment, so the body may be left out.
+        const body = replies.length > 0 && !input.body?.trim() ? "" : (input.body ?? "");
+        if (context.persistentCommentsOn?.() && body.trim() === "" && replies.length === 0) {
+          throw new InboxError("validation_error", "body: write the message, or send comment_replies alone.", { field: "body" });
+        }
         const project = await sendProject(context, input);
         const wakes = await senderWakes(context, ctx, input);
         const { steps: _steps, comment_replies: _replies, ...message } = input as typeof input & { steps?: unknown; comment_replies?: unknown };
-        const sent = await sendAgentMessage(context, project, { ...message, working_folder: callerWorkingFolder(ctx) }, undefined, wakes);
+        const sent = await sendAgentMessage(
+          context,
+          project,
+          { ...message, body, working_folder: callerWorkingFolder(ctx), ...(replies.length > 0 ? { carries_comment_replies: true } : {}) },
+          undefined,
+          wakes,
+        );
         // A replay (the same idempotency key) answers with the replies the first call wrote.
         const replied = writeCommentReplies(store, replies, { message_id: String(sent.structured.message_id), thread_id: String(sent.structured.thread_id), replayed: sent.replayed }, input);
         const repliedLine = replied.length > 0 ? ` Replied under ${replied.length} comment${replied.length === 1 ? "" : "s"}; the person sees each under its comment.` : "";

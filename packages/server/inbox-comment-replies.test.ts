@@ -96,6 +96,8 @@ test("off: send_message takes no comment_replies, and the person's reply route i
   const client = await agent(server);
   const send = (await client.listTools()).tools.find((tool) => tool.name === "send_message")!;
   expect(Object.keys((send.inputSchema as { properties: Record<string, unknown> }).properties)).not.toContain("comment_replies");
+  // Off, a message still needs its body.
+  expect((send.inputSchema as { required?: string[] }).required).toContain("body");
   const { sent, replyId } = await roundOne(server, client, project);
   const refused = await raw(client, "send_message", { project_path: project, body: "Done.", reply_to: replyId, comment_replies: [{ comment_id: "c-msg", text: "Done." }], ...SESSION });
   expect(refused.isError).toBe(true);
@@ -141,6 +143,31 @@ test("on: the agent's message carries a reply under each comment; the window lis
   expect(lines[at + 1]).toMatch(/^ {2}- reply rep_\w+ · round 1 · you: "One store first: Lyon, for a week\."$/);
   const other = await call(client, "read_thread", { thread_id: sent.thread_id, agent_session: "ses_other" });
   expect(other.text).toContain('· Claude Code (ses_review): "Moved it to Tuesday in notes.md."');
+});
+
+// What regresses: an agent that only answers under comments has to write a body nobody needs, which fills the thread
+// (the window draws a message with none as one line, roundLines.ts); or a send with neither lands an empty message.
+test("on: replies alone are a message with no body; with neither a body nor replies nothing is sent", async () => {
+  const { project, dataDir } = world();
+  const server = await start(dataDir, true);
+  const client = await agent(server);
+  const { sent, replyId } = await roundOne(server, client, project);
+  const send = (await client.listTools()).tools.find((tool) => tool.name === "send_message")!;
+  expect((send.inputSchema as { required?: string[] }).required ?? []).not.toContain("body");
+
+  const answer = await call(client, "send_message", { reply_to: replyId, comment_replies: [{ comment_id: "c-msg", text: "Lyon first, for a week." }], ...SESSION });
+  const landed = (await call(client, "read_thread", { thread_id: sent.thread_id, format: "full", ...READER })).structured.thread.messages.at(-1);
+  expect([landed.id, landed.body]).toEqual([answer.structured.message_id, ""]);
+  expect((await files(server, sent.thread_id)).comment_replies!.map((r) => [r.re, r.message_id])).toEqual([["c-msg", answer.structured.message_id]]);
+  // A blank body with replies is no body either.
+  const blank = await call(client, "send_message", { reply_to: replyId, body: "  \n", comment_replies: [{ comment_id: "c-file", text: "Tuesday now." }], ...SESSION });
+  expect((await call(client, "read_thread", { thread_id: sent.thread_id, format: "full", ...READER })).structured.thread.messages.at(-1)).toMatchObject({ id: blank.structured.message_id, body: "" });
+
+  for (const body of [undefined, "  "]) {
+    const refused = await raw(client, "send_message", { reply_to: replyId, ...(body === undefined ? {} : { body }), comment_replies: [], ...SESSION });
+    expect([refused.isError, refused.content[0]!.text]).toEqual([true, expect.stringContaining("body")]);
+  }
+  expect(await messageCount(client, sent.thread_id)).toBe(4);
 });
 
 test("a reply's id answers its comment; a draft, an unknown id or another thread's comment refuses the whole send", async () => {

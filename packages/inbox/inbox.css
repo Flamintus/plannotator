@@ -7737,3 +7737,18 @@ button.ib-sentb-quote:hover, button.ib-sentb-quote:focus-visible { color: var(--
 .ib-sentb-subs > .ib-sentc-box { padding: 0; }
 .ib-sentc-area { width: 100%; resize: vertical; font: inherit; font-size: 0.95em; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--background); color: var(--foreground); }
 .ib-sentc-acts { display: flex; justify-content: flex-end; gap: 4px; }
+
+/* The thread kept for the conversation (experimental "persistent-comments"; RoundLine.tsx): a Send whose comments live in
+   their boxes, or an agent's replies under them, is one line in place of the message, laid out as a folded message's
+   line; a press on a Send's line shows the text the agent got under it. A Send with the person's words keeps them, and
+   its boxed feedback folds into one quiet line under them. */
+.ib-pbody.ib-folding .ib-message[data-round-line] { padding: 0; }
+.ib-pbody.ib-folding .ib-message[data-round-line] > .ib-msg:not(:empty) { padding-bottom: 14px; }
+div.ib-fline.ib-roundl { cursor: default; }
+.ib-fline.ib-roundl .ib-fl-tm > svg { flex: none; }
+.ib-roundf { margin: 8px 0 0; }
+.pn-inbox .ib-roundf-b { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 3px 8px 3px 6px; border: 0; border-radius: 6px; background: none; color: var(--muted-foreground); font: inherit; font-size: var(--ib-fs-12-5, 12.5px); text-align: left; cursor: pointer; }
+.pn-inbox .ib-roundf-b:hover, .pn-inbox .ib-roundf-b:focus-visible { background: var(--muted); color: var(--foreground); }
+.ib-roundf-b > svg { flex: none; }
+.ib-roundf-t { min-width: 0; overflow-wrap: anywhere; }
+.ib-roundf-text { margin-top: 6px; }

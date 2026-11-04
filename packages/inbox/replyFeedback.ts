@@ -24,14 +24,9 @@ import { ATTACHMENT_FEEDBACK_HEADING, GUIDE_FEEDBACK_TITLE, MESSAGE_FEEDBACK_HEA
 const FEEDBACK_HEADINGS = new Set([MESSAGE_FEEDBACK_HEADING.title, ATTACHMENT_FEEDBACK_HEADING.title, GUIDE_FEEDBACK_TITLE, INBOX_COMMENT_REPLIES_TITLE, INBOX_OPEN_COMMENTS_TITLE].map((title) => `# ${title}`));
 const FENCE = /^\s{0,3}(`{3,}|~{3,})/;
 
-/**
- * The person's words and the feedback after them: split at the first
- * feedback section heading (on a line of its own, after a blank line, outside
- * code fences), or null when the text has none.
- */
-export function splitReplyFeedback(text: string): { words: string; feedback: string } | null {
-  if (!text.includes('# Feedback on ')) return null;
-  const lines = text.split('\n');
+/** The lines that open a feedback section: its heading on a line of its own, after a blank line, outside code fences. */
+function feedbackHeadingLines(lines: readonly string[]): number[] {
+  const out: number[] = [];
   let fence: string | null = null;
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index]!;
@@ -46,7 +41,37 @@ export function splitReplyFeedback(text: string): { words: string; feedback: str
     }
     if (!FEEDBACK_HEADINGS.has(line.trimEnd())) continue;
     if (index > 0 && lines[index - 1]!.trim() !== '') continue;
-    return { words: lines.slice(0, index).join('\n').trim(), feedback: lines.slice(index).join('\n').trim() };
+    out.push(index);
   }
-  return null;
+  return out;
+}
+
+/**
+ * The person's words and the feedback after them: split at the first
+ * feedback section heading (on a line of its own, after a blank line, outside
+ * code fences), or null when the text has none.
+ */
+export function splitReplyFeedback(text: string): { words: string; feedback: string } | null {
+  if (!text.includes('# Feedback on ')) return null;
+  const lines = text.split('\n');
+  const index = feedbackHeadingLines(lines)[0];
+  if (index === undefined) return null;
+  return { words: lines.slice(0, index).join('\n').trim(), feedback: lines.slice(index).join('\n').trim() };
+}
+
+/**
+ * The feedback in its sections, in order: each one's title (its heading's
+ * words, "Feedback on the guided review") and its text, heading included.
+ * Text before the first heading, if any, comes first with the title ''.
+ */
+export function feedbackSections(feedback: string): { title: string; text: string }[] {
+  const lines = feedback.split('\n');
+  const starts = feedbackHeadingLines(lines);
+  const out: { title: string; text: string }[] = [];
+  const head = lines.slice(0, starts[0] ?? lines.length).join('\n').trim();
+  if (head) out.push({ title: '', text: head });
+  starts.forEach((start, index) => {
+    out.push({ title: lines[start]!.trimEnd().slice(2), text: lines.slice(start, starts[index + 1] ?? lines.length).join('\n').trim() });
+  });
+  return out;
 }

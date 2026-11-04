@@ -703,8 +703,11 @@ void (async () => {
       poll?: { session: string; body: Record<string, unknown> };
       first?: { root: string; session: string; body: string };
       card?: { project: string; session: string; title: string; say?: string; thread?: string };
-      /** An agent's reply under a sent comment (experimental "persistent-comments"), as send_message's `comment_replies` writes it. */
-      commentReply?: { comment: string; session: string; text: string };
+      /**
+       * An agent's reply under a sent comment (experimental "persistent-comments"), as send_message's `comment_replies`
+       * writes it, with its message's `body` ("" for the replies alone; default, a line of its own).
+       */
+      commentReply?: { comment: string; session: string; text: string; body?: string };
     };
     if (command.first) {
       // An agent's first message: its folder becomes the Inbox's first project.
@@ -739,12 +742,12 @@ void (async () => {
     }
     if (command.commentReply) {
       // The agent's message, then its reply under the comment, with it (send_message's `comment_replies`).
-      const { comment, session, text } = command.commentReply;
+      const { comment, session, text, body = "Answered under your comment." } = command.commentReply;
       const author = { kind: "agent" as const, host: "claude-code", session, name: "Claude Code" };
       const lastReply = store.thread(store.sentComment(comment).thread_id)!.messages.filter((m) => m.author.kind === "person").at(-1)!;
-      const sent = store.sendMessage({ project_id: lastReply.project_id, author, body: "Answered under your comment.", reply_to: lastReply.id });
+      const sent = store.sendMessage({ project_id: lastReply.project_id, author, body, reply_to: lastReply.id, carries_comment_replies: true });
       const reply = store.replyToComment(comment, { text, from: author, message_id: sent.message.id });
-      process.stdout.write(`${JSON.stringify({ replied: reply.id })}\n`);
+      process.stdout.write(`${JSON.stringify({ replied: reply.id, sent: sent.message.id })}\n`);
       continue;
     }
     if (command.read) {
