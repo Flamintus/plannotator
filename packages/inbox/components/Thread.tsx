@@ -140,7 +140,8 @@ import { StepsButton } from '../steps/StepsButton';
 import { stepsCount, stepsWaitTarget } from '../steps/model';
 import { useThreadSteps, type StepsSubscribe } from '../steps/useThreadSteps';
 import { replyKeysToRenew, routeSendAnnotations, sendTargetAnswerIds, sendTargetsOf, wordsMessage, type SendTarget, type SentContents } from '../sendTargets';
-import { SentComments, useSentComments } from './SentComments';
+import { useSentComments } from './SentComments';
+import { unfoldOpenThreads } from '../sentComments';
 import { leadToOpenThreads, useOpenCommentThreads } from '../openThreadsGuard';
 
 export { routeSendAnnotations, sendTargetsOf, type SendTarget };
@@ -166,6 +167,8 @@ interface FoldState {
   hidden: string[][];
   /** The runs whose "N earlier messages" was opened. */
   revealed: Set<number>;
+  /** Messages opened once for a comment thread still open on them (sentComments.ts `unfoldOpenThreads`). */
+  kept?: ReadonlySet<string>;
 }
 
 /** "Today, 9:12 AM": a moment in the thread's meta line. */
@@ -369,6 +372,7 @@ export function MessageBody({
   pictureBadge,
   inlineRefOf,
   replyFiles,
+  belowBlocks,
 }: {
   /**
    * The action items this person's message carried (approval
@@ -474,6 +478,12 @@ export function MessageBody({
     personMessageIds: ReadonlySet<string>;
     onOpen: (attachment: InboxAttachmentState, version: 'current' | 'sent') => void;
   };
+  /**
+   * Host content under the body's blocks (ui Viewer `belowBlock`) and after
+   * the body (`after`), given the blocks drawn: the comment threads on the
+   * message (SentComments.tsx). Absent: none.
+   */
+  belowBlocks?: (blocks: readonly Block[]) => { below: (block: Block) => React.ReactNode; after: React.ReactNode };
 }) {
   // A person's message ends with the skills block the window pasted when it
   // was sent: folded behind one quiet line (SkillsLine). An agent's message
@@ -506,6 +516,7 @@ export function MessageBody({
   const restShown = useMemo(() => (replyParts ? linkFiles(feedback ? feedback.words : restText) : ''), [linkFiles, feedback, replyParts, restText]);
   const feedbackShown = useMemo(() => (feedback ? linkFiles(feedback.feedback) : ''), [linkFiles, feedback]);
   const blocks = useMemo(() => parseMarkdownToBlocks(shown, { frontmatter: false, keepBlankLines: ownReply }), [shown, ownReply]);
+  const slots = belowBlocks?.(blocks);
   const restBlocks = useMemo(() => (restShown ? parseMarkdownToBlocks(restShown, { frontmatter: false, keepBlankLines: ownReply }) : []), [restShown, ownReply]);
   const feedbackBlocks = useMemo(() => (feedbackShown ? parseMarkdownToBlocks(feedbackShown, { frontmatter: false, keepBlankLines: ownReply }) : []), [feedbackShown, ownReply]);
   const refRepo = useRefRepo(repo);
@@ -919,8 +930,10 @@ export function MessageBody({
         renderQuestionCard={renderReplacedCard ? questionCard : undefined}
         renderQuestionBelowPrompt={renderReplacesLine ? belowPrompt : undefined}
         renderDirectiveBlock={renderActions ? directiveBlock : undefined}
+        belowBlock={slots?.below}
       />
       )}
+      {slots?.after}
       {replyParts && sentAnswers && sentAnswers.length > 0 && <SentAnswers groups={sentAnswers} onJump={onJumpQuestion} />}
       {actionsSent && <ReplyActions actions={sentActions!} sent onJump={onJumpQuestion} />}
       {replyParts && restShown && <div data-sent-rest="">{readOnlyViewer(restBlocks, restShown)}</div>}
@@ -1955,6 +1968,11 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
   const records = files?.annotations ?? [];
   // Comments that stay after Send (experimental "persistent-comments"; SentComments.tsx): only while the person has it on.
   const sentComments = useSentComments({ messages: thread.messages, files, drafts: records, patchDrafts: patchRecords, onError: setError, canResolve: !machine });
+  // A message holding a comment thread still open opens unfolded, once the thread's comments are read.
+  if (sentComments.openMessages && fold.threadId === thread.thread_id) {
+    const kept = unfoldOpenThreads(fold, sentComments.openMessages);
+    if (kept !== fold) setFoldState(kept);
+  }
   // own/open-threads-guard: a comment thread still open holds Archive, whose item leads to it (openThreadsGuard.ts).
   const holdingArchive = useOpenCommentThreads(sentComments.records, records, files?.comment_replies);
   /** The person's own messages: their images are named "image in my … message" in the feedback (replyFileLinks.ts). */
@@ -5638,6 +5656,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
                         }
                       : undefined
                   }
+                  belowBlocks={isAgent ? sentComments.slotsFor(message.id, { live: liveMessage(message), onOpen: openRecord }) : undefined}
                   comments={
                     isAgent && liveMessage(message)
                       ? {
@@ -5655,16 +5674,6 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
                       : undefined
                   }
                 />
-                )}
-                {isAgent && sentComments.byMessage.has(message.id) && (
-                  <SentComments
-                    records={sentComments.byMessage.get(message.id)!}
-                    tree={sentComments.tree}
-                    onOpen={openRecord}
-                    onResolve={liveMessage(message) ? sentComments.resolve : undefined}
-                    onReply={liveMessage(message) ? sentComments.reply : undefined}
-                    onSubThread={liveMessage(message) ? sentComments.subThread : undefined}
-                  />
                 )}
                 {/* An agent's files, and the person's own (compose): the same tiles and viewers. */}
                 {(message.attachments?.length ?? 0) > 0 && (

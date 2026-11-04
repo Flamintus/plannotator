@@ -222,6 +222,7 @@ packages/inbox/skillReferences.test.tsx
 packages/inbox/skillListRoom.test.tsx
 packages/inbox/messageComments.test.tsx
 packages/inbox/sentComments.dom.test.tsx
+packages/inbox/sentThreadsUnfold.dom.test.tsx
 packages/inbox/feedbackDialog.test.tsx
 packages/ui/components/HumanOnlySkillNotice.test.tsx
 packages/ui/components/MenuVersionSection.test.tsx
@@ -412,6 +413,7 @@ packages/ui/components/Viewer.crossBlockRestore.test.tsx
 packages/ui/components/Viewer.restoreMovedAnchors.test.tsx
 packages/ui/components/Viewer.questionContract.test.tsx
 packages/ui/components/Viewer.alertDraftRestore.test.tsx
+packages/ui/components/Viewer.belowBlock.test.tsx
 packages/ui/components/Viewer.belowTitle.test.tsx
 packages/ui/utils/belowTitleSlot.test.ts
 packages/ui/components/AnnotationPanel.allFiles.test.tsx

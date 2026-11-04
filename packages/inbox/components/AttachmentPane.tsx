@@ -1458,10 +1458,12 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
     // A comment opened again: the markdown and HTML viewers paint it again (the others draw from their props).
     repaint: (list) => viewerRef.current?.applySharedAnnotations(list.filter(annotationOwnsHighlight)),
   });
-  const { annotations, panelAnnotations, ownAnnotations, sentIds, withSentRound, withSentParts, withSentBody, sentFooter, reportUnanchored, onReply, onCommentPassage, cardPassages } = sentFile;
+  const { annotations, panelAnnotations, ownAnnotations, sentIds, withSentRound, withSentParts, withSentBody, sentFooter, reportUnanchored, onReply, onCommentPassage, cardPassages, reportRestore } = sentFile;
   // The document's blocks keep their identity across saves (the Viewer re-renders on a new array);
   // only code comments, which carry their own lines, derive blocks from the annotations.
   const documentBlocks = useMemo(() => (view && !isCode ? attachmentBlocks(kind, view.text, attachment.name) : []), [view, kind, isCode, attachment.name]);
+  // A Markdown or text file's sent comments, as threads under the blocks they are on (and in the panel).
+  const sentThreads = view && isText ? sentFile.slotsFor(documentBlocks) : undefined;
   const commentBlocks = useMemo(() => (isCode ? codeCommentBlocks(annotations) : []), [isCode, annotations]);
   const blocks = isCode ? commentBlocks : documentBlocks;
   // A Markdown file with 4 or more headings has Contents (contents.ts). On a desktop, Side by side and Full screen
@@ -2338,9 +2340,11 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                 quickLabels={false}
                 refRepo={refRepo}
                 readOnly={props.readOnly}
-                onRestoreReport={(report) => reportUnanchored(report.attempted, report.unanchored)}
+                onRestoreReport={reportRestore}
                 suggestComment={suggestion?.phrase ? (selected) => suggestionFor(view.text, suggestion, selected) : undefined}
+                belowBlock={sentThreads?.below}
               />
+              {sentThreads?.after}
               </ImageResolverContext.Provider>
               </ScrollViewportProvider>
             </div>

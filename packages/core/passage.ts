@@ -87,12 +87,25 @@ export function passageWindow(text: string, passage: TextPassage, max: number): 
   const end = found ? found[1] : 0;
   const room = Math.max(0, max - (end - start));
   let from = Math.max(0, start - Math.floor(room / 2));
-  const to = Math.min(flat.length, Math.max(end, from + max));
+  let to = Math.min(flat.length, Math.max(end, from + max));
   from = Math.max(0, Math.min(from, to - max));
+  // Never cut a word in two: move each cut to the nearest word boundary that keeps the passage whole.
+  if (from > 0 && isWordChar(flat[from - 1]) && isWordChar(flat[from])) {
+    const next = flat.indexOf(' ', from);
+    from = next !== -1 && next < start ? next + 1 : flat.lastIndexOf(' ', from) + 1;
+  }
+  if (to < flat.length && isWordChar(flat[to - 1]) && isWordChar(flat[to])) {
+    const before = flat.lastIndexOf(' ', to);
+    to = before >= end ? before : (flat.indexOf(' ', to) === -1 ? flat.length : flat.indexOf(' ', to));
+  }
   const piece = flat.slice(from, to);
   const lead = piece.length - piece.trimStart().length;
   const cut = from > 0 ? '…' : '';
   return { text: `${cut}${piece.trim()}${to < flat.length ? '…' : ''}`, offset: cut.length + Math.max(0, start - from - lead) };
+}
+
+function isWordChar(char: string | undefined): boolean {
+  return char !== undefined && char !== ' ';
 }
 
 /** `passageWindow`'s words alone. */

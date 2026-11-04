@@ -7,12 +7,15 @@ import {
   commentOfCard,
   followCodeLines,
   hiddenUnderFolded,
+  messagesWithOpenThreads,
   openPassagesByParent,
+  placeThreads,
   sentReplyRounds,
   sentReplyRows,
   sentUnanchoredChanges,
   sitsUnder,
   subThreadsByParent,
+  unfoldOpenThreads,
   withSentWrites,
 } from './sentComments';
 
@@ -157,5 +160,62 @@ describe('sub-threads in the window', () => {
     expect(text.startsWith('# Feedback on comment threads')).toBe(true);
     expect(text).toContain('### 1. Comment on a passage of reply rep_a under comment c1 (on message msg_a1): "off switch" (id s1)\nIn: "Step 2 rolls back through the off switch."\n> Which off switch?');
     expect(text).not.toContain('# Feedback on your messages');
+  });
+});
+
+describe('where the threads on a document are drawn', () => {
+  const on = (id: string, blockId: unknown, unanchored_at: string | null = null) => ({ id, unanchored_at, annotation: { blockId } }) as unknown as InboxAnnotationRecord;
+  const blocks = new Set(['block-0', 'block-1', 'block-2']);
+
+  test('each under the block its passage starts in, several on one block in order', () => {
+    const { byBlock, rest } = placeThreads([on('a', 'block-1'), on('b', 'block-0'), on('c', 'block-1')], blocks);
+    expect([...byBlock].map(([block, list]) => [block, list.map((r) => r.id)])).toEqual([
+      ['block-1', ['a', 'c']],
+      ['block-0', ['b']],
+    ]);
+    expect(rest).toEqual([]);
+  });
+
+  test('at the end: a block not drawn, no block, or words not found', () => {
+    const { byBlock, rest } = placeThreads([on('gone', 'block-9'), on('none', undefined), on('lost', 'block-1', '2026-11-04T10:00:00.000Z')], blocks);
+    expect(byBlock.size).toBe(0);
+    expect(rest.map((r) => r.id)).toEqual(['gone', 'none', 'lost']);
+  });
+
+  test("where the viewer found the words since wins over the stored block, and the viewer's own unanchored over the kept mark", () => {
+    const { byBlock, rest } = placeThreads([on('moved', 'block-0'), on('found', 'block-2', '2026-11-04T10:00:00.000Z')], blocks, {
+      moved: new Map([['moved', 'block-2']]),
+      unanchored: new Set(),
+    });
+    expect([...byBlock].map(([block, list]) => [block, list.map((r) => r.id)])).toEqual([['block-2', ['moved', 'found']]]);
+    expect(rest).toEqual([]);
+  });
+});
+
+describe('a message holding a comment thread still open opens unfolded', () => {
+  const comment = (id: string, message_id: string, message = true) => ({ id, message_id, ...(message ? { message: { id: message_id } } : {}) }) as unknown as InboxAnnotationRecord;
+
+  test('open, or resolved with a sub-thread open under it: its message; resolved with nothing open, or a file comment: none', () => {
+    const comments = [comment('open', 'm1'), comment('kept', 'm2'), comment('done', 'm3'), comment('file', 'm4', false)];
+    expect([...messagesWithOpenThreads(comments, new Set(['kept', 'done']), new Set(['kept']))]).toEqual(['m1', 'm2']);
+  });
+
+  const fold = (folded: string[], hidden: string[][], revealed: number[] = []) => ({ folded: new Set(folded), hidden, revealed: new Set(revealed) });
+
+  test('out of its fold and of "N earlier messages", the run cut around it; the others stay as they are', () => {
+    const next = unfoldOpenThreads(fold(['a0', 'r0', 'a1', 'r1', 'a2', 'r2'], [['r0', 'a1', 'r1']]), new Set(['a1']));
+    expect([...next.folded]).toEqual(['a0', 'r0', 'r1', 'a2', 'r2']);
+    expect(next.hidden).toEqual([['r0'], ['r1']]);
+  });
+
+  test('once: the person may fold it again; a run the person opened stays open; nothing to open, the same fold', () => {
+    const once = unfoldOpenThreads(fold(['a0', 'a1', 'a2', 'a3', 'a4'], [['a1', 'a2']], [0]), new Set(['a3']));
+    expect(once.hidden).toEqual([]);
+    const foldedAgain = { ...once, folded: new Set([...once.folded, 'a3']) };
+    expect(unfoldOpenThreads(foldedAgain, new Set(['a3']))).toBe(foldedAgain);
+    const none = fold(['a0'], []);
+    const kept = unfoldOpenThreads(none, new Set(['open-elsewhere']));
+    expect(kept.folded).toBe(none.folded);
+    expect(unfoldOpenThreads(kept, new Set(['open-elsewhere']))).toBe(kept);
   });
 });

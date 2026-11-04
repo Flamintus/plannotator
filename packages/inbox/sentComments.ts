@@ -183,3 +183,84 @@ export function sitsUnder(records: readonly InboxAnnotationRecord[], agentReplie
   for (const reply of agentReplies) out.set(reply.id, reply.re);
   return out;
 }
+
+/**
+ * Where the threads on a document (a message, or a file) are drawn: each
+ * under the block its passage starts in (`annotation.blockId`, or where the
+ * viewer found its words since, `moved`), several on one block in the order
+ * given; a thread whose block is not drawn, or whose words were not found
+ * (`unanchored`, or its kept `unanchored_at`), at the document's end.
+ */
+export function placeThreads(
+  records: readonly InboxAnnotationRecord[],
+  blockIds: ReadonlySet<string>,
+  found: { moved?: ReadonlyMap<string, string>; unanchored?: ReadonlySet<string> } = {},
+): { byBlock: Map<string, InboxAnnotationRecord[]>; rest: InboxAnnotationRecord[] } {
+  const byBlock = new Map<string, InboxAnnotationRecord[]>();
+  const rest: InboxAnnotationRecord[] = [];
+  for (const record of records) {
+    const stored = record.annotation.blockId;
+    const block = found.moved?.get(record.id) ?? (typeof stored === 'string' ? stored : '');
+    const lost = found.unanchored ? found.unanchored.has(record.id) : typeof record.unanchored_at === 'string';
+    if (lost || !blockIds.has(block)) rest.push(record);
+    else byBlock.set(block, [...(byBlock.get(block) ?? []), record]);
+  }
+  return { byBlock, rest };
+}
+
+/**
+ * Whether a thread is folded: resolved, with nothing open under it at any
+ * depth (`openBelow`). A resolved thread with an open sub-thread under it
+ * stays unfolded, marked resolved.
+ */
+export function isFoldedThread(id: string, resolved: ReadonlySet<string>, openBelow: ReadonlySet<string>): boolean {
+  return resolved.has(id) && !openBelow.has(id);
+}
+
+/** The messages that hold a thread still open, it or one under it (not folded): they open unfolded. */
+export function messagesWithOpenThreads(
+  comments: readonly Pick<InboxAnnotationRecord, 'id' | 'message' | 'message_id'>[],
+  resolved: ReadonlySet<string>,
+  openBelow: ReadonlySet<string>,
+): Set<string> {
+  const out = new Set<string>();
+  for (const record of comments) if (record.message && !isFoldedThread(record.id, resolved, openBelow)) out.add(record.message_id);
+  return out;
+}
+
+/** A thread's fold (Thread.tsx): its folded messages, the runs behind "N earlier messages" and the ones opened, and the messages already kept open for their threads. */
+interface ThreadFold {
+  folded: Set<string>;
+  hidden: string[][];
+  revealed: Set<number>;
+  kept?: ReadonlySet<string>;
+}
+
+/**
+ * A thread's fold once its comments are read: a message that holds a comment
+ * thread still open (`open`) opens unfolded, and out of "N earlier messages"
+ * (its run is cut around it). Each message is kept open once (`kept`), so the
+ * person can fold it again; every other message stays as it is, and nothing
+ * the person opened folds. The same fold when nothing changes.
+ */
+export function unfoldOpenThreads<F extends ThreadFold>(fold: F, open: ReadonlySet<string>): F {
+  const fresh = [...open].filter((id) => !fold.kept?.has(id));
+  if (fresh.length === 0) return fold;
+  const kept = new Set([...(fold.kept ?? []), ...fresh]);
+  const keep = new Set(fresh.filter((id) => fold.folded.has(id)));
+  if (keep.size === 0) return { ...fold, kept };
+  const hidden: string[][] = [];
+  fold.hidden.forEach((run, index) => {
+    if (fold.revealed.has(index)) return;
+    let part: string[] = [];
+    for (const id of run) {
+      if (!keep.has(id)) part.push(id);
+      else if (part.length > 0) {
+        hidden.push(part);
+        part = [];
+      }
+    }
+    if (part.length > 0) hidden.push(part);
+  });
+  return { ...fold, folded: new Set([...fold.folded].filter((id) => !keep.has(id))), hidden, revealed: new Set<number>(), kept };
+}
