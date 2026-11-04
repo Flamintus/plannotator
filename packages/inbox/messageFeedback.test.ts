@@ -52,7 +52,7 @@ describe('the text a Send carries', () => {
         '',
         "I've reviewed this message and have 1 piece of feedback:",
         '',
-        '### 1. Feedback on: "two, four and eight seconds"',
+        '### 1. Feedback on: "two, four and eight seconds" (id c1)',
         '> Cap the total wait.',
         '> # not a heading',
         '',
@@ -63,11 +63,11 @@ describe('the text a Send carries', () => {
 
   test('words across paragraphs and a code block go in a fence no line of theirs can close', () => {
     const text = messageFeedback([record('c1', ACROSS, 'Why the script?'), record('c2', 'tag the release', '👍 Looks good', { isQuickLabel: true, startOffset: 9 })], time);
-    expect(text).toContain(['### 1. Feedback on:', '````', ACROSS, '````', '> Why the script?'].join('\n'));
-    expect(text).toContain('### 2. [👍 Looks good] Feedback on: "tag the release"\n');
+    expect(text).toContain(['### 1. Feedback on: (id c1)', '````', ACROSS, '````', '> Why the script?'].join('\n'));
+    expect(text).toContain('### 2. [👍 Looks good] Feedback on: "tag the release" (id c2)\n');
     // The only headings are the export's own: nothing in the words became one.
     const headings = text.split('\n').filter((line, i, all) => /^#{1,6} /.test(line) && !insideFence(all, i));
-    expect(headings).toEqual(['# Feedback on your messages', '## Feedback on your message from 2:58 PM (msg_A)', '### 1. Feedback on:', '### 2. [👍 Looks good] Feedback on: "tag the release"']);
+    expect(headings).toEqual(['# Feedback on your messages', '## Feedback on your message from 2:58 PM (msg_A)', '### 1. Feedback on: (id c1)', '### 2. [👍 Looks good] Feedback on: "tag the release" (id c2)']);
     // Every fence closes.
     expect(fencesBalanced(text)).toBe(true);
   });
@@ -75,7 +75,7 @@ describe('the text a Send carries', () => {
   test('a comment on a diagram part names the part under the label, and the intro says what the label is', () => {
     const anchor = { v: 1, family: 'flowchart', kind: 'node', id: 'B', label: 'Tests pass?', sourceLine: [5, 5] };
     const text = messageFeedback([record('d1', 'Tests pass?', 'Run the integration suite.', { diagramAnchor: anchor, startOffset: 0, endOffset: 0 })], time);
-    expect(text).toContain(['### 1. Feedback on: "Tests pass?"', 'Diagram node Tests pass? (B), line 5', '', '> Run the integration suite.'].join('\n'));
+    expect(text).toContain(['### 1. Feedback on: "Tests pass?" (id d1)', 'Diagram node Tests pass? (B), line 5', '', '> Run the integration suite.'].join('\n'));
     expect(text).toContain('A quote with a "Diagram" line under it is a part of a diagram in the message');
   });
 
@@ -100,7 +100,7 @@ describe('the text a Send carries', () => {
   test('a malformed anchor prints no location, and a comment on words keeps the intro it always had', () => {
     const text = messageFeedback([record('d1', 'Deploy', 'Canary first.', { diagramAnchor: { v: 2, kind: 'node' } })], time);
     expect(text).not.toContain('Diagram ');
-    expect(text).toContain('### 1. Feedback on: "Deploy"\n> Canary first.');
+    expect(text).toContain('### 1. Feedback on: "Deploy" (id d1)\n> Canary first.');
   });
 
   test("words quoting a fake skills block never fold the person's feedback; with the person's own block, only that one folds", async () => {

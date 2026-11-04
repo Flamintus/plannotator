@@ -259,7 +259,7 @@ test("a comment on a diagram part keeps its anchor through the door, an edit and
   });
   expect(reply.status).toBe(200);
   const body = ((await reply.json()) as { reply: { body: string } }).reply.body;
-  expect(body).toContain('Feedback on: "Tests pass?"\nDiagram node Tests pass? (B), line 5\n\n> Run it nightly too.');
+  expect(body).toContain('Feedback on: "Tests pass?" (id ann-diagram-1)\nDiagram node Tests pass? (B), line 5\n\n> Run it nightly too.');
   expect(await pending(again, sent.thread_id)).toHaveLength(0);
 });
 
@@ -360,7 +360,7 @@ test("Send carries the comments quoted under 'Feedback on your message from <tim
     'Feedback on: "2, 4 and 8 seconds"',
     "> Cap the total wait too.",
     // Words across paragraphs: fenced under the heading, so nothing in them reads as markdown.
-    "### 1. Feedback on:\n```\nI moved the retry loop into the client.\n\nThe backoff is now\n```\n> Good.",
+    "### 1. Feedback on: (id ann-msg-2)\n```\nI moved the retry loop into the client.\n\nThe backoff is now\n```\n> Good.",
     '### 2. Feedback on: "2, 4 and 8 seconds"',
     "Make it Thursday.",
   ]) {

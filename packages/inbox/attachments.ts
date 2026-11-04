@@ -20,7 +20,7 @@ import {
   type InboxAttachmentState,
 } from '@plannotator/core/inbox-types';
 import { AnnotationType, type Annotation, type Block, type CodeAnnotation, type ImageAttachment } from '@plannotator/ui/types';
-import { diagramDocumentBlocks, exportLinkedDocAnnotations, parseMarkdownToBlocks } from '@plannotator/ui/utils/parser';
+import { commentIdSuffix, diagramDocumentBlocks, exportLinkedDocAnnotations, parseMarkdownToBlocks } from '@plannotator/ui/utils/parser';
 import { whenTime } from './format';
 
 /** Plannotator's blocks for a file: one diagram block for a diagram source, one code block for code, the markdown pipeline for text, none for HTML or a binary kind. */
@@ -391,9 +391,10 @@ function fenced(code: string): string {
  * One comment as the review app's export writes it (exportReviewFeedback in
  * packages/review-editor/utils/exportFeedback.ts, line scope): the line range
  * and side, the comment, the lines it is on, any suggested code. Kept equal
- * to it by guideFeedback.test.ts.
+ * to it by guideFeedback.test.ts; with `commentIds`, the heading also ends
+ * with the comment's id, as every entry of a Send does.
  */
-function guideCommentEntry(comment: CodeAnnotation, heading: string): string {
+function guideCommentEntry(comment: CodeAnnotation, heading: string, commentIds = false): string {
   const range = comment.lineStart === comment.lineEnd ? `Line ${comment.lineStart}` : `Lines ${comment.lineStart}-${comment.lineEnd}`;
   const token = comment.tokenText
     ? ` — \`\`${comment.tokenText.replace(/`/g, '\\`')}\`\`${comment.charStart != null ? ` (chars ${comment.charStart}-${comment.charEnd})` : ''}`
@@ -401,7 +402,7 @@ function guideCommentEntry(comment: CodeAnnotation, heading: string): string {
   const prefix = comment.conventionalLabel
     ? `**${comment.conventionalLabel}${comment.decorations?.length ? ` (${comment.decorations.join(', ')})` : ''}:** `
     : '';
-  let output = `${heading} ${range} (${comment.side})${token}\n`;
+  let output = `${heading} ${range} (${comment.side})${token}${commentIds ? commentIdSuffix(comment.id) : ''}\n`;
   if (comment.text) output += `${prefix}${comment.text}\n`;
   else if (prefix) output += `${prefix.trimEnd()}\n`;
   if (comment.selectedText) output += `\n**Highlighted text:**\n${fenced(comment.selectedText)}`;
@@ -411,13 +412,13 @@ function guideCommentEntry(comment: CodeAnnotation, heading: string): string {
 }
 
 /** The review app's per-file sections for a set of line comments: `## path`, then each comment by line. */
-export function guideCommentSections(comments: readonly CodeAnnotation[]): string {
+export function guideCommentSections(comments: readonly CodeAnnotation[], options: { commentIds?: boolean } = {}): string {
   const byFile = new Map<string, CodeAnnotation[]>();
   for (const comment of comments) byFile.set(comment.filePath, [...(byFile.get(comment.filePath) ?? []), comment]);
   let output = '';
   for (const [file, list] of byFile) {
     output += `## ${file}\n\n`;
-    for (const comment of [...list].sort((a, b) => a.lineStart - b.lineStart)) output += guideCommentEntry(comment, '###');
+    for (const comment of [...list].sort((a, b) => a.lineStart - b.lineStart)) output += guideCommentEntry(comment, '###', options.commentIds);
   }
   return output;
 }
@@ -441,7 +442,7 @@ export function guideFeedback(records: readonly InboxAnnotationRecord[]): string
   return [...byMessage.values()]
     .map(
       ({ title, comments }) =>
-        `# ${GUIDE_FEEDBACK_TITLE}\n\nThe following comments are on the diffs of the guided review "${title}" you sent, one section per file. Line numbers are the file's own: (new) the changed file, (old) the original.\n\n${guideCommentSections(comments)}`.trim(),
+        `# ${GUIDE_FEEDBACK_TITLE}\n\nThe following comments are on the diffs of the guided review "${title}" you sent, one section per file. Line numbers are the file's own: (new) the changed file, (old) the original.\n\n${guideCommentSections(comments, { commentIds: true })}`.trim(),
     )
     .join('\n\n');
 }
@@ -527,7 +528,7 @@ function messageCommentEntry(annotation: Annotation, number: number): string {
   const words = annotation.originalText ?? '';
   const label = annotation.isQuickLabel && annotation.text ? `[${annotation.text}] ` : '';
   const multiline = /[\r\n]/.test(words);
-  let out = `### ${number}. ${label}Feedback on${multiline ? ':' : `: "${words}"`}\n`;
+  let out = `### ${number}. ${label}Feedback on${multiline ? ':' : `: "${words}"`}${commentIdSuffix(annotation.id)}\n`;
   if (multiline) {
     const fence = codeFenceFor(words);
     out += `${fence}\n${words.replace(/\r\n?/g, '\n')}\n${fence}\n`;
@@ -604,6 +605,8 @@ export const ATTACHMENT_AND_IMAGE_FEEDBACK_HEADING = {
  * section per file and version, then the comments on guided reviews' diffs
  * (`guideFeedback`). `texts` holds each version's text, keyed
  * `<attachment id>\0<version>`, so line numbers name the lines the person read.
+ * Every comment's heading ends with its id (`commentIdSuffix`), the record's
+ * own, so the same comment reads the same id in every Send that carries it.
  */
 export function attachmentFeedback(
   records: readonly InboxAnnotationRecord[],
@@ -686,6 +689,6 @@ export function attachmentFeedback(
     }
   }
   const entries = new Map([...groups].map(([label, group]) => [label, { annotations: group.annotations, globalAttachments: [], blocks: group.blocks }]));
-  const files = records.some(isFileComment) ? exportLinkedDocAnnotations(entries, inlineImages ? ATTACHMENT_AND_IMAGE_FEEDBACK_HEADING : ATTACHMENT_FEEDBACK_HEADING).trim() : '';
+  const files = records.some(isFileComment) ? exportLinkedDocAnnotations(entries, inlineImages ? ATTACHMENT_AND_IMAGE_FEEDBACK_HEADING : ATTACHMENT_FEEDBACK_HEADING, { commentIds: true }).trim() : '';
   return [messages, files, guideFeedback(records)].filter(Boolean).join('\n\n');
 }

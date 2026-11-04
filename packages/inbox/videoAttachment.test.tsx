@@ -281,8 +281,8 @@ test.skipIf(!hasDom)('a phone: the comments list under the rail, and "Comment at
 test('the feedback a Send carries: video comments by time, each with its moment and the frame it kept', () => {
   const feedback = attachmentFeedback([later, earlier], [film], new Map(), '/work/launch-site');
   expect(feedback).toContain('## film/launch-cut-v3.mp4');
-  const first = feedback.indexOf('### 1. Feedback on: "launch-cut-v3.mp4 at 1:42"\nAt 1:42 (102.4 s of 7:41)\n> Logo is clipped on the right edge.');
-  const second = feedback.indexOf('### 2. Feedback on: "launch-cut-v3.mp4 at 4:07"\nAt 4:07 (247 s of 7:41)\n> The voice-over says three steps.');
+  const first = feedback.indexOf('### 1. Feedback on: "launch-cut-v3.mp4 at 1:42" (id ann-vid-a)\nAt 1:42 (102.4 s of 7:41)\n> Logo is clipped on the right edge.');
+  const second = feedback.indexOf('### 2. Feedback on: "launch-cut-v3.mp4 at 4:07" (id ann-vid-b)\nAt 4:07 (247 s of 7:41)\n> The voice-over says three steps.');
   expect(first).toBeGreaterThan(-1);
   expect(second).toBeGreaterThan(first);
   expect(feedback).toContain(`- [launch-cut-v3 at 1:42] \`${FRAME}\``);
