@@ -223,10 +223,12 @@ interface PanelProps {
    * Which built-in parts a plan-annotation card draws: its quoted text
    * (`quote`) and its attached images under the comment (`images`). A host
    * that draws them itself (the Inbox's video comments show the moment and
-   * the frame in `renderCardHeader`) turns them off per card. Absent: both
+   * the frame in `renderCardHeader`) turns them off per card. `actions:
+   * false` draws the card without its edit and delete buttons, as `readOnly`
+   * does for every card (the Inbox's comments already sent). Absent: all
    * drawn, exactly as before.
    */
-  cardParts?: (annotation: Annotation) => { quote?: boolean; images?: boolean; text?: boolean };
+  cardParts?: (annotation: Annotation) => { quote?: boolean; images?: boolean; text?: boolean; actions?: boolean };
   /**
    * Optional: the host's own body for a plan-annotation card, drawn where the
    * comment text goes, inside the card (a click on it selects the card). The
@@ -1086,7 +1088,7 @@ const AnnotationCard: React.FC<{
   /** The annotation has no live location in the document (host-reported). */
   unanchored?: boolean;
   /** Built-in parts to draw (see `cardParts`). */
-  parts?: { quote?: boolean; images?: boolean; text?: boolean };
+  parts?: { quote?: boolean; images?: boolean; text?: boolean; actions?: boolean };
   /** Host body, drawn where the comment text goes (see `renderCardBody`). */
   body?: React.ReactNode;
   sectionRefs?: Map<string, string>;
@@ -1206,7 +1208,7 @@ const AnnotationCard: React.FC<{
             {header}
           </div>
         )}
-        {!readOnly && (
+        {!readOnly && parts?.actions !== false && (
           <div className="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100">
             {onEdit && annotation.type !== AnnotationType.DELETION && !isEditing && (
               <HostTitle title="Edit annotation" name>
