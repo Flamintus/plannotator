@@ -206,6 +206,12 @@ export interface InboxAnnotationRecord {
   removed_at: string | null;
   /** The person's reply that carried it, or null while it waits for a Send. */
   sent_reply_id: string | null;
+  /**
+   * A sent comment whose words the window no longer found in the file it
+   * shows: when that was seen; null or absent while they are found
+   * (additive; experimental "persistent-comments", inbox-comment-threads.ts).
+   */
+  unanchored_at?: string | null;
 }
 
 export const INBOX_ANNOTATION_CURRENT = "current";
