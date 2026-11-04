@@ -339,6 +339,7 @@ packages/editor/App.htmlChrome.test.tsx
 packages/editor/App.sidebarTabsAgentTerminal.test.tsx
 packages/editor/App.htmlLinkDraft.test.tsx
 packages/editor/App.decisionControl.test.tsx
+packages/editor/App.annotationReply.test.tsx
 packages/editor/App.planDecisionControl.test.tsx
 packages/editor/App.planRevision.test.tsx
 packages/editor/App.liveVersion.test.tsx
@@ -374,6 +375,7 @@ packages/ui/components/StickyHeaderLane.test.tsx
 packages/editor/actionsLabelMode.test.ts
 packages/ui/webmcp/useToolset.seam.test.tsx
 packages/ui/components/AnnotationPanel.inReplyTo.test.tsx
+packages/ui/components/AnnotationPanel.reply.test.tsx
 packages/editor/webmcp/useDocumentWebMcp.toggle.test.tsx
 packages/editor/components/AppHeader.webmcpIndicator.test.tsx
 packages/ui/components/MathBlock.firstPaint.test.tsx

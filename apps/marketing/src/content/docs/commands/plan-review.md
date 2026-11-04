@@ -75,6 +75,20 @@ If you want a replacement or an insertion, ask for it in a comment ("Change `Web
 
 A comment saves with `Cmd/Ctrl+Enter`; plain Enter adds a new line. If `Cmd/Ctrl+Enter` is taken on your computer, or you prefer chat-style keys, turn on **Enter saves a comment** in Settings → General: Enter then saves and Shift+Enter adds a new line, in every comment box (plan review, annotate, code review and the Inbox's file comments). `Cmd/Ctrl+Enter` keeps saving. The setting is kept in your browser; other Plannotator tabs already open, an open Inbox tab included, pick up a change after a reload. The Inbox's reply box is a message, not a comment: Enter there stays a new line.
 
+## Replies
+
+Each comment in the annotations panel has a **Reply** button (the curved arrow, shown on hover). The reply box opens under the comment, after its earlier replies, where your reply will appear; it saves with the same keys as a comment. Reply on a reply to answer that one: each level is indented one step further. Your agent gets the replies nested under the comment they answer, so it reads the exchange in order:
+
+```
+## 1. (line 5) Feedback on: "Ship to all stores on Friday at 18:00."
+> Not on a Friday. Pick a Tuesday.
+**Replies:**
+- **Reply (browser-agent):** Tuesday 10:00 then?
+  - **Reply (Swift Tater):** Yes, Tuesday 10:00.
+```
+
+Replies work the same in annotate. A comment on part of an image, a checkbox you ticked and an answer to a question have no Reply.
+
 ## Comments on part of an image
 
 Click an image in the plan to open it in the image viewer. The viewer has a small **Move | Region** switch over the image (at the bottom on a phone):
