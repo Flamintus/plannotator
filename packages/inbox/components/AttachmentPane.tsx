@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { forwardRef, useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { MentionSource } from '@plannotator/ui/utils/mentions';
 import {
   formatInboxVideoTime,
@@ -46,7 +46,7 @@ import {
 } from '../attachments';
 import { whenTime, formatBytes } from '../format';
 import { useRefRepo } from '../links';
-import { followCodeLines } from '../sentComments';
+import { useSentFileComments, type SentFileComments } from './SentComments';
 import { inboxMarkdownImageBase } from '../images';
 import { ImageAttachmentView, type ImageSwipeEdges } from './ImageAttachmentView';
 import type { WheelHintGate } from '@plannotator/ui/components/ImageZoomStage';
@@ -177,11 +177,7 @@ export interface AttachmentPaneProps {
    * with their round (`rounds`, by the reply that carried them). What the
    * pane finds of their words goes to `onUnanchoredReport`. Absent: none.
    */
-  sent?: {
-    records: readonly InboxAnnotationRecord[];
-    rounds: ReadonlyMap<string, number>;
-    onUnanchoredReport: (report: { attempted: readonly string[]; unanchored: readonly string[] }) => void;
-  };
+  sent?: SentFileComments;
   /**
    * Tag agents with `@` in a comment (approval "inbox-tag-agents"): markdown, text and HTML files. The
    * image, video, code and diagram comment boxes take none yet.
@@ -1449,54 +1445,17 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   const videoRef = useRef<VideoAttachmentViewHandle>(null);
   // A PDF, any other file, and a kind this window does not know: offered as a download.
   const isDownload = kind === 'pdf' || kind === 'file' || tooLarge;
-  const sentRecords = props.sent?.records;
-  const fileRecords = useMemo(
-    () => [...props.records, ...(sentRecords ?? [])].filter((r) => r.path === attachment.path && r.version === annotationVersion),
-    [props.records, sentRecords, attachment.path, annotationVersion],
-  );
-  // Comments a Send carried (experimental "persistent-comments"): read-only cards with their round, and a code
-  // comment follows its lines when the agent added or removed lines above them (sentComments.ts).
-  const sentIds = useMemo(() => new Set((sentRecords ?? []).map((r) => r.id)), [sentRecords]);
-  const sentRounds = useMemo(() => {
-    const rounds = new Map<string, number>();
-    for (const record of sentRecords ?? []) {
-      const round = record.sent_reply_id ? props.sent?.rounds.get(record.sent_reply_id) : undefined;
-      if (round !== undefined) rounds.set(record.id, round);
-    }
-    return rounds;
-  }, [sentRecords, props.sent?.rounds]);
-  /** A sent comment's card: its round after the card's own header, and no edit or delete. */
-  const withSentRound = (header: ((annotation: Annotation) => ReactNode) | undefined) =>
-    sentIds.size === 0
-      ? header
-      : (annotation: Annotation) => {
-          const own = header?.(annotation) ?? null;
-          const round = sentRounds.get(annotation.id);
-          return round === undefined ? own : (
-            <>
-              {own}
-              <span className="ib-sentc-chip" data-sent-round={round}>
-                Round {round}
-              </span>
-            </>
-          );
-        };
-  const withSentParts = <T extends object>(parts: (annotation: Annotation) => T) => (annotation: Annotation) => (sentIds.has(annotation.id) ? { ...parts(annotation), actions: false } : parts(annotation));
-  const codeLines = useMemo(() => (kind === 'code' && view && sentIds.size > 0 ? view.text.split('\n') : null), [kind, view, sentIds]);
-  const annotations = useMemo(
-    () => fileRecords.map((r) => (codeLines && sentIds.has(r.id) ? followCodeLines(annotationOf(r), codeLines) : annotationOf(r))),
-    [fileRecords, codeLines, sentIds],
-  );
-  // The image and video views draw their own remove controls: a sent comment is in the panel only.
-  const ownAnnotations = useMemo(() => (sentIds.size === 0 ? annotations : annotations.filter((a) => !sentIds.has(a.id))), [annotations, sentIds]);
-  /** What the pane found of the comments' words: shown as Unanchored, and kept for a sent comment. */
-  const sentReport = useRef(props.sent?.onUnanchoredReport);
-  sentReport.current = props.sent?.onUnanchoredReport;
-  const reportUnanchored = useCallback((attempted: readonly string[], ids: Iterable<string>) => {
-    const lost = new Set(ids);
-    setUnanchored(lost);
-    sentReport.current?.({ attempted, unanchored: [...lost] });
-  }, []);
+  // Comments a Send carried (experimental "persistent-comments"; SentComments.tsx): read-only, with their round.
+  const sentFile = useSentFileComments({
+    sent: props.sent,
+    drafts: props.records,
+    path: attachment.path,
+    version: annotationVersion,
+    isCode: kind === 'code',
+    view: view ? { text: view.text, key: `${attachment.id}\0${view.version}\0${view.attachment.current?.sha256 ?? ''}\0${view.text.length}` } : null,
+    setUnanchored,
+  });
+  const { annotations, ownAnnotations, sentIds, withSentRound, withSentParts, reportUnanchored } = sentFile;
   // The document's blocks keep their identity across saves (the Viewer re-renders on a new array);
   // only code comments, which carry their own lines, derive blocks from the annotations.
   const documentBlocks = useMemo(() => (view && !isCode ? attachmentBlocks(kind, view.text, attachment.name) : []), [view, kind, isCode, attachment.name]);
@@ -1734,7 +1693,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   // The panel lists the thread's other files too, each under its own name (record 2.4).
   const documents = useMemo(() => {
     const byKey = new Map<string, { path: string; label: string; annotations: Annotation[] }>();
-    for (const record of props.records) {
+    for (const record of [...props.records, ...sentFile.sentHere]) {
       const owner = props.attachments.find((a) => a.id === record.attachment_id) ?? attachment;
       const key = recordKey(record.path, record.version);
       const entry = byKey.get(key) ?? {
@@ -1746,14 +1705,14 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
       byKey.set(key, entry);
     }
     return [...byKey.values()];
-  }, [props.records, props.attachments, props.projectRoot, attachment]);
+  }, [props.records, sentFile.sentHere, props.attachments, props.projectRoot, attachment]);
   const currentKey = recordKey(attachment.path, annotationVersion);
   const otherFiles = documents.some((d) => d.path !== currentKey);
   // A PDF or any other download takes no comments: no panel (nor a Comments button) unless other files have comments to list.
   const hasPanel = !isDownload || otherFiles;
   const groups = useMemo(() => groupAnnotationsByDocument(documents, currentKey), [documents, currentKey]);
   const openInDocument = (_path: string, id: string) => {
-    const record = props.records.find((r) => r.id === id);
+    const record = props.records.find((r) => r.id === id) ?? sentFile.sentHere.find((r) => r.id === id);
     if (!record) return;
     if (recordKey(record.path, record.version) === currentKey) setSelectedId(id);
     else {

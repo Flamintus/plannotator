@@ -140,9 +140,7 @@ import { StepsButton } from '../steps/StepsButton';
 import { stepsCount, stepsWaitTarget } from '../steps/model';
 import { useThreadSteps, type StepsSubscribe } from '../steps/useThreadSteps';
 import { replyKeysToRenew, routeSendAnnotations, sendTargetAnswerIds, sendTargetsOf, wordsMessage, type SendTarget, type SentContents } from '../sendTargets';
-import { inboxCommentRounds } from '@plannotator/core/inbox-comment-threads';
-import { sentUnanchoredChanges } from '../sentComments';
-import { SentComments } from './SentComments';
+import { SentComments, useSentComments } from './SentComments';
 
 export { routeSendAnnotations, sendTargetsOf, type SendTarget };
 
@@ -150,7 +148,6 @@ const noop = () => {};
 /** The agent superseded the question this call named (`422 question_superseded`). */
 const isSuperseded = (cause: unknown): boolean => cause instanceof InboxApiError && cause.code === 'question_superseded';
 const NO_ANNOTATIONS: never[] = [];
-const NO_RECORDS: readonly InboxAnnotationRecord[] = [];
 /** An unsent pick's tag on its card (MessageBody's statusLabel). */
 // A pick saved and not sent is part of the person's draft (approval "inbox-reply-drafts": "Draft" replaces "Not sent").
 const NOT_SENT_STATUS = { label: 'Draft', tone: 'open' } as const;
@@ -1955,19 +1952,8 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
   /** Every file the viewer opens: the attached files and the images in the text. */
   const allFiles: InboxAttachmentState[] = useMemo(() => [...attachments, ...inlineImages], [attachments, inlineImages]);
   const records = files?.annotations ?? [];
-  // Comments that stay after Send (experimental "persistent-comments"): listed only while the person has it on.
-  const sentRecords = files?.sent_comments ?? NO_RECORDS;
-  const commentRounds = useMemo(() => inboxCommentRounds(thread.messages, sentRecords), [thread.messages, sentRecords]);
-  const sentFileRecords = useMemo(() => sentRecords.filter(isFileComment), [sentRecords]);
-  const sentByMessage = useMemo(() => {
-    const byMessage = new Map<string, InboxAnnotationRecord[]>();
-    for (const record of sentRecords) if (record.message) byMessage.set(record.message_id, [...(byMessage.get(record.message_id) ?? []), record]);
-    return byMessage;
-  }, [sentRecords]);
-  /** What the window found of a sent comment's words, kept when it changed (the store's event reads the files again). */
-  const reportSent = (report: { attempted: readonly string[]; unanchored: readonly string[] }) => {
-    for (const change of sentUnanchoredChanges(sentRecords, report)) void inboxApi.markUnanchored(change.id, change.unanchored).catch(() => {});
-  };
+  // Comments that stay after Send (experimental "persistent-comments"; SentComments.tsx): only while the person has it on.
+  const sentComments = useSentComments(thread.messages, files);
   /** The person's own messages: their images are named "image in my … message" in the feedback (replyFileLinks.ts). */
   const personMessageIds = useMemo(() => new Set(thread.messages.filter((m) => m.author.kind === 'person').map((m) => m.id)), [thread.messages]);
   // Code review: `/review-recheck` is offered (and matched at Send) only once a review happened in this thread.
@@ -2229,12 +2215,12 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
   // Comments on the text of agents' messages (approval "inbox-message-comments"), by message.
   const messageComments = useMemo(() => {
     const byMessage = new Map<string, Annotation[]>();
-    for (const record of [...records, ...sentRecords]) {
+    for (const record of [...records, ...sentComments.records]) {
       if (!record.message) continue;
       byMessage.set(record.message_id, [...(byMessage.get(record.message_id) ?? []), annotationOf(record)]);
     }
     return byMessage;
-  }, [records, sentRecords]);
+  }, [records, sentComments.records]);
   /** Comments whose words were not found in their message (the reply box's list marks them). */
   const [unanchoredComments, setUnanchoredComments] = useState<ReadonlySet<string>>(NO_IDS);
   const [revealedComment, setRevealedComment] = useState<string | null>(null);
@@ -5646,7 +5632,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
                           onSave: (annotation) => saveMessageComment(message.id, annotation),
                           onUnanchored: (report) => {
                             noteUnanchored(report);
-                            reportSent(report);
+                            sentComments.report(report);
                           },
                           onPainted: () => repaintHits(message.id),
                           onOpen: openListAt,
@@ -5657,7 +5643,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
                   }
                 />
                 )}
-                {isAgent && sentByMessage.has(message.id) && <SentComments records={sentByMessage.get(message.id)!} rounds={commentRounds} onOpen={openRecord} />}
+                {isAgent && sentComments.byMessage.has(message.id) && <SentComments records={sentComments.byMessage.get(message.id)!} rounds={sentComments.rounds} onOpen={openRecord} />}
                 {/* An agent's files, and the person's own (compose): the same tiles and viewers. */}
                 {(message.attachments?.length ?? 0) > 0 && (
                   <AttachmentTiles
@@ -6209,7 +6195,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
         attachments={allFiles}
         // The files' annotations only: a guided-review comment is on the guide's diff, not on a file.
         records={fileRecords}
-        sent={files?.sent_comments ? { records: sentFileRecords, rounds: commentRounds, onUnanchoredReport: reportSent } : undefined}
+        sent={sentComments.pane}
         mentionSource={commentMentions}
         agent={asker}
         projectName={thread.project.name}

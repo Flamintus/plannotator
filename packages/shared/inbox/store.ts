@@ -4877,7 +4877,7 @@ export class InboxStore {
     }
     if ((typeof record.unanchored_at === "string") === unanchored) return record;
     const at = this.stamp();
-    const next = { ...record, unanchored_at: unanchored ? at : null };
+    const next = { ...record, unanchored_at: unanchored ? at : null, updated_at: at };
     this.appendAnnotation(next, at);
     return next;
   }

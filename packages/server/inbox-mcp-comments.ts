@@ -20,12 +20,18 @@ export const INBOX_COMMENT_TEXT_CHARS = 400;
 /** A windowed read lists at most this many comments, the newest. */
 export const INBOX_COMMENTS_SHOWN = 50;
 
-/** The thread's sent comments, clipped; `replies` (a ranged read's messages) keeps those sent in range. */
-export function threadComments(store: InboxStore, threadId: string, replies: ReadonlySet<string> | null = null): InboxCommentThread[] {
+/**
+ * The thread's sent comments, clipped. A ranged read (`replies`: its
+ * messages) keeps those its replies carried and every unanchored one, and
+ * counts the others (`elsewhere`).
+ */
+export function threadComments(store: InboxStore, threadId: string, replies: ReadonlySet<string> | null = null): { comments: InboxCommentThread[]; elsewhere: number } {
   const messages = store.thread(threadId)?.messages ?? [];
-  return inboxCommentThreads(messages, store.sentAnnotations(threadId))
-    .filter((comment) => replies === null || replies.has(comment.reply_id))
+  const all = inboxCommentThreads(messages, store.sentAnnotations(threadId));
+  const comments = all
+    .filter((comment) => replies === null || replies.has(comment.reply_id) || comment.unanchored)
     .map((comment) => ({ ...comment, quote: clip(comment.quote, INBOX_COMMENT_QUOTE_CHARS), text: clip(comment.text, INBOX_COMMENT_TEXT_CHARS) }));
+  return { comments, elsewhere: all.length - comments.length };
 }
 
 function shownPath(path: string, root: string): string {
@@ -38,19 +44,20 @@ function where(on: InboxCommentAnchor, root: string): string {
   const lines = (range: [number, number]) => (range[0] === range[1] ? `line ${range[0]}` : `lines ${range[0]}-${range[1]}`);
   if (on.kind === "guide") return `on the guided review in ${on.message_id}, ${on.file} (${on.side}) ${lines(on.lines)}`;
   const parts = [`on ${shownPath(on.path, root)}${on.version === "sent" ? " (the version you sent)" : ""}`];
-  if (on.lines) parts.push(lines(on.lines));
+  if (on.lines) parts.push(`${lines(on.lines)} when commented`);
   if (on.at !== undefined) parts.push(`at ${formatInboxVideoTime(on.at)}`);
   return parts.join(" ");
 }
 
-/** The comments as lines of the transcript: none when the thread has none. */
-export function threadCommentsText(comments: readonly InboxCommentThread[], root: string): string[] {
-  if (comments.length === 0) return [];
+/** The comments as lines of the transcript: none when the read has none to show. */
+export function threadCommentsText({ comments, elsewhere }: { comments: readonly InboxCommentThread[]; elsewhere: number }, root: string): string[] {
+  if (comments.length === 0) return elsewhere > 0 ? [`Comments the person sent: ${elsewhere} from other rounds; read_thread without after or before lists them.`] : [];
   const shown = comments.slice(-INBOX_COMMENTS_SHOWN);
-  const head =
-    shown.length < comments.length
-      ? `Comments the person sent (the ${shown.length} newest of ${comments.length}; read_thread format: "full" lists every one):`
-      : `Comments the person sent (${comments.length}):`;
+  const notes = [
+    ...(shown.length < comments.length ? [`the ${shown.length} newest of ${comments.length}; read_thread format: "full" lists every one`] : [`${comments.length}`]),
+    ...(elsewhere > 0 ? [`${elsewhere} more from other rounds: read_thread without after or before lists them`] : []),
+  ];
+  const head = `Comments the person sent (${notes.join("; ")}):`;
   return [
     head,
     ...shown.map((c) =>

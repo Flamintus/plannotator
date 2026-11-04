@@ -1119,7 +1119,7 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
             // The full records, as before the window (tests, scripts, a jq over the result).
             const thread = store.agentThread(threadId, reader)!;
             const replies = thread.messages.filter((m) => m.author.kind === "person").length;
-            const sentComments = context.persistentCommentsOn?.() ? threadComments(store, threadId) : [];
+            const sentComments = context.persistentCommentsOn?.() ? threadComments(store, threadId).comments : [];
             return ok(
               `Thread ${threadId}${thread.subject ? ` (${thread.subject})` : ""}: ${thread.messages.length} message${thread.messages.length === 1 ? "" : "s"}, ${replies} from the person${thread.resolved_at ? ", resolved" : ""}.${naming?.line ?? ""}`,
               { thread, url, ...(naming?.structured ?? {}), ...(sentComments.length > 0 ? { comments: sentComments } : {}) },
@@ -1138,10 +1138,10 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
           // The thread's steps (approval "inbox-thread-steps"), the reader's own first: only while the person has steps on.
           const steps = context.stepsOn?.() ? threadStepsText(store, threadId, reader) : [];
           const lists = steps.length > 0 ? { steps: store.threadSteps(threadId).map(({ agent, steps: list, updated_at }) => ({ agent, steps: list, updated_at })) } : {};
-          // The comments the person sent (experimental): a ranged read lists those its replies carried.
-          const comments = context.persistentCommentsOn?.() ? threadComments(store, threadId, input.after !== undefined || input.before !== undefined ? shown : null) : [];
-          const header = [...steps, ...threadCommentsText(comments, result.thread.project.root)];
-          return okComplete(windowedThreadText(result, order, naming?.line ?? "", header), { ...result, ...(naming?.structured ?? {}), ...lists, ...(comments.length > 0 ? { comments } : {}) });
+          // The comments the person sent (experimental): a ranged read lists those its replies carried and the unanchored ones.
+          const sent = context.persistentCommentsOn?.() ? threadComments(store, threadId, input.after !== undefined || input.before !== undefined ? shown : null) : { comments: [], elsewhere: 0 };
+          const header = [...steps, ...threadCommentsText(sent, result.thread.project.root)];
+          return okComplete(windowedThreadText(result, order, naming?.line ?? "", header), { ...result, ...(naming?.structured ?? {}), ...lists, ...(sent.comments.length > 0 ? { comments: sent.comments } : {}) });
         }
         if (input.expand || input.before !== undefined || input.after !== undefined) {
           throw new InboxError("validation_error", "expand, before and after read one thread: pass thread_id (or message_id).");
