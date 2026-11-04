@@ -12,7 +12,7 @@ import { buildHeadingSlugMap } from '../utils/slugify';
 import { copyTextToClipboard } from '../utils/clipboard';
 import { getRichCopyEnabled } from '../utils/richCopyPolicy';
 import { BlockRenderer } from './BlockRenderer';
-import { BELOW_TITLE_SLOT_MARKER } from '../utils/belowTitleSlot';
+import { BELOW_BLOCK_SLOT_ATTRIBUTE, BELOW_TITLE_SLOT_MARKER } from '../utils/belowTitleSlot';
 import { indexQuestionBlocks, type IndexedQuestion, type ParsedQuestion, type QuestionAnswer } from '@plannotator/core/question-block';
 import type { QuestionBlockProps } from './blocks/QuestionBlock';
 import { resolveQuestionAnswers } from '../utils/questionAnswers';
@@ -460,6 +460,21 @@ export interface ViewerProps {
    * absent: no wrapper is drawn and the DOM is exactly as without the prop.
    */
   belowTitle?: React.ReactNode;
+  /**
+   * Host content drawn right under one of the document's blocks (e.g. the
+   * comment threads on it), asked for each block in body order. A list
+   * item's goes right after that item, inside its list; any other block's
+   * right after the block (a table, a code block or a diagram as a whole).
+   *
+   * Each wrapper (`[data-viewer-below-block]`, its `data-below-block` the
+   * block's id) sits outside everything that addresses the document's text,
+   * as `belowTitle`'s does: `annotation-exclude`, `data-pinpoint-ignore`,
+   * `data-print-hide`, no `data-block-id`, and stored comment positions kept
+   * as if it were not there. A selection inside it stays the reader's. A
+   * nullish or boolean result, like an absent prop, draws no wrapper: the
+   * DOM is exactly as without the prop.
+   */
+  belowBlock?: (block: Block) => React.ReactNode;
 }
 
 export interface ViewerHandle {
@@ -869,6 +884,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   onVimHudKeyPanelChange,
   onHostDraft,
   belowTitle,
+  belowBlock,
 }, ref) => {
   // Annotation authoring is off when read-only, and when the host only wants
   // answers (`answerOnly`); question cards and checkboxes follow `readOnly`.
@@ -1728,6 +1744,27 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
     );
     return titleLeads ? [rendered[0], slot, ...rendered.slice(1)] : [slot, ...rendered];
   };
+  // The host's `belowBlock` slots (see the prop): the rendered node, then its
+  // block's slot when the host has content for it, as a sibling with a key of
+  // its own, so a slot that comes or goes never remounts the block (and its
+  // painted highlights). Absent → the node alone.
+  const withBelowBlock = (block: Block, rendered: React.ReactNode): React.ReactNode[] => {
+    const content = belowBlock?.(block);
+    if (content == null || typeof content === 'boolean') return [rendered];
+    return [
+      rendered,
+      <div
+        key={`below-block:${block.id}`}
+        {...{ [BELOW_BLOCK_SLOT_ATTRIBUTE]: BELOW_TITLE_SLOT_MARKER }}
+        data-below-block={block.id}
+        data-pinpoint-ignore=""
+        data-print-hide=""
+        className="annotation-exclude"
+      >
+        {content}
+      </div>,
+    ];
+  };
 
   return (
     <CodePathValidationContext.Provider value={codePathValidation}>
@@ -1825,13 +1862,13 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
         )}
         {frontmatter && <><div className="clear-right md:hidden" /><FrontmatterCard frontmatter={frontmatter} /></>}
         {!frontmatter && blocks.length > 0 && blocks[0].type !== 'heading' && <div className="mt-4" />}
-        {withBelowTitle(groupBlocks(blocks).map(group =>
+        {withBelowTitle(groupBlocks(blocks).flatMap((group): React.ReactNode | React.ReactNode[] =>
           group.type === 'list-group' ? (
             (() => {
               const indices = computeListIndices(group.blocks);
               return (
                 <div key={group.key} data-pinpoint-group="list" className="py-1 -mx-2 px-2">
-                  {group.blocks.map((block, i) => (
+                  {group.blocks.flatMap((block, i) => withBelowBlock(block,
                     <BlockRenderer
                       imageBaseDir={imageBaseDir}
                       onImageClick={(src, alt) => setLightbox({ src, alt })}
@@ -1851,7 +1888,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
                 </div>
               );
             })()
-          ) : htmlEmbeds && group.block.type === 'code' && isHtmlEmbedLanguage(group.block.language) ? (
+          ) : withBelowBlock(group.block, htmlEmbeds && group.block.type === 'code' && isHtmlEmbedLanguage(group.block.language) ? (
             <LazyBlockBoundary key={group.block.id} fallback={embedFallback(group.block)}>
               <Suspense fallback={<CodeBlock block={group.block} isHovered={false} />}>
                 <HtmlEmbedBlock block={group.block} host={htmlEmbeds} />
@@ -2031,7 +2068,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
               }
               return rendered;
             })()
-          )
+          ))
         ))}
 
         {/* Text selection toolbar */}

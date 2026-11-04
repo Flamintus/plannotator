@@ -5,7 +5,7 @@
  * rewritten; a position inside the slot is renumbered.
  */
 import { afterEach, expect, test } from 'bun:test';
-import { BELOW_TITLE_SLOT_ATTRIBUTE, BELOW_TITLE_SLOT_MARKER, metaWithBelowTitle, metaWithoutBelowTitle } from './belowTitleSlot';
+import { BELOW_BLOCK_SLOT_ATTRIBUTE, BELOW_TITLE_SLOT_ATTRIBUTE, BELOW_TITLE_SLOT_MARKER, metaWithBelowTitle, metaWithoutBelowTitle } from './belowTitleSlot';
 
 const hasDom = typeof document !== 'undefined';
 
@@ -71,4 +71,30 @@ test.skipIf(!hasDom)('raw HTML carrying the attribute is not the slot: nothing i
     }
     root.remove();
   }
+});
+
+test.skipIf(!hasDom)("slots under blocks, a list item's inside its list, are left out too; one nested in a block is the author's", () => {
+  const block = `${BELOW_BLOCK_SLOT_ATTRIBUTE}="${BELOW_TITLE_SLOT_MARKER}"`;
+  const root = document.createElement('article');
+  root.innerHTML = [
+    '<h1>T</h1>',
+    `<div ${BELOW_TITLE_SLOT_ATTRIBUTE}="${BELOW_TITLE_SLOT_MARKER}"><p>a</p></div>`,
+    '<p>one</p>',
+    `<div ${block}><p>b</p><p>c</p></div>`,
+    `<div data-pinpoint-group="list"><div data-block-id="i1"><p>item</p></div><div ${block}><p>d</p></div></div>`,
+    `<div data-block-id="raw"><div ${block}><p>author</p></div></div>`,
+    '<p>two</p>',
+  ].join('');
+  document.body.appendChild(root);
+  const live = [...root.getElementsByTagName('p')];
+  // Slot-free: one, item, author (not a slot), two.
+  for (const [text, slotFree] of [['one', 0], ['item', 1], ['author', 2], ['two', 3]] as const) {
+    const liveIndex = live.findIndex((p) => p.textContent === text);
+    const stored = metaWithoutBelowTitle(root, meta(liveIndex), 'start');
+    expect(stored.parentIndex).toBe(slotFree);
+    expect(metaWithBelowTitle(root, stored).parentIndex).toBe(liveIndex);
+  }
+  // An end inside the list item's slot goes back to the item's words.
+  const inItemSlot = live.findIndex((p) => p.textContent === 'd');
+  expect(metaWithoutBelowTitle(root, meta(inItemSlot), 'end')).toEqual({ parentTagName: 'P', parentIndex: 1, textOffset: 4 });
 });
