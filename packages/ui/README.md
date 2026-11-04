@@ -410,8 +410,10 @@ slot and mentions on the edit box (0.45.0)".
   moment and the frame in `renderCardHeader` instead). `text: false` treats
   the stored text as the host's stand-in, not the person's words: it is not
   drawn and the card's edit box starts empty (the Inbox's drawing with no
-  words, whose text "See the marked-up image." is for the agent). Omit them
-  and the panel is as before.
+  words, whose text "See the marked-up image." is for the agent).
+  `actions: false` (Unreleased) draws the card without edit and delete (the
+  Inbox's sent comments) and keeps its Reply; `reply: false` (Unreleased)
+  takes the Reply off that card alone. Omit them and the panel is as before.
 - **`onReply?: (parentId, { text, mentions? }) => void`** (Unreleased) — the
   person's Reply. Supplied (and not `readOnly`), each plan-annotation card of
   the open document gets a Reply action that opens one box under the card's

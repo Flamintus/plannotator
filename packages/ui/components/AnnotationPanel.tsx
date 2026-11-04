@@ -299,10 +299,11 @@ interface PanelProps {
    * that draws them itself (the Inbox's video comments show the moment and
    * the frame in `renderCardHeader`) turns them off per card. `actions:
    * false` draws the card without its edit and delete buttons, as `readOnly`
-   * does for every card (the Inbox's comments already sent). Absent: all
-   * drawn, exactly as before.
+   * does for every card (the Inbox's comments already sent); its Reply
+   * (`onReply`) stays, and `reply: false` takes that off (a draft nobody can
+   * answer yet). Absent: all drawn, exactly as before.
    */
-  cardParts?: (annotation: Annotation) => { quote?: boolean; images?: boolean; text?: boolean; actions?: boolean };
+  cardParts?: (annotation: Annotation) => { quote?: boolean; images?: boolean; text?: boolean; actions?: boolean; reply?: boolean };
   /**
    * Optional: the host's own body for a plan-annotation card, drawn where the
    * comment text goes, inside the card (a click on it selects the card). The
@@ -1208,7 +1209,7 @@ const AnnotationCard: React.FC<{
   /** The annotation has no live location in the document (host-reported). */
   unanchored?: boolean;
   /** Built-in parts to draw (see `cardParts`). */
-  parts?: { quote?: boolean; images?: boolean; text?: boolean; actions?: boolean };
+  parts?: { quote?: boolean; images?: boolean; text?: boolean; actions?: boolean; reply?: boolean };
   /** Host body, drawn where the comment text goes (see `renderCardBody`). */
   body?: React.ReactNode;
   sectionRefs?: Map<string, string>;
@@ -1222,6 +1223,12 @@ const AnnotationCard: React.FC<{
   // crop, file, size and line in place of the quote.
   const regionCards = useContext(RegionCardContext);
   const region = regionOf(annotation);
+  // A card whose place is not a text highlight (a region of an image, a
+  // checkbox toggle, a question's answer) takes no reply: the reply would
+  // carry a text anchor its parent does not have. `reply: false` (cardParts)
+  // turns it off; `actions: false` does not, so a card can take replies
+  // without edit or delete (the Inbox's comments already sent).
+  const replies = !!onReply && parts?.reply !== false && !region && !annotation.id.startsWith(CHECKBOX_ANNOTATION_PREFIX) && annotation.questionAnswer == null && !isEditing;
   const regionNumber = region ? regionCards.numbers.get(annotation.id) : undefined;
 
   // Update editText when annotation.text changes
@@ -1328,12 +1335,9 @@ const AnnotationCard: React.FC<{
             {header}
           </div>
         )}
-        {!readOnly && parts?.actions !== false && (
+        {!readOnly && (parts?.actions !== false || replies) && (
           <div className="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100">
-            {/* A card whose place is not a text highlight (a region of an
-                image, a checkbox toggle, a question's answer) takes no reply:
-                the reply would carry a text anchor its parent does not have. */}
-            {onReply && !region && !annotation.id.startsWith(CHECKBOX_ANNOTATION_PREFIX) && annotation.questionAnswer == null && !isEditing && (
+            {replies && (
               <HostTitle title="Reply" name>
                 <button
                   type="button"
@@ -1344,7 +1348,7 @@ const AnnotationCard: React.FC<{
                 </button>
               </HostTitle>
             )}
-            {onEdit && annotation.type !== AnnotationType.DELETION && !isEditing && (
+            {parts?.actions !== false && onEdit && annotation.type !== AnnotationType.DELETION && !isEditing && (
               <HostTitle title="Edit annotation" name>
                 <button
                   type="button"
@@ -1355,15 +1359,17 @@ const AnnotationCard: React.FC<{
                 </button>
               </HostTitle>
             )}
-            <HostTitle title="Delete annotation" name>
-              <button
-                type="button"
-                onClick={(e: React.MouseEvent<HTMLButtonElement>) => { e.stopPropagation(); onDelete(); }}
-                className="relative rounded-md p-1.5 text-muted-foreground transition-colors before:absolute before:-inset-1.5 before:content-[''] hover:text-destructive"
-              >
-                <TrashCardIcon />
-              </button>
-            </HostTitle>
+            {parts?.actions !== false && (
+              <HostTitle title="Delete annotation" name>
+                <button
+                  type="button"
+                  onClick={(e: React.MouseEvent<HTMLButtonElement>) => { e.stopPropagation(); onDelete(); }}
+                  className="relative rounded-md p-1.5 text-muted-foreground transition-colors before:absolute before:-inset-1.5 before:content-[''] hover:text-destructive"
+                >
+                  <TrashCardIcon />
+                </button>
+              </HostTitle>
+            )}
           </div>
         )}
       </div>
