@@ -94,7 +94,8 @@ test("on: resolve_message and the person's Archive are refused while a comment t
   expect(agent.text).toContain("c-msg");
   expect(agent.text).toContain("c-file");
   const person = await archive(server, agentMessage);
-  expect([person.status, person.body.code, person.body.comment_ids]).toEqual([409, "comment_threads_open", ["c-msg", "c-file"]]);
+  // Both comments can land in the same millisecond, and then the oldest-first order falls back to the id.
+  expect([person.status, person.body.code, [...person.body.comment_ids].sort()]).toEqual([409, "comment_threads_open", ["c-file", "c-msg"]]);
   expect(isArchived(server, thread)).toBe(false);
 
   // One left: it alone is named.
