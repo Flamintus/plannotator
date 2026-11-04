@@ -1041,8 +1041,8 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
         const wakes = await senderWakes(context, ctx, input);
         const { steps: _steps, comment_replies: _replies, ...message } = input as typeof input & { steps?: unknown; comment_replies?: unknown };
         const sent = await sendAgentMessage(context, project, { ...message, working_folder: callerWorkingFolder(ctx) }, undefined, wakes);
-        // A replay (the same idempotency key) wrote its replies the first time.
-        const replied = sent.replayed ? [] : writeCommentReplies(store, replies, input);
+        // A replay (the same idempotency key) answers with the replies the first call wrote.
+        const replied = writeCommentReplies(store, replies, { message_id: String(sent.structured.message_id), thread_id: String(sent.structured.thread_id), replayed: sent.replayed }, input);
         const repliedLine = replied.length > 0 ? ` Replied under ${replied.length} comment${replied.length === 1 ? "" : "s"}; the person sees each under its comment.` : "";
         // A replay (the same idempotency key) answers the first send and writes nothing: a list the session sent
         // since (the steps action) is never put back to this older one.

@@ -738,8 +738,12 @@ void (async () => {
       continue;
     }
     if (command.commentReply) {
+      // The agent's message, then its reply under the comment, with it (send_message's `comment_replies`).
       const { comment, session, text } = command.commentReply;
-      const reply = store.replyToComment(comment, { text, from: { kind: "agent", host: "claude-code", session, name: "Claude Code" } });
+      const author = { kind: "agent" as const, host: "claude-code", session, name: "Claude Code" };
+      const lastReply = store.thread(store.sentComment(comment).thread_id)!.messages.filter((m) => m.author.kind === "person").at(-1)!;
+      const sent = store.sendMessage({ project_id: lastReply.project_id, author, body: "Answered under your comment.", reply_to: lastReply.id });
+      const reply = store.replyToComment(comment, { text, from: author, message_id: sent.message.id });
       process.stdout.write(`${JSON.stringify({ replied: reply.id })}\n`);
       continue;
     }

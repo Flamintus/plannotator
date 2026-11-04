@@ -76,7 +76,9 @@ describe.if(hasDom)('AnnotationPanel cardParts actions', () => {
           onSelect={() => {}}
           onDelete={() => {}}
           onEdit={() => {}}
-          onReply={(parentId) => replied.push(parentId)}
+          onReply={(parentId) => {
+            replied.push(parentId);
+          }}
           selectedId={null}
           cardParts={(annotation) => (annotation.id === 's2' ? { actions: false } : { reply: false })}
         />,

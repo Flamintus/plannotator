@@ -120,7 +120,6 @@ test("on: the agent's message carries a reply under each comment; the window lis
     ],
     ...SESSION,
   });
-  expect(answer.text).toContain("Replied under 2 comments");
   expect(answer.structured.comment_replies.map((r: { comment_id: string }) => r.comment_id)).toEqual(["c-msg", "c-file"]);
 
   // The window: each reply under its comment, by the agent's session; nothing changes the comment itself.
@@ -172,11 +171,46 @@ test("a reply's id answers its comment; a draft, an unknown id or another thread
   const first = (await call(client, "send_message", { project_path: project, body: "Done.", reply_to: replyId, comment_replies: [{ comment_id: "c-msg", text: "Lyon first." }], ...SESSION })).structured;
   const again = (await call(client, "send_message", { project_path: project, body: "More.", reply_to: replyId, comment_replies: [{ comment_id: first.comment_replies[0].reply_id, text: "And Paris after." }], ...SESSION })).structured;
   expect(again.comment_replies[0].comment_id).toBe("c-msg");
-  // A retry with the same key writes its replies once.
-  const retry = { project_path: project, body: "Retry.", reply_to: replyId, idempotency_key: "k-1", comment_replies: [{ comment_id: "c-file", text: "Tuesday." }], ...SESSION };
-  await call(client, "send_message", retry);
-  expect((await call(client, "send_message", retry)).text.startsWith("Already sent")).toBe(true);
-  expect((await files(server, sent.thread_id)).comment_replies!.map((r) => r.re)).toEqual(["c-msg", "c-msg", "c-file"]);
+});
+
+test("a retry of the send answers with the replies the first call wrote, writes those it did not get to, and refuses other ones", async () => {
+  const { project, dataDir } = world();
+  const server = await start(dataDir, true);
+  const client = await agent(server);
+  const { sent, replyId } = await roundOne(server, client, project);
+  const send = (key: string, comment_replies: { comment_id: string; text: string }[]) => ({ project_path: project, body: "Done.", reply_to: replyId, idempotency_key: key, comment_replies, ...SESSION });
+  const stored = async () => (await files(server, sent.thread_id)).comment_replies!.map((r) => [r.re, r.text]);
+
+  const first = (await call(client, "send_message", send("k-1", [{ comment_id: "c-file", text: "Tuesday." }]))).structured;
+  const again = await call(client, "send_message", send("k-1", [{ comment_id: "c-file", text: "Tuesday." }]));
+  expect(again.structured.comment_replies).toEqual(first.comment_replies);
+  expect(await stored()).toEqual([["c-file", "Tuesday."]]);
+  // Other replies under the same key: refused, nothing written.
+  const other = await raw(client, "send_message", send("k-1", [{ comment_id: "c-file", text: "Wednesday." }]));
+  expect([other.isError, other.content[0]!.text.startsWith("idempotency_key_reused:")]).toEqual([true, true]);
+  // A first call that wrote its message but not its replies (the process stopped between): the retry writes them, once.
+  await call(client, "send_message", send("k-2", []));
+  const written = (await call(client, "send_message", send("k-2", [{ comment_id: "c-msg", text: "Lyon first." }]))).structured;
+  expect(written.comment_replies.map((r: { comment_id: string }) => r.comment_id)).toEqual(["c-msg"]);
+  await call(client, "send_message", send("k-2", [{ comment_id: "c-msg", text: "Lyon first." }]));
+  expect(await stored()).toEqual([
+    ["c-file", "Tuesday."],
+    ["c-msg", "Lyon first."],
+  ]);
+  // Each reply names the message it came with.
+  expect((await files(server, sent.thread_id)).comment_replies!.map((r) => r.message_id)).toEqual([first.message_id, written.message_id]);
+});
+
+test("a ranged read_thread keeps an older comment with a reply that came with one of its messages", async () => {
+  const { project, dataDir } = world();
+  const server = await start(dataDir, true);
+  const client = await agent(server);
+  const { sent, replyId } = await roundOne(server, client, project);
+  const cursor = (await call(client, "read_thread", { thread_id: sent.thread_id, ...READER })).structured.cursor as number;
+  await call(client, "send_message", { project_path: project, body: "Done.", reply_to: replyId, comment_replies: [{ comment_id: "c-file", text: "Tuesday." }], ...SESSION });
+  const ranged = await call(client, "read_thread", { thread_id: sent.thread_id, after: cursor, ...READER });
+  expect(ranged.structured.comments.map((c: { id: string }) => c.id)).toEqual(["c-file"]);
+  expect(ranged.text).toContain('· you: "Tuesday."');
 });
 
 test("the person's reply under a sent comment is a draft until the next Send carries it, and an edit keeps it a reply", async () => {
@@ -268,7 +302,7 @@ test("an agent's reply holds across a restart, and deleting the thread takes it"
 });
 
 // What regresses: Claude Code cuts the agent tool's description at 2,048 characters (with the Board and steps on,
-// 17 are left), which would drop the wake note and the help pointer at its end. The replies ride a field, whose
+// no action line fits), which would drop the wake note and the help pointer at its end. The replies ride a field, whose
 // description reaches the model whole: the description stays exactly as it is.
 test("on, the agent tool's description is unchanged: the replies are a send_message field, described on the field", async () => {
   const described = async (persistentComments: boolean) => {

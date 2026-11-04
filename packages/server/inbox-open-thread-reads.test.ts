@@ -195,6 +195,20 @@ describe("every write that changes the open thread reads it; another thread's wr
     expect((await windowRead(s.server, s.open.thread_id)).thread).toBe(before.thread);
   });
 
+  test("an agent's reply under a sent comment (experimental): a comment_reply record naming its thread, which reads the open thread's files, not another's", async () => {
+    const s = await setup();
+    const sent = (message: { id: string }, id: string) => {
+      s.store.saveMessageAnnotation(message.id, { id, type: "COMMENT", originalText: "Which layout", text: "Cards, please." });
+      s.store.sendReply(message.id, { feedback: "# Feedback", annotation_ids: [id], idempotency_key: `k-${id}` });
+    };
+    sent(s.open, "c-open");
+    sent(s.other, "c-other");
+    const reply = (comment: string) => () => s.store.replyToComment(comment, { text: "Done.", from: agent("ses_open"), message_id: s.open.id });
+    const own = await write(s, reply("c-open"), "thread");
+    expect(own.records.map((r) => [r.kind, (r as { thread_id?: string }).thread_id])).toEqual([["comment_reply", s.open.thread_id]]);
+    await write(s, reply("c-other"), "files");
+  });
+
   test("a question record names its message's thread", async () => {
     const s = await setup();
     const q = s.store.questionsOf(s.other.id)[0]!;

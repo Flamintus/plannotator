@@ -4,6 +4,7 @@
  *  - Reply opens one box where the reply will land (after the card's own
  *    replies, one level under it) and sends to THAT card, without selecting it;
  *  - Escape and Cancel send nothing, and an empty box cannot send;
+ *  - a reply the host could not save (`false`) keeps the box and its words;
  *  - the words of a box whose card is gone do not come back under another;
  *  - no Reply under `readOnly`, on a card whose place is not a text highlight
  *    (a region of an image, a checkbox toggle, a question's answer), or on
@@ -116,6 +117,18 @@ describe.skipIf(!hasDom)('AnnotationPanel Reply', () => {
     await act(async () => { buttonNamed('Cancel')!.click(); });
     expect(replyField()).toBeNull();
     expect(sent).toEqual([]);
+  });
+
+  test('a reply the host could not save keeps the box open with its words; one it saved closes it', async () => {
+    let saved = false;
+    await render({ annotations: [ann('p', 1)], onReply: async () => saved });
+    await act(async () => { replyButton('p')!.click(); });
+    await type(replyField()!, 'Tuesday then');
+    await press(replyField()!, 'Enter', { metaKey: true });
+    expect(replyField()!.value).toBe('Tuesday then');
+    saved = true;
+    await press(replyField()!, 'Enter', { metaKey: true });
+    expect(replyField()).toBeNull();
   });
 
   test("a box whose card is gone takes its words with it", async () => {

@@ -66,7 +66,7 @@ describe('replies under a sent comment, as the window draws them', () => {
   const mine = (id: string, sent_reply_id: string | null, created_at: string) =>
     ({ ...comment, id, re: 'c1', sent_reply_id, created_at, annotation: { id, text: `mine ${id}`, inReplyTo: 'c1', originalText: 'Friday' } }) as unknown as InboxAnnotationRecord;
   const agents: InboxCommentReplyRecord[] = [
-    { id: 'rep_a', project_id: 'prj', thread_id: 'msg_a1', re: 'c1', from: { kind: 'agent', host: 'claude-code', session: 'ses_a', name: null }, text: 'Tuesday?', created_at: '2026-11-04T10:02:00.000Z' },
+    { id: 'rep_a', project_id: 'prj', thread_id: 'msg_a1', re: 'c1', from: { kind: 'agent', host: 'claude-code', session: 'ses_a', name: null }, message_id: 'msg_a2', text: 'Tuesday?', created_at: '2026-11-04T10:02:00.000Z' },
   ];
   const messages = [
     { id: 'msg_a1', author: { kind: 'agent' }, created_at: '2026-11-04T10:00:00.000Z' },

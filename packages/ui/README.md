@@ -420,7 +420,9 @@ slot and mentions on the edit box (0.45.0)".
   thread, where the reply will land; sending calls `onReply` and the host
   adds the reply, built with `buildReplyAnnotation(parent, { id, text,
   createdA, author, mentions })` from `utils/annotationReply` (the parent's
-  place and anchors, `inReplyTo`). `mentions` follows the edit box's rule. A
+  place and anchors, `inReplyTo`). A host that could not save the reply
+  answers `false`, or a promise of it (Unreleased): the box stays open with
+  its words. `mentions` follows the edit box's rule. A
   card whose place is not a text highlight (a region of an image, a checkbox
   toggle, a question's answer) takes no Reply. Omit it and there is no action
   and no box. Threads draw depth first whether or not you pass it: a reply to

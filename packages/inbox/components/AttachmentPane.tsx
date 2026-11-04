@@ -1707,8 +1707,11 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
       entry.annotations.push(annotationOf(record));
       byKey.set(key, entry);
     }
+    // The open file's group is the panel's own list (the agents' replies, a resolved comment's folded: SentComments.tsx).
+    const open = byKey.get(recordKey(attachment.path, annotationVersion));
+    if (open) open.annotations = sentFile.panelAnnotations;
     return [...byKey.values()];
-  }, [props.records, sentFile.sentHere, props.attachments, props.projectRoot, attachment]);
+  }, [props.records, sentFile.sentHere, sentFile.panelAnnotations, props.attachments, props.projectRoot, attachment, annotationVersion]);
   const currentKey = recordKey(attachment.path, annotationVersion);
   const otherFiles = documents.some((d) => d.path !== currentKey);
   // A PDF or any other download takes no comments: no panel (nor a Comments button) unless other files have comments to list.

@@ -82,6 +82,8 @@ export interface InboxCommentReply {
   author: InboxCommentAuthor;
   /** The round it was written in: the person's, the round of the Send that carried it; the agent's, the round under way then. */
   round: number;
+  /** The message it came with: the person's Send, or the agent's message. */
+  message_id: string;
   text: string;
   at: string;
 }
@@ -98,6 +100,30 @@ export function inboxCommentReplyId(now?: number): string {
 
 export function isInboxCommentReplyId(value: unknown): value is string {
   return typeof value === "string" && REPLY_ID_RE.test(value);
+}
+
+/** A reply's words as kept: trimmed, or null when there are none or more than INBOX_COMMENT_REPLY_TEXT_MAX. */
+export function inboxCommentReplyText(value: unknown): string | null {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text === "" || text.length > INBOX_COMMENT_REPLY_TEXT_MAX ? null : text;
+}
+
+/** Whether a stored line's record reads as an agent's reply (a reader skips one that does not). */
+export function isInboxCommentReplyRecord(value: unknown): value is InboxCommentReplyRecord {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  const from = record.from as Record<string, unknown> | null | undefined;
+  const nullableText = (field: unknown) => field === null || typeof field === "string";
+  return (
+    isInboxCommentReplyId(record.id) &&
+    [record.project_id, record.thread_id, record.re, record.message_id, record.text, record.created_at].every((field) => typeof field === "string") &&
+    !!from &&
+    typeof from === "object" &&
+    from.kind === "agent" &&
+    nullableText(from.host) &&
+    nullableText(from.session) &&
+    nullableText(from.name)
+  );
 }
 
 /** Whether a comment record is the person's reply under another comment (`re`). */
@@ -251,11 +277,11 @@ export function inboxCommentThreads(
     if (!isInboxCommentSent(record)) continue;
     const round = rounds.get(record.sent_reply_id!);
     if (round === undefined) continue;
-    if (isInboxCommentReply(record)) add(record.re!, { id: record.id, author: { kind: "person" }, round, text: text(record.annotation.text), at: record.created_at });
+    if (isInboxCommentReply(record)) add(record.re!, { id: record.id, author: { kind: "person" }, round, message_id: record.sent_reply_id!, text: text(record.annotation.text), at: record.created_at });
     else sent.push(record);
   }
   for (const reply of agentReplies) {
-    add(reply.re, { id: reply.id, author: reply.from, round: inboxCommentReplyRound(messages, rounds, reply.created_at), text: reply.text, at: reply.created_at });
+    add(reply.re, { id: reply.id, author: reply.from, round: inboxCommentReplyRound(messages, rounds, reply.created_at), message_id: reply.message_id, text: reply.text, at: reply.created_at });
   }
   const last = inboxCommentLastReplies(records.filter(isInboxCommentSent), agentReplies);
   const out: (InboxCommentThread & { created_at: string })[] = sent.map((record) => {

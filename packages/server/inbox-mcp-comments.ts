@@ -21,7 +21,7 @@
 import * as z from "zod";
 import { inboxStoredAgentName } from "@plannotator/core/inbox-format";
 import { inboxAgentName } from "@plannotator/core/inbox-types";
-import { INBOX_COMMENT_REPLY_TEXT_MAX, inboxCommentPlace, inboxCommentThreads, type InboxCommentReply, type InboxCommentThread } from "@plannotator/core/inbox-comment-threads";
+import { INBOX_COMMENT_REPLY_TEXT_MAX, inboxCommentPlace, inboxCommentReplyText, inboxCommentThreads, type InboxCommentReply, type InboxCommentThread } from "@plannotator/core/inbox-comment-threads";
 import { InboxError } from "@plannotator/shared/inbox/schema";
 import type { InboxStore } from "@plannotator/shared/inbox/store";
 import { clip } from "./inbox-mcp-read";
@@ -34,14 +34,15 @@ export const INBOX_COMMENTS_SHOWN = 50;
 
 /**
  * The thread's sent comments, clipped, with the replies under them. A ranged
- * read (`replies`: its messages) keeps those its replies carried and every
- * unanchored one, and counts the others (`elsewhere`).
+ * read (`replies`: its messages) keeps those its replies carried, those with
+ * a reply that came with one of its messages, and every unanchored one, and
+ * counts the others (`elsewhere`).
  */
 export function threadComments(store: InboxStore, threadId: string, replies: ReadonlySet<string> | null = null): { comments: InboxCommentThread[]; elsewhere: number } {
   const messages = store.thread(threadId)?.messages ?? [];
   const all = inboxCommentThreads(messages, store.sentAnnotations(threadId), store.commentReplies(threadId));
   const comments = all
-    .filter((comment) => replies === null || replies.has(comment.reply_id) || comment.unanchored)
+    .filter((comment) => replies === null || replies.has(comment.reply_id) || comment.unanchored || comment.replies.some((reply) => replies.has(reply.message_id)))
     .map((comment) => ({
       ...comment,
       quote: clip(comment.quote, INBOX_COMMENT_QUOTE_CHARS),
@@ -119,8 +120,8 @@ export function planCommentReplies(store: InboxStore, replies: readonly { commen
   if (!thread) throw new InboxError("validation_error", "comment_replies: send with reply_to into the thread of the comments.", { field: "comment_replies" });
   return replies.map((reply, index) => {
     const field = `comment_replies[${index}]`;
-    const text = reply.text.trim();
-    if (text === "") throw new InboxError("validation_error", `${field}.text: your reply (no words).`, { field });
+    const text = inboxCommentReplyText(reply.text);
+    if (text === null) throw new InboxError("validation_error", `${field}.text: your reply, 1 to ${INBOX_COMMENT_REPLY_TEXT_MAX} characters.`, { field });
     let comment;
     try {
       comment = store.sentComment(reply.comment_id);
@@ -135,11 +136,24 @@ export function planCommentReplies(store: InboxStore, replies: readonly { commen
   });
 }
 
-/** Write the replies a sent message carried (planCommentReplies), as the session that sent it. */
-export function writeCommentReplies(store: InboxStore, planned: readonly { comment: string; text: string }[], input: { agent_session?: string; agent_host?: string; agent_name?: string }): { reply_id: string; comment_id: string }[] {
+/**
+ * Write the replies a sent message carries (planCommentReplies), as the
+ * session that sent it, with that message. A replay of the send (the same
+ * idempotency key) answers with the replies the first call wrote, and writes
+ * those it did not get to (a process that stopped between the message and
+ * them); a replay with other replies is refused, as one with another body is.
+ */
+export function writeCommentReplies(
+  store: InboxStore,
+  planned: readonly { comment: string; text: string }[],
+  sent: { message_id: string; thread_id: string; replayed: boolean },
+  input: { agent_session?: string; agent_host?: string; agent_name?: string },
+): { reply_id: string; comment_id: string }[] {
+  const written = sent.replayed ? store.commentReplies(sent.thread_id).filter((reply) => reply.message_id === sent.message_id) : [];
+  if (written.length > planned.length || written.some((reply, index) => reply.re !== planned[index]!.comment || reply.text !== planned[index]!.text)) {
+    throw new InboxError("idempotency_key_reused", "This idempotency_key was already used with other comment_replies.", { message_id: sent.message_id });
+  }
   const from = { kind: "agent" as const, host: input.agent_host?.trim() || null, session: input.agent_session?.trim() || null, name: inboxStoredAgentName(input.agent_name) };
-  return planned.map(({ comment, text }) => {
-    const reply = store.replyToComment(comment, { text, from });
-    return { reply_id: reply.id, comment_id: reply.re };
-  });
+  const fresh = planned.slice(written.length).map(({ comment, text }) => store.replyToComment(comment, { text, from, message_id: sent.message_id }));
+  return [...written, ...fresh].map((reply) => ({ reply_id: reply.id, comment_id: reply.re }));
 }

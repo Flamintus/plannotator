@@ -55,8 +55,8 @@ export interface SentFileComments {
   onUnanchoredReport: (report: UnanchoredReport) => void;
   /** The person resolves one, or opens it again (absent: no Resolve, a linked machine's thread). */
   onResolve?: (record: InboxAnnotationRecord, resolved: boolean) => void;
-  /** The person replies under one (absent: no Reply, a linked machine's thread). */
-  onReply?: (commentId: string, reply: ReplyInput) => void;
+  /** The person replies under one, true once saved (absent: no Reply, a linked machine's thread). */
+  onReply?: (commentId: string, reply: ReplyInput) => Promise<boolean>;
 }
 
 /**
@@ -127,14 +127,13 @@ export function useSentComments(input: {
       return false;
     }
   }, []);
-  const replyFromCard = useCallback((commentId: string, input: ReplyInput) => void reply(commentId, input), [reply]);
   const fileRecords = useMemo(() => records.filter(isFileComment), [records]);
   const pane = useMemo<SentFileComments | undefined>(
     () =>
       files?.sent_comments
-        ? { records: fileRecords, rounds, agentReplies, replyRounds, resolved, onUnanchoredReport: report, ...(canResolve ? { onResolve: resolve, onReply: replyFromCard } : {}) }
+        ? { records: fileRecords, rounds, agentReplies, replyRounds, resolved, onUnanchoredReport: report, ...(canResolve ? { onResolve: resolve, onReply: reply } : {}) }
         : undefined,
-    [files?.sent_comments, fileRecords, rounds, agentReplies, replyRounds, resolved, report, resolve, replyFromCard, canResolve],
+    [files?.sent_comments, fileRecords, rounds, agentReplies, replyRounds, resolved, report, resolve, reply, canResolve],
   );
   return { records, open, rounds, byMessage, replies, resolved, report, resolve: canResolve ? resolve : undefined, reply: canResolve ? reply : undefined, pane };
 }
@@ -176,8 +175,11 @@ export function useSentFileComments(input: {
   const resolvedIds = sent?.resolved ?? NO_IDS;
   /** This file's sent comments (the panel's "All files" groups list them with its drafts). */
   const sentHere = useMemo(() => fileRecords.filter((r) => sentIds.has(r.id)), [fileRecords, sentIds]);
-  /** The agents' replies under this file's comments. */
-  const agentHere = useMemo(() => (sent?.agentReplies ?? NO_REPLIES).filter((reply) => sentById.has(reply.re)), [sent?.agentReplies, sentById]);
+  /** The agents' replies under this file's comments (this version's: another file's, or the other version's, are not here). */
+  const agentHere = useMemo(() => {
+    const here = new Set(sentHere.map((record) => record.id));
+    return (sent?.agentReplies ?? NO_REPLIES).filter((reply) => here.has(reply.re));
+  }, [sent?.agentReplies, sentHere]);
   /** Every reply card here (the person's, sent or a draft, and the agents'): never painted, and folded with a resolved comment. */
   const replyIds = useMemo(() => new Set([...fileRecords.filter(isInboxCommentReply).map((r) => r.id), ...agentHere.map((reply) => reply.id)]), [fileRecords, agentHere]);
   const folded = useMemo(
@@ -292,7 +294,7 @@ export function useSentFileComments(input: {
     [setUnanchored],
   );
 
-  /** The person's Reply on a card here: under the card's comment (a reply's own comment: one list per comment). */
+  /** The person's Reply on a card here: under the card's comment (a reply's own comment: one list per comment); a failed save keeps the box's words. */
   const onReply = sent?.onReply;
   const replyAt =
     sentIds.size === 0 || readOnly || !onReply

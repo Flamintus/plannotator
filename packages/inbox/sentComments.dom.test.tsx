@@ -313,6 +313,12 @@ test.skipIf(!hasDom)("on a file, the agent's reply is a card under its comment's
   await postJson('/api/inbox/annotations', { attachment_id: world.attachment, version: 'current', annotation: words('rep-file-1', 'The plan, in short.', 'Longer, please.') });
   await postJson(`/api/inbox/messages/${world.filed}/reply`, { idempotency_key: 'k-rep-file', feedback: '# Feedback', annotation_ids: ['rep-file-1'] });
   const { replied } = await command<{ replied: string }>({ commentReply: { comment: 'rep-file-1', session: 'ses_file', text: 'Added three lines.' } });
+  // A reply under a comment on the version the agent sent is that version's, never in the current file's panel.
+  const sha = (JSON.parse((await loopback(`/api/inbox/threads/${world.filed}/attachments`)).text) as { attachments: (InboxAttachmentState & { sent_sha256: string })[] }).attachments.find((a) => a.id === world.attachment)!.sent_sha256;
+  await postJson('/api/inbox/annotations', { attachment_id: world.attachment, version: sha, annotation: words('rep-sent-1', 'The plan, in short.', 'On the old one.') });
+  const last = JSON.parse((await loopback(`/api/inbox/threads/${world.filed}`)).text) as { thread: { messages: { id: string; author: { kind: string } }[] } };
+  await postJson(`/api/inbox/messages/${last.thread.messages.filter((m) => m.author.kind === 'agent').at(-1)!.id}/reply`, { idempotency_key: 'k-rep-sent', feedback: '# Feedback', annotation_ids: ['rep-sent-1'] });
+  const { replied: elsewhere } = await command<{ replied: string }>({ commentReply: { comment: 'rep-sent-1', session: 'ses_file', text: 'That version is gone.' } });
 
   await renderApp(`#thread=${world.filed}&file=${world.attachment}`);
   const card = (id: string) => document.querySelector(`[data-annotation-id="${id}"]`);
@@ -322,6 +328,7 @@ test.skipIf(!hasDom)("on a file, the agent's reply is a card under its comment's
   // The agent's reply: no edit or delete, no Resolve of its own.
   expect([...card(replied)!.querySelectorAll('button')].map((button) => button.getAttribute('aria-label') ?? button.textContent)).toEqual(['Reply']);
   expect(document.querySelector(`[data-bind-id="${replied}"], [data-highlight-id="${replied}"]`)).toBeNull();
+  expect(card(elsewhere)).toBeNull();
 
   act(() => card('rep-file-1')!.querySelector<HTMLButtonElement>('button[aria-label="Reply"]')!.click());
   const area = document.querySelector<HTMLTextAreaElement>('[data-annotation-panel] textarea[aria-label="Reply"]')!;

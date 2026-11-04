@@ -222,13 +222,15 @@ interface PanelProps {
     *  opens a box after the card's own replies, where the reply will appear;
     *  Reply (or the comment submit key) calls `onReply(parentId, { text,
     *  mentions })` and the host adds the reply (`buildReplyAnnotation` in
-    *  `utils/annotationReply`). `mentions` follows the edit box's rule: only
+    *  `utils/annotationReply`). A host that could not save it answers
+    *  `false` (or a promise of it): the box stays open with its words.
+    *  `mentions` follows the edit box's rule: only
     *  with a `mentionSource` and a surviving pick. A card whose place is drawn
     *  by something other than a text highlight (a comment on part of an
     *  image, a checkbox toggle, a question's answer) takes no Reply: a reply
     *  would carry a text anchor its parent does not have. Absent: no action
     *  and no box. */
-  onReply?: (parentId: string, reply: { text: string; mentions?: readonly string[] }) => void;
+  onReply?: (parentId: string, reply: { text: string; mentions?: readonly string[] }) => void | boolean | Promise<void | boolean>;
   /** Opt-in host capability: an `@` mention source for the EDIT box of each
     *  plan-annotation card, the same `MentionSource` `Viewer` and `HtmlViewer`
     *  take for their creation composers. Supplied → the edit textarea grows
@@ -510,8 +512,14 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
             onSave={(mentions) => {
               const text = replyDraft.text.trim();
               if (!text) return;
-              onReply!(replyDraft.parentId, mentionSource && mentions.length > 0 ? { text, mentions } : { text });
-              setReplyDraft(null);
+              // The box closes once sent; a host that answers false (its save failed) keeps it, words and all.
+              const opened = replyDraft.opened;
+              const close = (sent: void | boolean) => {
+                if (sent !== false) setReplyDraft((draft) => (draft?.opened === opened ? null : draft));
+              };
+              const sent = onReply!(replyDraft.parentId, mentionSource && mentions.length > 0 ? { text, mentions } : { text });
+              if (sent instanceof Promise) void sent.then(close, () => {});
+              else close(sent);
             }}
             onCancel={() => setReplyDraft(null)}
             mentionSource={mentionSource}

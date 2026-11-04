@@ -243,6 +243,8 @@ export interface InboxCommentReplyRecord {
   re: string;
   /** The agent session that wrote it, as a message's author. */
   from: { kind: "agent"; host: string | null; session: string | null; name: string | null };
+  /** The agent's message it came with (send_message's `comment_replies`): a retry of that send answers with these. */
+  message_id: string;
   text: string;
   created_at: string;
 }

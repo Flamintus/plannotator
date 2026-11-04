@@ -6,8 +6,10 @@ import {
   inboxCommentLastReplies,
   inboxCommentRepliesFeedback,
   inboxCommentReplyAnnotation,
+  INBOX_COMMENT_REPLY_TEXT_MAX,
   inboxCommentReplyId,
-  isInboxCommentReplyId,
+  inboxCommentReplyText,
+  isInboxCommentReplyRecord,
   INBOX_OPEN_COMMENTS_SENT,
   INBOX_OPEN_COMMENTS_TITLE,
   inboxCommentRounds,
@@ -247,6 +249,7 @@ describe('replies under a sent comment', () => {
     thread_id: 'msg_a1',
     re,
     from: { kind: 'agent', host: 'claude-code', session: 'ses_a', name: 'Claude Code' },
+    message_id: 'msg_a2',
     text: `answer ${id}`,
     created_at,
   });
@@ -310,9 +313,18 @@ describe('replies under a sent comment', () => {
     expect(text).toContain('> Tuesday.\n> EU first.');
   });
 
-  test("an agent's reply id is its own kind", () => {
-    const id = inboxCommentReplyId(0);
-    expect(isInboxCommentReplyId(id)).toBe(true);
-    expect(isInboxCommentReplyId('c1')).toBe(false);
+  test("a stored line is an agent's reply only when it reads as one: a reader skips a malformed or newer one", () => {
+    const good = agentReply(inboxCommentReplyId(0), '2026-11-04T10:04:00.000Z');
+    expect(isInboxCommentReplyRecord(good)).toBe(true);
+    for (const bad of [{ ...good, id: 'c1' }, { ...good, from: { kind: 'person' } }, { ...good, from: { ...good.from, name: 3 } }, { ...good, message_id: undefined }, { ...good, text: null }, null]) {
+      expect(isInboxCommentReplyRecord(bad)).toBe(false);
+    }
+  });
+
+  test("a reply's words are kept trimmed, refused empty or too long", () => {
+    expect(inboxCommentReplyText('  Tuesday.  ')).toBe('Tuesday.');
+    expect(inboxCommentReplyText(' \n ')).toBeNull();
+    expect(inboxCommentReplyText('x'.repeat(INBOX_COMMENT_REPLY_TEXT_MAX + 1))).toBeNull();
+    expect(inboxCommentReplyText(4)).toBeNull();
   });
 });
