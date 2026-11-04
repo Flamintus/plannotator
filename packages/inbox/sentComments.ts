@@ -45,8 +45,9 @@ export function followCodeLines(annotation: Annotation, lines: readonly string[]
 
 /**
  * The sent comments as listed, with what this window's own Resolve or Reopen
- * wrote since (`written`, by id) drawn at once: the files' next read carries
- * the same record, and a newer one (another window's change) wins over it.
+ * wrote since (`written`, by id), drawn as soon as the Inbox answered: the
+ * files' next read carries the same record, and a newer one (another
+ * window's change) wins over it.
  */
 export function withSentWrites(listed: readonly InboxAnnotationRecord[], written: ReadonlyMap<string, InboxAnnotationRecord>): readonly InboxAnnotationRecord[] {
   if (written.size === 0) return listed;

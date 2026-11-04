@@ -1455,8 +1455,10 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
     view: view ? { text: view.text, key: `${attachment.id}\0${view.version}\0${view.attachment.current?.sha256 ?? ''}\0${view.text.length}` } : null,
     setUnanchored,
     readOnly: props.readOnly,
+    // A comment opened again: the markdown and HTML viewers paint it again (the others draw from their props).
+    repaint: (list) => viewerRef.current?.applySharedAnnotations(list.filter(annotationOwnsHighlight)),
   });
-  const { annotations, panelAnnotations, ownAnnotations, sentIds, withSentRound, withSentParts, sentFooter, reportUnanchored } = sentFile;
+  const { annotations, panelAnnotations, ownAnnotations, sentIds, withSentRound, withSentParts, withSentBody, sentFooter, reportUnanchored } = sentFile;
   // The document's blocks keep their identity across saves (the Viewer re-renders on a new array);
   // only code comments, which carry their own lines, derive blocks from the annotations.
   const documentBlocks = useMemo(() => (view && !isCode ? attachmentBlocks(kind, view.text, attachment.name) : []), [view, kind, isCode, attachment.name]);
@@ -1569,13 +1571,12 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   const painted = useRef<string | null>(null);
   useEffect(() => {
     if (!view || isHtml || isCode) return;
-    // A sent comment resolved or opened again paints the file again (a resolved one leaves its words).
-    const key = `${attachment.id}\0${view.version}\0${view.text.length}\0${sentFile.resolvedKey}`;
+    const key = `${attachment.id}\0${view.version}\0${view.text.length}`;
     if (painted.current === key) return;
     painted.current = key;
     const id = requestAnimationFrame(() => viewerRef.current?.applySharedAnnotations(annotations.filter(annotationOwnsHighlight)));
     return () => cancelAnimationFrame(id);
-  }, [view, attachment.kind, attachment.id, annotations, sentFile.resolvedKey]);
+  }, [view, attachment.kind, attachment.id, annotations]);
 
   // A comment that left the records another way than this pane's Remove (a Send took it, the comments list's Remove,
   // another window) leaves the page too.
@@ -2439,7 +2440,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
               if (isVideo && readInboxVideoTime(annotation) !== null) return wordless ? { quote: false, images: false, text: false } : { quote: false, images: false };
               return wordless ? { quote: false, images: false, text: false } : {};
             })}
-            renderCardBody={(annotation) => (isWordlessMarkup(annotation) ? <MarkupPicture image={annotation.images![0]!} /> : null)}
+            renderCardBody={withSentBody((annotation) => (isWordlessMarkup(annotation) ? <MarkupPicture image={annotation.images![0]!} /> : null))}
             renderCardFooter={sentFooter}
             title={isVideo ? 'Comments' : undefined}
             // A linked page takes no comments: the panel lists the attached page's, and says so.

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { InboxAnnotationRecord } from './inbox-attachments';
 import {
+  INBOX_OPEN_COMMENTS_SENT,
   INBOX_OPEN_COMMENTS_TITLE,
   inboxCommentRounds,
   inboxCommentState,
@@ -164,6 +165,18 @@ describe('the open comments a reply sends again', () => {
     expect(carried([ses('msg_a1', 'ses_a'), person('msg_p1'), ses('msg_a2', 'ses_a'), person('msg_p2')], records, 'ses_a')).toEqual([]);
   });
 
+  test('every round sends again every comment still open from all earlier rounds', () => {
+    const messages = [ses('msg_a1', 'ses_a'), person('msg_p1'), ses('msg_a2', 'ses_a'), person('msg_p2'), ses('msg_a3', 'ses_a')];
+    const records = [record('c1', { sent_reply_id: 'msg_p1' }), record('c2', { sent_reply_id: 'msg_p2', resolved_at: null })];
+    expect(carried(messages, records, 'ses_a').sort()).toEqual(['c1', 'c2']);
+  });
+
+  test("a guided review's comment is never sent again: the window cannot resolve it", () => {
+    const messages = [ses('msg_a1', 'ses_a'), person('msg_p1'), ses('msg_a2', 'ses_a')];
+    const guide = record('g1', { sent_reply_id: 'msg_p1', message: undefined, guide: { title: 'Review', file: 'src/a.ts', side: 'new', line_start: 3, line_end: 3 }, version: 'a'.repeat(64) });
+    expect(carried(messages, [guide, record('c1', { sent_reply_id: 'msg_p1' })], 'ses_a')).toEqual(['c1']);
+  });
+
   test("a comment that went to another session waits for a reply to that one", () => {
     const messages = [ses('msg_a1', 'ses_a'), ses('msg_b1', 'ses_b'), person('msg_q1'), ses('msg_b2', 'ses_b'), ses('msg_a2', 'ses_a')];
     const records = [record('c1', { sent_reply_id: 'msg_q1' })];
@@ -196,5 +209,18 @@ describe('the open comments a reply sends again', () => {
     expect(headings[1]!.endsWith('(id c2)')).toBe(true);
     // Every line of a comment stays in its quote, so the next heading starts a new entry.
     expect(text).toContain('> One store first.\n> Then the rest.');
+  });
+
+  test('as feedback, a long backlog sends the newest again and counts the rest', () => {
+    const count = INBOX_OPEN_COMMENTS_SENT + 3;
+    const ids = Array.from({ length: count }, (_, i) => `c${String(i).padStart(2, '0')}`);
+    const threads = inboxCommentThreads(
+      [agent('msg_a1'), person('msg_p1')],
+      ids.map((id, i) => record(id, { sent_reply_id: 'msg_p1', created_at: `2026-11-04T10:${String(i).padStart(2, '0')}:00.000Z` })),
+    );
+    const text = inboxOpenCommentsFeedback(threads, '/repo');
+    const named = text.split('\n').filter((line) => line.startsWith('### ')).map((line) => /\(id (\w+)\)$/.exec(line)![1]);
+    expect(named).toEqual(ids.slice(-INBOX_OPEN_COMMENTS_SENT));
+    expect(text).toContain('3 older open comments');
   });
 });

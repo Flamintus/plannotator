@@ -4910,11 +4910,16 @@ export class InboxStore {
     return next;
   }
 
-  /** The comments still open that the person's reply to `message` sends its session again, as feedback (none: empty). */
+  /**
+   * The comments still open that the person's reply to `message` sends its
+   * session again, as feedback (none: empty). A Re-ask is no reply of the
+   * round, and comments sent before the thread's archive stay with it.
+   */
   private openCommentsFeedback(message: InboxMessage, session: string): string {
     const messages = this.threadMessages(message.thread_id);
     const threads = inboxCommentThreads(messages, this.sentAnnotations(message.thread_id));
-    const carried = inboxCommentsToCarry(messages, threads, session, (m) => this.recipientOf(m)?.session ?? null);
+    const sentTo = (m: InboxMessage) => (m.reask ? null : (this.recipientOf(m)?.session ?? null));
+    const carried = inboxCommentsToCarry(messages, threads, session, sentTo).filter((t) => !this.closedByArchive(this.messages.get(t.reply_id)!));
     return inboxOpenCommentsFeedback(carried, this.projectsById.get(message.project_id)?.root ?? "");
   }
 

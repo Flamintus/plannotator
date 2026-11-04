@@ -7,11 +7,12 @@
  * files carry no `sent_comments`, and every part here is a no-op.
  *
  * The person resolves a sent comment, or opens it again, from its card in the
- * file's panel or its row under the message. A resolved comment leaves the
- * highlights and folds: its card keeps one line (its round, Resolved,
- * Reopen), and under the message it waits behind "N resolved".
+ * file's panel or its row under the message (not on a linked machine's
+ * thread: the device door does not forward it). A resolved comment leaves
+ * the highlights and folds: its card keeps its header (its round, Resolved)
+ * and Reopen, and under the message it waits behind "N resolved".
  */
-import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { inboxCommentRounds, inboxCommentState, type InboxCommentRoundMessage } from '@plannotator/core/inbox-comment-threads';
 import type { InboxAnnotationRecord } from '@plannotator/core/inbox-types';
 import type { Annotation } from '@plannotator/ui/types';
@@ -35,8 +36,8 @@ export interface SentFileComments {
   rounds: ReadonlyMap<string, number>;
   /** What the pane found of their words. */
   onUnanchoredReport: (report: UnanchoredReport) => void;
-  /** The person resolves one, or opens it again. */
-  onResolve: (record: InboxAnnotationRecord, resolved: boolean) => void;
+  /** The person resolves one, or opens it again (absent: no Resolve, a linked machine's thread). */
+  onResolve?: (record: InboxAnnotationRecord, resolved: boolean) => void;
 }
 
 /**
@@ -45,9 +46,10 @@ export interface SentFileComments {
  * in their message), all of them by message, the pane's part (`pane`),
  * `report`, which keeps what the window found of their words (the store's
  * event then reads the files again), and `resolve`, the person's Resolve or
- * Reopen (drawn at once; a refusal goes to `onError`).
+ * Reopen (drawn as soon as the Inbox answers; a refusal goes to `onError`),
+ * absent when `canResolve` is false.
  */
-export function useSentComments(messages: readonly InboxCommentRoundMessage[], files: AttachmentsModel | null, onError: (message: string) => void) {
+export function useSentComments(messages: readonly InboxCommentRoundMessage[], files: AttachmentsModel | null, onError: (message: string) => void, canResolve: boolean) {
   const listed = files?.sent_comments ?? NO_RECORDS;
   const [written, setWritten] = useState(NO_WRITES);
   const records = useMemo(() => withSentWrites(listed, written), [listed, written]);
@@ -73,10 +75,10 @@ export function useSentComments(messages: readonly InboxCommentRoundMessage[], f
   }, []);
   const fileRecords = useMemo(() => records.filter(isFileComment), [records]);
   const pane = useMemo<SentFileComments | undefined>(
-    () => (files?.sent_comments ? { records: fileRecords, rounds, onUnanchoredReport: report, onResolve: resolve } : undefined),
-    [files?.sent_comments, fileRecords, rounds, report, resolve],
+    () => (files?.sent_comments ? { records: fileRecords, rounds, onUnanchoredReport: report, ...(canResolve ? { onResolve: resolve } : {}) } : undefined),
+    [files?.sent_comments, fileRecords, rounds, report, resolve, canResolve],
   );
-  return { records, open, rounds, byMessage, report, resolve, pane };
+  return { records, open, rounds, byMessage, report, resolve: canResolve ? resolve : undefined, pane };
 }
 
 /**
@@ -84,9 +86,10 @@ export function useSentComments(messages: readonly InboxCommentRoundMessage[], f
  * comments; a sent code comment follows its lines on the file shown; a sent
  * card has its round, no edit or delete, and Resolve (Reopen once resolved,
  * when the card folds to its header); a resolved comment is not painted on
- * the file (`annotations`) but stays in the panel (`panelAnnotations`); and
- * what the pane finds of their words is reported once per comment and file
- * read (`view.key`), so a reload of the records never sends it again.
+ * the file (`annotations`) but stays in the panel (`panelAnnotations`), and
+ * one opened again is painted again (`repaint`); and what the pane finds of
+ * their words is reported once per comment and file read (`view.key`), so a
+ * reload of the records never sends it again.
  */
 export function useSentFileComments(input: {
   sent: SentFileComments | undefined;
@@ -99,8 +102,10 @@ export function useSentFileComments(input: {
   setUnanchored: (ids: ReadonlySet<string>) => void;
   /** No Resolve or Reopen (the pane takes no comments). */
   readOnly: boolean;
+  /** Paint comments on the file shown (the viewer's `applySharedAnnotations`; it skips one already painted). */
+  repaint: (annotations: Annotation[]) => void;
 }) {
-  const { sent, drafts, path, version, isCode, view, setUnanchored, readOnly } = input;
+  const { sent, drafts, path, version, isCode, view, setUnanchored, readOnly, repaint } = input;
   const sentRecords = sent?.records;
   const fileRecords = useMemo(
     () => [...drafts, ...(sentRecords ?? NO_RECORDS)].filter((r) => r.path === path && r.version === version),
@@ -121,8 +126,22 @@ export function useSentFileComments(input: {
   const annotations = useMemo(() => (resolvedIds.size === 0 ? panelAnnotations : panelAnnotations.filter((a) => !resolvedIds.has(a.id))), [panelAnnotations, resolvedIds]);
   // The image and video views draw their own remove controls: a sent comment is in the panel only.
   const ownAnnotations = useMemo(() => (sentIds.size === 0 ? annotations : annotations.filter((a) => !sentIds.has(a.id))), [annotations, sentIds]);
-  /** Changes when a comment is resolved or opened again, so the file paints its words again. */
-  const resolvedKey = useMemo(() => [...resolvedIds].sort().join(' '), [resolvedIds]);
+  // A comment opened again is painted again, once the viewer has it (a resolved one left the page with `annotations`).
+  const latestAnnotations = useRef(annotations);
+  latestAnnotations.current = annotations;
+  const repaintRef = useRef(repaint);
+  repaintRef.current = repaint;
+  const wasResolved = useRef(resolvedIds);
+  useEffect(() => {
+    const before = wasResolved.current;
+    wasResolved.current = resolvedIds;
+    const reopened = new Set([...before].filter((id) => !resolvedIds.has(id)));
+    if (reopened.size === 0) return;
+    requestAnimationFrame(() => {
+      const list = latestAnnotations.current.filter((a) => reopened.has(a.id));
+      if (list.length > 0) repaintRef.current(list);
+    });
+  }, [resolvedIds]);
   const rounds = useMemo(() => {
     const out = new Map<string, number>();
     for (const record of sentRecords ?? NO_RECORDS) {
@@ -161,16 +180,19 @@ export function useSentFileComments(input: {
       if (!sentIds.has(annotation.id)) return parts(annotation);
       return resolvedIds.has(annotation.id) ? { ...parts(annotation), actions: false, quote: false, text: false, images: false } : { ...parts(annotation), actions: false };
     };
+  /** A resolved card draws no body of its own either (a drawing's picture). */
+  const withSentBody = (body: (annotation: Annotation) => ReactNode) => (annotation: Annotation) => (resolvedIds.has(annotation.id) ? null : body(annotation));
   /** A sent card's foot: Resolve, or Reopen once resolved. */
+  const onResolve = sent?.onResolve;
   const sentFooter =
-    sentIds.size === 0 || readOnly || !sent
+    sentIds.size === 0 || readOnly || !onResolve
       ? undefined
       : (annotation: Annotation) => {
           const record = sentById.get(annotation.id);
           if (!record) return null;
           const resolved = resolvedIds.has(record.id);
           return (
-            <button type="button" className="ib-sentc-act" data-sent-resolve={record.id} onClick={() => sent.onResolve(record, !resolved)}>
+            <button type="button" className="ib-sentc-act" data-sent-resolve={record.id} onClick={() => onResolve(record, !resolved)}>
               {resolved ? 'Reopen' : 'Resolve'}
             </button>
           );
@@ -195,7 +217,7 @@ export function useSentFileComments(input: {
     [setUnanchored],
   );
 
-  return { sentHere, sentIds, annotations, panelAnnotations, ownAnnotations, resolvedKey, withSentRound, withSentParts, sentFooter, reportUnanchored };
+  return { sentHere, sentIds, annotations, panelAnnotations, ownAnnotations, withSentRound, withSentParts, withSentBody, sentFooter, reportUnanchored };
 }
 
 /**

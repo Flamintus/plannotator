@@ -234,6 +234,16 @@ test("each round sends the comments still open to the session again, never a res
   expect(read.structured.thread.messages.at(-2).body).toContain("(id c-file)");
 });
 
+test("comments sent before the thread was archived stay with it when the agent brings it back", async () => {
+  const { project, dataDir } = world();
+  const server = await start(dataDir, true);
+  const client = await agent(server);
+  const { sent, replyId } = await roundOne(server, client, project);
+  expect((await post(server, `/api/inbox/messages/${sent.thread_id}/resolve`, { resolved: true })).status).toBe(200);
+  const back = (await call(client, "send_message", { project_path: project, body: "One more thing about the rollout.", reply_to: replyId, ...SESSION })).structured;
+  expect(await replyBody(server, back.message_id, "r-back")).not.toContain("still open");
+});
+
 test("only a sent comment is marked or resolved, with a boolean", async () => {
   const { project, dataDir } = world();
   const server = await start(dataDir, true);

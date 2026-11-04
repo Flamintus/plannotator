@@ -74,6 +74,10 @@ export type InboxCommentState = "open" | "resolved";
  * reply newer than `resolved_at` (`lastReplyAt`, the newest reply's time)
  * opens it again, as a reply does in crit, with nothing written. The replies
  * under a comment pass their newest time here; until then none is passed.
+ * Three readers ask it, and each must pass that time once replies exist:
+ * `inboxCommentThreads` (read_thread and what a reply sends again), the
+ * store's `resolveAnnotation` (whether a press changes anything) and the
+ * window's `isResolved` (packages/inbox/components/SentComments.tsx).
  */
 export function inboxCommentState(record: Pick<InboxAnnotationRecord, "resolved_at">, lastReplyAt: string | null = null): InboxCommentState {
   const resolved = record.resolved_at;
@@ -209,8 +213,10 @@ export interface InboxCommentCarryMessage extends InboxCommentRoundMessage {
  * sends again: those that went to that session before it last wrote in the
  * thread, still open, and only when this reply is the person's first to it
  * since then (a second reply before it answers repeats nothing). A comment
- * that went to another session waits for a reply to that one. `sentTo` names
- * the session a message of the person went to (the store's `recipientOf`).
+ * that went to another session waits for a reply to that one. A comment on a
+ * guided review's diff is left out: the window draws none of those, so none
+ * can be resolved. `sentTo` names the session a message of the person went
+ * to (the store's `recipientOf`), null for one that is not a reply to it.
  */
 export function inboxCommentsToCarry<M extends InboxCommentCarryMessage>(
   messages: readonly M[],
@@ -227,7 +233,7 @@ export function inboxCommentsToCarry<M extends InboxCommentCarryMessage>(
   const at = new Map(messages.map((message, index) => [message.id, index]));
   return threads.filter((thread) => {
     const index = at.get(thread.reply_id);
-    return thread.state === "open" && index !== undefined && index < last && sentTo(messages[index]!) === session;
+    return thread.state === "open" && thread.on.kind !== "guide" && index !== undefined && index < last && sentTo(messages[index]!) === session;
   });
 }
 
@@ -238,21 +244,29 @@ export function inboxCommentsToCarry<M extends InboxCommentCarryMessage>(
  */
 export const INBOX_OPEN_COMMENTS_TITLE = "Feedback on comments still open";
 
+/** A reply sends at most this many open comments again, the newest; the rest are counted. */
+export const INBOX_OPEN_COMMENTS_SENT = 20;
+
 /**
  * The open comments a reply sends again, as a section of its feedback: one
  * entry per comment with its round, where it is and its words, then the
  * comment; each heading ends with the comment's id, as every entry of a Send
- * does. Empty when there is none.
+ * does. The newest `INBOX_OPEN_COMMENTS_SENT` only, and a line counting the
+ * others. Empty when there is none.
  */
 export function inboxOpenCommentsFeedback(threads: readonly InboxCommentThread[], root: string): string {
   if (threads.length === 0) return "";
-  const entries = threads.map((thread, index) => {
+  const shown = threads.slice(-INBOX_OPEN_COMMENTS_SENT);
+  const older = threads.length - shown.length;
+  const entries = shown.map((thread, index) => {
     const place = `${inboxCommentPlace(thread.on, root)}${thread.unanchored ? ", unanchored (its words were not in the file when the person last opened it)" : ""}`;
     const quote = thread.quote.replace(/\s+/g, " ").trim();
     const comment = (thread.text.trim() || "(no words)").split(/\r\n?|\n/).map((line) => `> ${line}`.trimEnd());
     return [`### ${index + 1}. Round ${thread.round}, ${place}${quote ? `: "${quote}"` : ""} (id ${thread.id})`, ...comment].join("\n");
   });
-  return [`# ${INBOX_OPEN_COMMENTS_TITLE}`, "The person has not resolved these comments from earlier rounds yet.", ...entries].join("\n\n");
+  const intro = "The person has not resolved these comments from earlier rounds yet.";
+  const rest = older > 0 ? [`${older} older open comment${older === 1 ? " is" : "s are"} not repeated here: read_thread lists every comment.`] : [];
+  return [`# ${INBOX_OPEN_COMMENTS_TITLE}`, intro, ...entries, ...rest].join("\n\n");
 }
 
 /**

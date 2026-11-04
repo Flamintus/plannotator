@@ -1953,7 +1953,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
   const allFiles: InboxAttachmentState[] = useMemo(() => [...attachments, ...inlineImages], [attachments, inlineImages]);
   const records = files?.annotations ?? [];
   // Comments that stay after Send (experimental "persistent-comments"; SentComments.tsx): only while the person has it on.
-  const sentComments = useSentComments(thread.messages, files, setError);
+  const sentComments = useSentComments(thread.messages, files, setError, !machine);
   /** The person's own messages: their images are named "image in my … message" in the feedback (replyFileLinks.ts). */
   const personMessageIds = useMemo(() => new Set(thread.messages.filter((m) => m.author.kind === 'person').map((m) => m.id)), [thread.messages]);
   // Code review: `/review-recheck` is offered (and matched at Send) only once a review happened in this thread.
