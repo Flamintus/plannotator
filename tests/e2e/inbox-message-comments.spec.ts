@@ -214,8 +214,8 @@ test("a comment on words in an agent's message: toolbar, composer, highlight, ch
   expect(body).toMatch(new RegExp(`## Feedback on your message from \\d{1,2}:\\d{2} [AP]M \\(${id}\\)`));
   expect(body).toContain('Feedback on: "two, four and eight seconds"');
   expect(body).toContain('> Cap the total wait too, say 30 seconds.');
-  // The words across blocks: under "Feedback on:", in a fence longer than any backtick run in them.
-  const across = /### \d\. Feedback on:\n(`{4,})\n([\s\S]*?)\n\1\n> Why a manual step\? Put it in the setup script\./.exec(body);
+  // The words across blocks: under "Feedback on:" and the comment's id, in a fence longer than any backtick run in them.
+  const across = /### \d\. Feedback on: \(id [A-Za-z0-9_.:-]+\)\n(`{4,})\n([\s\S]*?)\n\1\n> Why a manual step\? Put it in the setup script\./.exec(body);
   expect(across, body).not.toBeNull();
   expect(across![2]).toContain('Run this once after you pull:');
   expect(across![2]).toContain('# Feedback on the attached files');

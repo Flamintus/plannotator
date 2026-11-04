@@ -3,9 +3,10 @@
  * catches: an entry the agent gets without its comment's id, so it cannot name
  * that comment in a later round; an id that follows the entry's place (a
  * number) instead of the comment, so it changes when another comment comes
- * first; an id printed in a copy made for people (the default), such as the
- * PR review body code review seeds from this export; and an id from an older
- * or foreign writer adding a line to agent-read feedback.
+ * first; an entry whose quote runs over several lines losing its id; an id
+ * printed by default (the copies made for people, such as code review's PR
+ * body seed, pass no option); and an id from an older or foreign writer
+ * adding a line to agent-read feedback.
  */
 import { describe, expect, test } from 'bun:test';
 import { AnnotationType, type Annotation, type CodeAnnotation, type EditorAnnotation } from '../types';
@@ -80,6 +81,12 @@ describe('comment ids in the feedback an agent gets', () => {
     const withAnother = exportAnnotations(blocks, [later, comment('ann-earlier', 'Retry forever.')], [], 'Plan Feedback', 'plan', { commentIds: true });
     expect(headingOf(alone, 'ann-later')).toStartWith('## 1. ');
     expect(headingOf(withAnother, 'ann-later')).toStartWith('## 2. ');
+  });
+
+  test('a quote over several lines keeps the id, right after the quote and before the comment', () => {
+    const across = comment('ann-across', 'Retry forever.', { originalText: 'Retry forever.\nThen give up.' });
+    const out = exportAnnotations(blocks, [across], [], 'Plan Feedback', 'plan', { commentIds: true });
+    expect(out).toContain('Then give up." (id ann-across)\n> On Retry forever..\n');
   });
 
   test('off by default: a copy for people names no id', () => {

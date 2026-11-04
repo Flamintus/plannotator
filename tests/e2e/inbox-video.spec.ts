@@ -258,14 +258,14 @@ test('Send carries the moment and the frame; the agent reads both', async () => 
   const reply = await world.claude.nextReply(world.threadId, 40);
   const body = reply.body as string;
   expect(body).toContain('## film/launch-cut-v3.webm');
-  expect(body).toMatch(/Feedback on: "launch-cut-v3\.webm at 0:02"\nAt 0:02 \(2\.2 s\)\n> The title holds too long here/);
+  expect(body).toMatch(/Feedback on: "launch-cut-v3\.webm at 0:02" \(id [A-Za-z0-9_.:-]+\)\nAt 0:02 \(2\.2 s\)\n> The title holds too long here/);
   const frame = /- \[launch-cut-v3 at 0:02\] `([^`]+)`/.exec(body);
   expect(frame).not.toBeNull();
   // The agent can Read the frame: a real JPEG in the Inbox's markups.
   expect(frame![1]!.startsWith(join(world.dataDir, 'inbox', 'markups'))).toBe(true);
   expect([...readFileSync(frame![1]!).subarray(0, 3)]).toEqual([0xff, 0xd8, 0xff]);
   // The second comment, after the first by time, with the marked-up copy (a PNG).
-  expect(body).toMatch(/### 2\. Feedback on: "launch-cut-v3\.webm at 0:03"\nAt 0:03 \(3\.4 s\)\n> The counter jumps here/);
+  expect(body).toMatch(/### 2\. Feedback on: "launch-cut-v3\.webm at 0:03" \(id [A-Za-z0-9_.:-]+\)\nAt 0:03 \(3\.4 s\)\n> The counter jumps here/);
   const marked = /- \[launch-cut-v3 at 0:03, marked up\] `([^`]+)`/.exec(body);
   expect(marked).not.toBeNull();
   expect(readFileSync(marked![1]!).subarray(1, 4).toString()).toBe('PNG');
