@@ -75,7 +75,7 @@ async function reviewed(server: InboxServer, client: Client, project: string) {
     comment_replies: [{ comment_id: "c-msg", text: "Step 1 tags the release. Step 2 rolls back through the off switch." }],
     ...SESSION,
   });
-  return { thread: sent.thread_id as string, replyId: answered.comment_replies[0].reply_id as string };
+  return { thread: sent.thread_id as string, replyId: answered.comment_replies[0].reply_id as string, agentMessage: answered.message_id as string };
 }
 
 const archive = (server: InboxServer, thread: string) => post(server, `/api/inbox/messages/${thread}/resolve`, { resolved: true });
@@ -84,14 +84,16 @@ const isArchived = (server: InboxServer, thread: string) => server.store.message
 
 test("on: resolve_message and the person's Archive are refused while a comment thread is open, naming them; once none is, both archive", async () => {
   const { project, server, client } = await world(true);
-  const { thread } = await reviewed(server, client, project);
+  const { thread, agentMessage } = await reviewed(server, client, project);
 
-  const agent = await tool(client, "resolve_message", { message_id: thread });
+  // Any message of the thread names it, as resolve_message takes: here the agent's own latest.
+  const agent = await tool(client, "resolve_message", { message_id: agentMessage });
   expect(agent.isError).toBe(true);
+  // Deliberate: the refusal's code and count, which the agent acts on.
   expect(agent.text.startsWith("comment_threads_open: 2 comment threads are still open")).toBe(true);
   expect(agent.text).toContain("c-msg");
   expect(agent.text).toContain("c-file");
-  const person = await archive(server, thread);
+  const person = await archive(server, agentMessage);
   expect([person.status, person.body.code, person.body.comment_ids]).toEqual([409, "comment_threads_open", ["c-msg", "c-file"]]);
   expect(isArchived(server, thread)).toBe(false);
 
@@ -133,7 +135,7 @@ test("on: an open sub-thread holds the archive under a resolved comment, and the
   expect(isArchived(server, thread)).toBe(true);
 });
 
-test("on: Archive all leaves a thread with an open comment thread where it is (held) and archives the others", async () => {
+test("on: Archive all leaves a thread with an open comment thread where it is (kept) and archives the others", async () => {
   const { project, server, client } = await world(true);
   const { thread } = await reviewed(server, client, project);
   const other = await call(client, "send_message", { project_path: project, body: "Docs are updated.", ...SESSION, agent_session: "ses_docs" });
@@ -141,7 +143,7 @@ test("on: Archive all leaves a thread with an open comment thread where it is (h
 
   const batch = await post(server, `/api/inbox/projects/${projectId}/resolve`, { resolved: true, batch_id: "b-1" });
   expect(batch.status).toBe(200);
-  expect(batch.body.batch).toMatchObject({ resolved: [other.thread_id], held: [thread] });
+  expect(batch.body.batch).toMatchObject({ resolved: [other.thread_id], kept: [thread] });
   expect([isArchived(server, thread), isArchived(server, other.thread_id)]).toEqual([false, true]);
 });
 
@@ -157,5 +159,5 @@ test("off: open comments hold nothing, for the agent, the person and Archive all
   await post(server, `/api/inbox/messages/${sent.thread_id}/resolve`, { resolved: false });
   const batch = await post(server, `/api/inbox/projects/${server.store.message(sent.thread_id)!.project_id}/resolve`, { resolved: true, batch_id: "b-off" });
   expect(batch.body.batch.resolved).toEqual([sent.thread_id]);
-  expect(batch.body.batch.held).toBeUndefined();
+  expect(batch.body.batch.kept).toBeUndefined();
 });

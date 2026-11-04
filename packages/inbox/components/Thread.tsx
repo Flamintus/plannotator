@@ -141,7 +141,7 @@ import { stepsCount, stepsWaitTarget } from '../steps/model';
 import { useThreadSteps, type StepsSubscribe } from '../steps/useThreadSteps';
 import { replyKeysToRenew, routeSendAnnotations, sendTargetAnswerIds, sendTargetsOf, wordsMessage, type SendTarget, type SentContents } from '../sendTargets';
 import { SentComments, useSentComments } from './SentComments';
-import { revealCommentThread, useOpenCommentThreads } from '../openThreadsGuard';
+import { leadToOpenThreads, useOpenCommentThreads } from '../openThreadsGuard';
 
 export { routeSendAnnotations, sendTargetsOf, type SendTarget };
 
@@ -5194,7 +5194,10 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
               archive={{
                 archived,
                 held: holdingArchive.length,
-                onToggle: () => (!archived && holdingArchive.length > 0 ? revealCommentThread(holdingArchive[0]!, bodyRef.current, unfold, openRecord) : void resolve(!archived)),
+                onToggle: () =>
+                  !archived && holdingArchive.length > 0
+                    ? leadToOpenThreads(holdingArchive, { body: bodyRef.current, unfold, openRecord, elsewhere: machine?.name ?? null, onError: setError })
+                    : void resolve(!archived),
               }}
               snooze={snoozeProps}
               requestGuide={guideOffered ? () => void requestGuide() : undefined}

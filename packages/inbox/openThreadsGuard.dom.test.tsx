@@ -5,9 +5,12 @@
  * tests/helpers/inbox-dom-server.ts), with sent comments kept in view turned
  * on or off through Settings' own route. What is proved: while a sent
  * comment is open, the thread header's ⋯ Archive item says how many comment
- * threads are still open, and its press leads to the oldest (its row under
- * the agent's message, or a file's card) and archives nothing; once it is
- * resolved the item archives as before; with the switch off it always does.
+ * threads are still open (a resolved one opened again by the agent's reply
+ * or the person's draft reply counts), and its press leads to the oldest
+ * (its row under the agent's message, focus on its Resolve, or a file's
+ * card) and archives nothing; once it is resolved the item archives as
+ * before; a list row's Archive says why and opens the thread; Archive all
+ * keeps the thread and its toast says so; with the switch off nothing holds.
  * The server side is proved in packages/server/inbox-open-threads-guard.test.ts.
  *
  * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
@@ -85,7 +88,7 @@ beforeAll(async () => {
   chmodSync(join(dir, 'bin', 'tailscale'), 0o755);
   // The switch is Settings' to turn (config.json): an env var would decide it instead.
   const { PLANNOTATOR_EXPERIMENTAL: _decides, ...env } = process.env;
-  child = Bun.spawn(['bun', SERVER_SCRIPT, join(dir, 'data'), join(dir, 'projects'), '4'], {
+  child = Bun.spawn(['bun', SERVER_SCRIPT, join(dir, 'data'), join(dir, 'projects'), '6'], {
     env: { ...env, DOM_TESTS: '0', PLANNOTATOR_DATA_DIR: join(dir, 'data'), HOME: dir, PATH: `${join(dir, 'bin')}:${process.env.PATH}` },
     stdin: 'pipe',
     stdout: 'pipe',
@@ -205,9 +208,11 @@ test.skipIf(!hasDom)("on: while a sent comment is open, Archive says so and lead
 
   const held = await archiveItem(el);
   expect(held.getAttribute('data-thread-archive-held')).toBe('1');
+  // Deliberate: the item says why it does not archive (the assignment's words).
   expect(held.textContent).toContain('1 comment thread still open');
   await act(async () => held.click());
   await until(() => row()?.classList.contains('ib-q-target') === true, 'the open comment rung under its message');
+  await until(() => document.activeElement === row()!.querySelector('[data-sent-resolve]'), 'focus on its Resolve');
   expect(posted.some((path) => path.includes(`${sent}/resolve`))).toBe(false);
   expect(archivedFoot(el)).toBe(false);
   expect(await storedArchived(sent)).toBe(false);
@@ -234,7 +239,62 @@ test.skipIf(!hasDom)("on: an open comment on a file holds it too, and the item o
   expect(held.textContent).toContain('1 comment thread still open');
   await act(async () => held.click());
   await until(() => card() !== null, "the file open at the comment's card");
+  expect(posted.some((path) => path.includes(`${world.filed}/resolve`))).toBe(false);
   expect(await storedArchived(world.filed)).toBe(false);
+}, 30_000);
+
+test.skipIf(!hasDom)("on: a resolved comment opened again by the agent's reply or the person's draft reply holds it too", async () => {
+  await keepSentComments(true);
+  const { sent } = await command<{ sent: string }>({ send: { project: world.project, session: 'ses_guard_again', body: 'Deploys run at night, with a pager.' } });
+  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('again-1', 'at night', 'Who watches?') });
+  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('again-2', 'with a pager', 'Which pager?') });
+  await postJson(`/api/inbox/messages/${sent}/reply`, { idempotency_key: 'k-again', feedback: '# Feedback', annotation_ids: ['again-1', 'again-2'] });
+  await postJson('/api/inbox/annotations/again-1/resolve', { resolved: true });
+  await postJson('/api/inbox/annotations/again-2/resolve', { resolved: true });
+  await command({ commentReply: { comment: 'again-1', session: 'ses_guard_again', text: 'The on-call person.' } });
+  await postJson('/api/inbox/annotations/again-2/replies', { annotation: { id: 'again-draft', text: 'And the backup?' } });
+
+  const el = await renderApp(`#thread=${sent}`);
+  await until(() => el.querySelector(`[data-message-article="${sent}"]`) !== null, 'the thread');
+  const article = el.querySelector<HTMLElement>(`[data-message-article="${sent}"]`)!;
+  if (article.hasAttribute('data-folded')) act(() => article.querySelector<HTMLButtonElement>('[data-fold-head]')!.click());
+  // Both drawn open again under the message: the thread's files came.
+  await until(() => el.querySelectorAll('[data-sent-comments] [data-sent-comment^="again-"]:not([data-sent-resolved])').length === 2, 'both comments open again');
+  const held = await archiveItem(el);
+  expect(held.getAttribute('data-thread-archive-held')).toBe('2');
+}, 30_000);
+
+test.skipIf(!hasDom)("on: a list row's Archive, held by an open comment thread, says why and opens the thread", async () => {
+  await keepSentComments(true);
+  const sent = await commentedMessage('ses_guard_row', 'guard-row-1');
+  const el = await renderApp('');
+  const rowOf = () => el.querySelector<HTMLElement>(`.ib-lbody [data-thread-id="${sent}"]`);
+  await until(() => rowOf() !== null, 'the row');
+  await act(async () => {
+    rowOf()!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: 300, clientY: 200 }));
+  });
+  await until(() => document.querySelector('[data-row-menu] [data-row-action="archive"]') !== null, 'the row menu');
+  await act(async () => document.querySelector<HTMLElement>('[data-row-menu] [data-row-action="archive"]')!.click());
+  await until(() => window.location.hash === `#thread=${sent}`, 'the thread opened');
+  // Deliberate: the refusal says how many, as the ⋯ item does.
+  expect(document.querySelector('[data-inbox-toast]')?.textContent).toContain('1 comment thread still open');
+  expect(await storedArchived(sent)).toBe(false);
+}, 30_000);
+
+test.skipIf(!hasDom)('on: Archive all keeps the thread an open comment thread holds, and its toast says so', async () => {
+  await keepSentComments(true);
+  const sent = await commentedMessage('ses_guard_all', 'guard-all-1');
+  const el = await renderApp('');
+  const projectRow = () => el.querySelector<HTMLElement>(`.ib-projrow[data-project="${world.project}"]`);
+  await until(() => projectRow() !== null, 'the project in the sidebar');
+  await press(projectRow()!.querySelector<HTMLElement>('.ib-pmore')!);
+  await until(() => document.querySelector(`[data-project-menu="${world.project}"] [data-project-action="archive"]`) !== null, 'the project menu');
+  await act(async () => document.querySelector<HTMLElement>(`[data-project-menu="${world.project}"] [data-project-action="archive"]`)!.click());
+  await until(() => document.querySelector('[data-inbox-toast]') !== null, 'the toast');
+  // Deliberate: the kept thread is said beside what the toast already says.
+  expect(document.querySelector('[data-inbox-toast]')!.textContent).toContain('Kept 1 thread');
+  expect(await storedArchived(sent)).toBe(false);
+  expect(await storedArchived(world.filed)).toBe(true);
 }, 30_000);
 
 test.skipIf(!hasDom)('off: Archive archives the thread, open comments or not', async () => {

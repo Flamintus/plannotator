@@ -51,7 +51,7 @@ export interface ProjectArchiveBatch {
   /** The threads that came back from the archive, marked read (back to the archive). */
   read: string[];
   /** The open threads left as they are because `holds` held them (own/open-threads-guard.ts); absent when none was. */
-  held?: string[];
+  kept?: string[];
   /** As for ProjectReadBatch: the loop stopped partway. */
   error?: string;
 }
@@ -101,8 +101,8 @@ export function markProjectRead(store: InboxStore, projectId: string): ProjectRe
 export function archiveProject(store: InboxStore, projectId: string, holds?: (threadId: string) => boolean): ProjectArchiveBatch {
   const resolved: string[] = [];
   const read: string[] = [];
-  const held: string[] = [];
-  const kept = () => (held.length > 0 ? { held } : {});
+  const kept: string[] = [];
+  const leftAsTheyAre = () => (kept.length > 0 ? { kept } : {});
   const snoozed = store.snoozedThreads();
   for (const row of projectRows(store, projectId)) {
     if (inboxRowArchived(row) || snoozed.has(row.thread_id)) continue;
@@ -111,16 +111,16 @@ export function archiveProject(store: InboxStore, projectId: string, holds?: (th
         store.markRead(row.thread_id, true);
         read.push(row.thread_id);
       } else if (holds?.(row.thread_id)) {
-        held.push(row.thread_id);
+        kept.push(row.thread_id);
       } else {
         store.resolveThread(row.thread_id, true, "person");
         resolved.push(row.thread_id);
       }
     } catch (error) {
-      return { resolved, read, ...kept(), error: failure(error) };
+      return { resolved, read, ...leftAsTheyAre(), error: failure(error) };
     }
   }
-  return { resolved, read, ...kept() };
+  return { resolved, read, ...leftAsTheyAre() };
 }
 
 /** The thread, when it is one of this project's threads (its root). */

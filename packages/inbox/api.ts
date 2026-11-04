@@ -1160,7 +1160,7 @@ export const inboxApi = {
     post<{ threads: InboxListRow[]; skipped: string[] }>(projectUrl(projectId, `/unread`), { threads, looked }),
   /** The project menu's Archive all: every listed thread resolved (one that came back is marked read instead). */
   archiveProject: (projectId: string, batchId: string) =>
-    post<ProjectBatchAnswer<{ resolved: string[]; read: string[]; held?: string[] }>>(projectUrl(projectId, `/resolve`), { resolved: true, batch_id: batchId }),
+    post<ProjectBatchAnswer<{ resolved: string[]; read: string[]; kept?: string[] }>>(projectUrl(projectId, `/resolve`), { resolved: true, batch_id: batchId }),
   /** Its Undo: exactly the threads the batch took. */
   unarchiveProject: (projectId: string, threads: { resolved: readonly string[]; read: readonly string[] }) =>
     post<{ threads: InboxListRow[]; skipped: string[] }>(projectUrl(projectId, `/resolve`), { resolved: false, threads }),

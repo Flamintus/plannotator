@@ -132,7 +132,7 @@ import { movePin, unpinnedWhere } from './pins';
 import type { PinnedAction } from './components/PinnedRow';
 import { copyTextToClipboard } from '@plannotator/ui/utils/clipboard';
 import { newBatchId, projectAllArchived, projectBatchToast, projectsWithReadable, shownProjects, type ProjectAction } from './projectMenu';
-import { keptByOpenThreads } from './openThreadsGuard';
+import { heldByOpenThreads, keptByOpenThreads, withKept } from './openThreadsGuard';
 import { lookBoundary } from './folding';
 import { latestAgentSeq } from './seenOnSight';
 import { isPhone, isTouchPhone, trackKeyboard, usePhone } from './phone';
@@ -3040,6 +3040,8 @@ function Inbox() {
       await inboxApi.resolve(rootId, next);
     } catch (cause) {
       showError(cause);
+      // own/open-threads-guard: a row's Archive held by an open comment thread opens the thread, where ⋯ leads to it.
+      if (heldByOpenThreads(cause) && before && open !== threadId) openRow(before);
       return;
     }
     // The list leaves archived threads out (Settings lists them). While the
@@ -3357,7 +3359,7 @@ function Inbox() {
         taken = [...answer.batch.resolved, ...answer.batch.read];
         incomplete = answer.error?.message ?? null;
         // own/open-threads-guard: the threads a comment thread still open kept out of the batch.
-        kept = answer.batch.held?.length ?? 0;
+        kept = answer.batch.kept?.length ?? 0;
         undo = () => inboxApi.unarchiveProject(projectId, answer.batch);
         // The list leaves archived threads out; while a thread is open each taken row stays where it is,
         // shown archived, and goes when the person leaves the thread (as the single Archive does).
@@ -3372,7 +3374,7 @@ function Inbox() {
     }
     await afterWrite();
     if (taken.length === 0) {
-      if (incomplete || kept > 0) showToast({ icon: 'warn', lead: `${name} did not change`, detail: incomplete ?? keptByOpenThreads(kept), wrap: true });
+      if (incomplete || kept > 0) showToast({ icon: 'warn', lead: `${name} did not change`, detail: [incomplete, kept > 0 ? keptByOpenThreads(kept) : null].filter(Boolean).join(' · '), wrap: true });
       else say(action === 'read' ? `Nothing in ${name} waits on you.` : `Nothing in ${name} to archive.`);
       return;
     }
@@ -3382,7 +3384,7 @@ function Inbox() {
       // Stopped partway: the warning, and why, whole (it may wrap); Undo still covers what did apply.
       // The project is on screen (its menu was just used) and in what the live region says.
       ...(incomplete ? { icon: 'warn' as const, detail: incomplete, phoneDetail: undefined, speech: `${copy.lead} in ${name}. ${incomplete}`, wrap: true } : {}),
-      ...(!incomplete && kept > 0 && copy.icon !== 'warn' ? { detail: keptByOpenThreads(kept), phoneDetail: undefined, speech: `${copy.lead} in ${name}. ${keptByOpenThreads(kept)}.` } : {}),
+      ...(kept > 0 ? withKept(incomplete ? { detail: incomplete, speech: `${copy.lead} in ${name}. ${incomplete}` } : copy, name, kept) : {}),
       onUndo: () => {
         void (async () => {
           try {

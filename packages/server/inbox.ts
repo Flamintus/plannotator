@@ -4330,7 +4330,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         } else {
           if (body.resolved !== undefined && typeof body.resolved !== "boolean") throw new InboxError("validation_error", "resolved: must be a boolean.", { field: "resolved" });
           if (body.resolved !== false) {
-            // own/open-threads-guard: a thread with a comment thread still open stays where it is (`held`).
+            // own/open-threads-guard: a thread with a comment thread still open stays where it is (`kept`).
             const holds = persistentCommentsOn() ? (id: string) => commentThreadsHoldingArchive(store, id).length > 0 : undefined;
             const { error, ...batch } = archiveProject(store, projectId, holds);
             // A came-back thread sent back by Mark read: its set-aside note, as for the single action.
