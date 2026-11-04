@@ -170,6 +170,7 @@ import {
   type InboxCardWire,
 } from "@plannotator/core/inbox-types";
 import { isInboxStepsRecord, normalizeInboxSteps, sameInboxSteps, type InboxSteps } from "@plannotator/core/inbox-types";
+import { inboxCommentState, inboxCommentThreads, inboxCommentsToCarry, inboxOpenCommentsFeedback } from "@plannotator/core/inbox-comment-threads";
 import type { InboxReviewVerdictRecord } from "@plannotator/core/inbox-review";
 import {
   ANNOTATIONS_FILE,
@@ -284,6 +285,12 @@ export interface InboxReplyInput {
   feedback?: string;
   /** The annotations that text carries: marked sent with the reply. */
   annotation_ids?: string[];
+  /**
+   * Send the person's comments still open from earlier rounds to the reply's
+   * session again, after the feedback (experimental "persistent-comments":
+   * the reply route sets it while the switch is on; inbox-comment-threads.ts).
+   */
+  carry_open_comments?: boolean;
   /**
    * The person chose another live session to take this reply, because the
    * session that asked has ended (the window's choice at Send). Absent: the
@@ -4166,6 +4173,8 @@ export class InboxStore {
         )
       : [];
     const tags = [...typed, ...members, ...notice];
+    // The comments still open from earlier rounds go to that session again (experimental "persistent-comments").
+    const stillOpenComments = input.carry_open_comments === true && recipient ? this.openCommentsFeedback(message, recipient) : "";
     const reply: InboxMessage = {
       id: replyId,
       project_id: message.project_id,
@@ -4173,7 +4182,7 @@ export class InboxStore {
       reply_to: message.id,
       author: { kind: "person" },
       subject: null,
-      body,
+      body: [body, stillOpenComments].filter((part) => part !== "").join("\n\n"),
       created_at: at,
       resolved_at: null,
       idempotency_key: key,
@@ -4880,6 +4889,33 @@ export class InboxStore {
     const next = { ...record, unanchored_at: unanchored ? at : null, updated_at: at };
     this.appendAnnotation(next, at);
     return next;
+  }
+
+  /**
+   * The person resolves a sent comment, or opens it again (experimental
+   * "persistent-comments"): `resolved_at` stamped, or cleared. The person
+   * alone does: no agent tool writes it. Nothing is written when it is
+   * already so.
+   */
+  resolveAnnotation(id: string, resolved: boolean): InboxAnnotationRecord {
+    const record = this.annotations.get(id);
+    if (!record) throw new InboxError("annotation_not_found", `No annotation ${id}.`);
+    if (record.sent_reply_id === null || record.removed_at !== null) {
+      throw new InboxError("validation_error", "Only a sent comment is resolved; a draft is removed instead.", { field: "id" });
+    }
+    if ((inboxCommentState(record) === "resolved") === resolved) return record;
+    const at = this.stamp();
+    const next = { ...record, resolved_at: resolved ? at : null, updated_at: at };
+    this.appendAnnotation(next, at);
+    return next;
+  }
+
+  /** The comments still open that the person's reply to `message` sends its session again, as feedback (none: empty). */
+  private openCommentsFeedback(message: InboxMessage, session: string): string {
+    const messages = this.threadMessages(message.thread_id);
+    const threads = inboxCommentThreads(messages, this.sentAnnotations(message.thread_id));
+    const carried = inboxCommentsToCarry(messages, threads, session, (m) => this.recipientOf(m)?.session ?? null);
+    return inboxOpenCommentsFeedback(carried, this.projectsById.get(message.project_id)?.root ?? "");
   }
 
   /** The annotations a Send names: each in this thread and still waiting. */

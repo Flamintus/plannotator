@@ -1337,6 +1337,9 @@ export const inboxApi = {
   /** A sent comment's words not found in the file shown, or found again (experimental "persistent-comments"). */
   markUnanchored: (id: string, unanchored: boolean) =>
     post<{ annotation: InboxAnnotationRecord }>(inboxUrl(`/annotations/${encodeURIComponent(id)}/unanchored`, undefined, machineOf(id)), { unanchored }),
+  /** The person resolves a sent comment, or opens it again (experimental "persistent-comments"). */
+  resolveComment: (id: string, resolved: boolean) =>
+    post<{ annotation: InboxAnnotationRecord }>(inboxUrl(`/annotations/${encodeURIComponent(id)}/resolve`, undefined, machineOf(id)), { resolved }),
   /** "Open in": the file as it is now, in a catalog app or the default app, by the attachment's id (on this computer only). */
   openIn: (attachmentId: string, appId: string) =>
     post<{ ok: boolean; error?: string }>(inboxUrl('/open-in'), { attachment_id: attachmentId, app_id: appId }),

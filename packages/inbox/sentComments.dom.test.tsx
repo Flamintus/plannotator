@@ -7,7 +7,10 @@
  * message with its round; a comment on a file, once sent, stays in the file's
  * panel with its round and without edit or delete, and when the agent's edit
  * took its words away the window shows it Unanchored and keeps that in the
- * store. The server side is proved in packages/server/inbox-persistent-comments.test.ts.
+ * store; and the person resolves a sent comment, from under the message or
+ * from its card, and opens it again: resolved, it leaves the highlights and
+ * folds, and the store keeps it. The server side is proved in
+ * packages/server/inbox-persistent-comments.test.ts.
  *
  * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
@@ -83,7 +86,7 @@ beforeAll(async () => {
   mkdirSync(join(dir, 'bin'));
   writeFileSync(join(dir, 'bin', 'tailscale'), '#!/bin/sh\nexit 1\n');
   chmodSync(join(dir, 'bin', 'tailscale'), 0o755);
-  child = Bun.spawn(['bun', SERVER_SCRIPT, join(dir, 'data'), join(dir, 'projects'), '2'], {
+  child = Bun.spawn(['bun', SERVER_SCRIPT, join(dir, 'data'), join(dir, 'projects'), '4'], {
     env: { ...process.env, DOM_TESTS: '0', PLANNOTATOR_DATA_DIR: join(dir, 'data'), PLANNOTATOR_EXPERIMENTAL: 'persistent-comments', HOME: dir, PATH: `${join(dir, 'bin')}:${process.env.PATH}` },
     stdin: 'pipe',
     stdout: 'pipe',
@@ -202,11 +205,65 @@ test.skipIf(!hasDom)("a sent comment on a file stays in its panel with its round
   const card = () => document.querySelector(`[data-annotation-id="sent-file-1"]`);
   await until(() => card() !== null, "the sent comment's card");
   expect(card()!.querySelector('[data-sent-round="1"]')).not.toBeNull();
-  expect(card()!.querySelectorAll('button').length).toBe(0);
+  // No edit or delete: Resolve is its only button.
+  expect([...card()!.querySelectorAll('button')].map((button) => button.textContent)).toEqual(['Resolve']);
   await until(() => card()!.querySelector('[data-annotation-unanchored]') !== null, 'the Unanchored chip');
   await until(() => posted.some((p) => p.path.includes('/annotations/sent-file-1/unanchored') && p.body.unanchored === true), 'the unanchored mark sent');
   await until(async () => {
     const after = JSON.parse((await loopback(`/api/inbox/threads/${world.filed}/attachments`)).text) as { sent_comments: InboxAnnotationRecord[] };
     return typeof after.sent_comments.find((r) => r.id === 'sent-file-1')?.unanchored_at === 'string';
   }, 'the mark kept in the store');
+}, 30_000);
+
+async function storedRecord(threadId: string, id: string): Promise<InboxAnnotationRecord | undefined> {
+  const model = JSON.parse((await loopback(`/api/inbox/threads/${threadId}/attachments`)).text) as { sent_comments: InboxAnnotationRecord[] };
+  return model.sent_comments.find((r) => r.id === id);
+}
+
+test.skipIf(!hasDom)("resolved under the message, a sent comment leaves its words and waits behind \"1 resolved\"; Reopen brings it back", async () => {
+  const { sent } = await command<{ sent: string }>({ send: { project: world.project, session: 'ses_resolve_msg', body: 'Retries now back off for a minute at most.' } });
+  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('res-msg-1', 'a minute at most', 'Why a minute?') });
+  await postJson(`/api/inbox/messages/${sent}/reply`, { idempotency_key: 'k-res-msg', feedback: '# Feedback', annotation_ids: ['res-msg-1'] });
+
+  const el = await renderApp(`#thread=${sent}`);
+  await until(() => el.querySelector(`[data-message-article="${sent}"]`) !== null, 'the thread');
+  const article = el.querySelector<HTMLElement>(`[data-message-article="${sent}"]`)!;
+  if (article.hasAttribute('data-folded')) act(() => article.querySelector<HTMLButtonElement>('[data-fold-head]')!.click());
+  const row = () => el.querySelector(`[data-sent-comments] [data-sent-comment="res-msg-1"]`);
+  const highlight = () => el.querySelector(`[data-message-id="${sent}"] [data-bind-id="res-msg-1"], [data-message-id="${sent}"] [data-highlight-id="res-msg-1"]`);
+  await until(() => row() !== null && highlight() !== null, 'the sent comment and its highlight');
+
+  act(() => row()!.querySelector<HTMLButtonElement>('[data-sent-resolve]')!.click());
+  await until(() => row() === null && highlight() === null, 'the resolved comment folded away');
+  const toggle = el.querySelector<HTMLButtonElement>('[data-sent-comments] [data-sent-resolved-toggle]')!;
+  expect(toggle.textContent).toBe('1 resolved');
+  expect(typeof (await storedRecord(sent, 'res-msg-1'))?.resolved_at).toBe('string');
+
+  act(() => toggle.click());
+  await until(() => row()?.hasAttribute('data-sent-resolved') === true, 'the resolved row shown');
+  expect(row()!.querySelector('[data-sent-resolve]')!.textContent).toBe('Reopen');
+  act(() => row()!.querySelector<HTMLButtonElement>('[data-sent-resolve]')!.click());
+  await until(() => highlight() !== null && row()?.hasAttribute('data-sent-resolved') === false, 'the comment open again, highlighted');
+  expect((await storedRecord(sent, 'res-msg-1'))?.resolved_at).toBeNull();
+}, 30_000);
+
+test.skipIf(!hasDom)('resolved from its card, a sent comment on a file folds to its header with Reopen, and leaves the file', async () => {
+  await postJson('/api/inbox/annotations', { attachment_id: world.attachment, version: 'current', annotation: words('res-file-1', 'The plan, in short.', 'Say more.') });
+  await postJson(`/api/inbox/messages/${world.filed}/reply`, { idempotency_key: 'k-res-file', feedback: '# Feedback', annotation_ids: ['res-file-1'] });
+
+  await renderApp(`#thread=${world.filed}&file=${world.attachment}`);
+  const card = () => document.querySelector(`[data-annotation-id="res-file-1"]`);
+  const highlight = () => document.querySelector('[data-bind-id="res-file-1"], [data-highlight-id="res-file-1"]');
+  await until(() => card() !== null && highlight() !== null, 'the sent card and its highlight');
+  expect(card()!.textContent).toContain('Say more.');
+
+  act(() => card()!.querySelector<HTMLButtonElement>('[data-sent-resolve]')!.click());
+  await until(() => card()?.querySelector('[data-sent-resolved]') != null, 'the Resolved chip');
+  expect(card()!.textContent).not.toContain('Say more.');
+  expect(card()!.querySelector('[data-sent-resolve]')!.textContent).toBe('Reopen');
+  await until(() => highlight() === null, 'the highlight gone');
+  expect(typeof (await storedRecord(world.filed, 'res-file-1'))?.resolved_at).toBe('string');
+
+  act(() => card()!.querySelector<HTMLButtonElement>('[data-sent-resolve]')!.click());
+  await until(() => highlight() !== null && card()!.textContent!.includes('Say more.'), 'the comment open again, painted');
 }, 30_000);

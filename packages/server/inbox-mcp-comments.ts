@@ -9,8 +9,7 @@
  * (`reply`) has it whole.
  */
 
-import { formatInboxVideoTime } from "@plannotator/core/inbox-types";
-import { inboxCommentThreads, type InboxCommentAnchor, type InboxCommentThread } from "@plannotator/core/inbox-comment-threads";
+import { inboxCommentPlace, inboxCommentThreads, type InboxCommentThread } from "@plannotator/core/inbox-comment-threads";
 import type { InboxStore } from "@plannotator/shared/inbox/store";
 import { clip } from "./inbox-mcp-read";
 
@@ -34,21 +33,6 @@ export function threadComments(store: InboxStore, threadId: string, replies: Rea
   return { comments, elsewhere: all.length - comments.length };
 }
 
-function shownPath(path: string, root: string): string {
-  const base = root.replace(/[\\/]+$/, "");
-  return path.startsWith(`${base}/`) || path.startsWith(`${base}\\`) ? path.slice(base.length + 1) : path;
-}
-
-function where(on: InboxCommentAnchor, root: string): string {
-  if (on.kind === "message") return `on message ${on.message_id}`;
-  const lines = (range: [number, number]) => (range[0] === range[1] ? `line ${range[0]}` : `lines ${range[0]}-${range[1]}`);
-  if (on.kind === "guide") return `on the guided review in ${on.message_id}, ${on.file} (${on.side}) ${lines(on.lines)}`;
-  const parts = [`on ${shownPath(on.path, root)}${on.version === "sent" ? " (the version you sent)" : ""}`];
-  if (on.lines) parts.push(`${lines(on.lines)} when commented`);
-  if (on.at !== undefined) parts.push(`at ${formatInboxVideoTime(on.at)}`);
-  return parts.join(" ");
-}
-
 /** The comments as lines of the transcript: none when the read has none to show. */
 export function threadCommentsText({ comments, elsewhere }: { comments: readonly InboxCommentThread[]; elsewhere: number }, root: string): string[] {
   if (comments.length === 0) return elsewhere > 0 ? [`Comments the person sent: ${elsewhere} from other rounds; read_thread without after or before lists them.`] : [];
@@ -65,7 +49,7 @@ export function threadCommentsText({ comments, elsewhere }: { comments: readonly
         `- ${c.id}`,
         `round ${c.round} (reply ${c.reply_id})`,
         c.state,
-        where(c.on, root),
+        inboxCommentPlace(c.on, root),
         ...(c.unanchored ? ["unanchored: its words were not in the file when the person last opened it"] : []),
         `${JSON.stringify(c.quote)} → ${JSON.stringify(c.text)}`,
       ].join(" · "),

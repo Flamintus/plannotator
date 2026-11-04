@@ -97,6 +97,11 @@ test("off by default: a sent comment leaves the window, read_thread lists none, 
     expect(read.text).not.toContain("c-file");
     const mark = await post(server, "/api/inbox/annotations/c-file/unanchored", { unanchored: true });
     expect([mark.status, ((await mark.json()) as { code: string }).code]).toEqual([409, "persistent_comments_off"]);
+    const resolve = await post(server, "/api/inbox/annotations/c-file/resolve", { resolved: true });
+    expect([resolve.status, ((await resolve.json()) as { code: string }).code]).toEqual([409, "persistent_comments_off"]);
+    // The next round sends nothing again.
+    const answer = (await call(client, "send_message", { project_path: project, body: "Tuesday then.", reply_to: sent.message_id, ...SESSION })).structured;
+    expect(await replyBody(server, answer.message_id, "r-off")).not.toContain("still open");
   } finally {
     if (before.data === undefined) delete process.env.PLANNOTATOR_DATA_DIR;
     else process.env.PLANNOTATOR_DATA_DIR = before.data;
@@ -168,7 +173,68 @@ test("on: sent comments stay with their round, read_thread names each by id, and
   expect((await files(again, sent.thread_id)).sent_comments!.find((r) => r.id === "c-file")!.unanchored_at).toBeNull();
 });
 
-test("only a sent comment is marked, with a boolean", async () => {
+/** The body of the person's reply to `messageId` (words only): what the agent gets. */
+async function replyBody(server: InboxServer, messageId: string, key: string): Promise<string> {
+  const reply = await post(server, `/api/inbox/messages/${messageId}/reply`, { idempotency_key: key, words: "Next round." });
+  expect(reply.status).toBe(200);
+  return ((await reply.json()) as { reply: { body: string } }).reply.body;
+}
+
+test("the person resolves a sent comment and opens it again: read_thread shows it, and it holds across a restart", async () => {
+  const { project, dataDir } = world();
+  const server = await start(dataDir, true);
+  const client = await agent(server);
+  const { sent } = await roundOne(server, client, project);
+  const projectDir = join(dataDir, "inbox", "projects", readdirSync(join(dataDir, "inbox", "projects"))[0]!);
+  const lines = () => readFileSync(join(projectDir, "annotations.jsonl"), "utf8").trim().split("\n").length;
+
+  const resolved = await post(server, "/api/inbox/annotations/c-file/resolve", { resolved: true });
+  expect(resolved.status).toBe(200);
+  expect(typeof ((await resolved.json()) as { annotation: InboxAnnotationRecord }).annotation.resolved_at).toBe("string");
+  // Already resolved: nothing written again.
+  const written = lines();
+  expect((await post(server, "/api/inbox/annotations/c-file/resolve", { resolved: true })).status).toBe(200);
+  expect(lines()).toBe(written);
+  const read = await call(client, "read_thread", { thread_id: sent.thread_id, ...READER });
+  expect(Object.fromEntries(read.structured.comments.map((c: { id: string; state: string }) => [c.id, c.state]))).toEqual({ "c-file": "resolved", "c-msg": "open" });
+  expect(read.text.split("\n").find((l) => l.startsWith("- c-file "))).toContain(" · resolved · ");
+
+  server.stop();
+  servers.splice(servers.indexOf(server), 1);
+  const again = await start(dataDir, true);
+  expect((await files(again, sent.thread_id)).sent_comments!.find((r) => r.id === "c-file")!.resolved_at).toEqual(expect.any(String));
+  expect((await post(again, "/api/inbox/annotations/c-file/resolve", { resolved: false })).status).toBe(200);
+  expect((await files(again, sent.thread_id)).sent_comments!.find((r) => r.id === "c-file")!.resolved_at).toBeNull();
+});
+
+test("each round sends the comments still open to the session again, never a resolved one, once per round", async () => {
+  const { project, dataDir } = world();
+  const server = await start(dataDir, true);
+  const client = await agent(server);
+  const { sent, replyId } = await roundOne(server, client, project);
+  // Before the agent answers, a second reply sends nothing again.
+  expect(await replyBody(server, sent.message_id, "r-same-round")).not.toContain("still open");
+
+  expect((await post(server, "/api/inbox/annotations/c-msg/resolve", { resolved: true })).status).toBe(200);
+  const answer = (await call(client, "send_message", { project_path: project, body: "Tuesday then.", reply_to: replyId, ...SESSION })).structured;
+  // The open comments never make a reply on their own.
+  expect((await post(server, `/api/inbox/messages/${answer.message_id}/reply`, { idempotency_key: "r-empty" })).status).toBe(422);
+  const body = await replyBody(server, answer.message_id, "r-2");
+  expect(body).toContain("# Feedback on comments still open");
+  const headings = body.split("\n").filter((line) => line.startsWith("### "));
+  expect(headings).toHaveLength(1);
+  expect(headings[0]).toContain("Round 1, on notes.md");
+  expect(headings[0]!.endsWith("(id c-file)")).toBe(true);
+  // The person's words come first; the section follows them.
+  expect(body.startsWith("Next round.")).toBe(true);
+  // Once per round: the next reply before the agent answers again repeats none.
+  expect(await replyBody(server, answer.message_id, "r-3")).not.toContain("still open");
+  // What the agent read in the reply, it reads in its thread too.
+  const read = await call(client, "read_thread", { thread_id: sent.thread_id, format: "full", ...READER });
+  expect(read.structured.thread.messages.at(-2).body).toContain("(id c-file)");
+});
+
+test("only a sent comment is marked or resolved, with a boolean", async () => {
   const { project, dataDir } = world();
   const server = await start(dataDir, true);
   const client = await agent(server);
@@ -182,6 +248,11 @@ test("only a sent comment is marked, with a boolean", async () => {
   await refused("/api/inbox/annotations/c-none/unanchored", { unanchored: true }, 404, "annotation_not_found");
   await refused("/api/inbox/annotations/c-draft/unanchored", { unanchored: "yes" }, 422, "validation_error");
   expect((await fetch(`http://127.0.0.1:${server.port}/api/inbox/annotations/c-draft/unanchored`)).status).toBe(405);
+  // Resolved the same way: a draft is removed instead.
+  await refused("/api/inbox/annotations/c-draft/resolve", { resolved: true }, 422, "validation_error");
+  await refused("/api/inbox/annotations/c-none/resolve", { resolved: true }, 404, "annotation_not_found");
+  await refused("/api/inbox/annotations/c-draft/resolve", { resolved: "yes" }, 422, "validation_error");
+  expect((await fetch(`http://127.0.0.1:${server.port}/api/inbox/annotations/c-draft/resolve`)).status).toBe(405);
 });
 
 test("Settings → Experimental turns it on and off at once, and keeps the other experimental switches", async () => {

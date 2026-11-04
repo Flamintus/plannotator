@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { InboxAnnotationRecord } from '@plannotator/core/inbox-types';
 import { codeCommentAnnotation, codeRangeOf } from './attachments';
-import { followCodeLines, sentUnanchoredChanges } from './sentComments';
+import { followCodeLines, sentUnanchoredChanges, withSentWrites } from './sentComments';
 
 const sent = (id: string, unanchored_at: string | null = null) => ({ id, unanchored_at, sent_reply_id: 'msg_p1' }) as unknown as InboxAnnotationRecord;
 
@@ -32,5 +32,21 @@ describe('a sent code comment follows its lines', () => {
   test('lines still in place, or gone, leave it as it is', () => {
     expect(followCodeLines(comment, ['start()', 'retry()', 'retry()'])).toBe(comment);
     expect(followCodeLines(comment, ['start()', 'retry()', 'done()'])).toBe(comment);
+  });
+});
+
+describe("the person's Resolve or Reopen, before the files are read again", () => {
+  const record = (id: string, updated_at: string, resolved_at: string | null = null) => ({ id, updated_at, resolved_at }) as unknown as InboxAnnotationRecord;
+
+  test('drawn at once, and kept until a newer change (another window) comes in the listing', () => {
+    const listed = [record('c1', '2026-11-04T10:00:00.000Z'), record('c2', '2026-11-04T10:00:00.000Z')];
+    const mine = record('c1', '2026-11-04T10:05:00.000Z', '2026-11-04T10:05:00.000Z');
+    const written = new Map([['c1', mine]]);
+    expect(withSentWrites(listed, written).map((r) => r.resolved_at)).toEqual(['2026-11-04T10:05:00.000Z', null]);
+    // The listing caught up: the same record.
+    expect(withSentWrites([mine, listed[1]!], written)[0]).toBe(mine);
+    // Another window reopened it later: that wins.
+    const theirs = record('c1', '2026-11-04T10:07:00.000Z', null);
+    expect(withSentWrites([theirs, listed[1]!], written)[0]).toBe(theirs);
   });
 });

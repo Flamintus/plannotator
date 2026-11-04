@@ -4,8 +4,9 @@
  * list as `sent_comments` while the switch is on. They stay on the file and
  * the message, read-only, each with its round (packages/core/inbox-comment-threads.ts);
  * a code comment follows its lines when the agent adds or removes lines above
- * them; and what the window finds of their words is kept, so an agent reads
- * which ones lost their place.
+ * them; what the window finds of their words is kept, so an agent reads
+ * which ones lost their place; and the person resolves them, or opens them
+ * again.
  */
 
 import { inboxMovedLines } from '@plannotator/core/inbox-comment-threads';
@@ -40,4 +41,17 @@ export function followCodeLines(annotation: Annotation, lines: readonly string[]
   if (start === null || start === range.lineStart) return annotation;
   const lineEnd = start + count - 1;
   return { ...annotation, blockId: `code-L${start}-${lineEnd}`, inboxCode: { ...range, lineStart: start, lineEnd } } as Annotation;
+}
+
+/**
+ * The sent comments as listed, with what this window's own Resolve or Reopen
+ * wrote since (`written`, by id) drawn at once: the files' next read carries
+ * the same record, and a newer one (another window's change) wins over it.
+ */
+export function withSentWrites(listed: readonly InboxAnnotationRecord[], written: ReadonlyMap<string, InboxAnnotationRecord>): readonly InboxAnnotationRecord[] {
+  if (written.size === 0) return listed;
+  return listed.map((record) => {
+    const mine = written.get(record.id);
+    return mine && mine.updated_at >= record.updated_at ? mine : record;
+  });
 }

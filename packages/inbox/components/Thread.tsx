@@ -1953,7 +1953,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
   const allFiles: InboxAttachmentState[] = useMemo(() => [...attachments, ...inlineImages], [attachments, inlineImages]);
   const records = files?.annotations ?? [];
   // Comments that stay after Send (experimental "persistent-comments"; SentComments.tsx): only while the person has it on.
-  const sentComments = useSentComments(thread.messages, files);
+  const sentComments = useSentComments(thread.messages, files, setError);
   /** The person's own messages: their images are named "image in my … message" in the feedback (replyFileLinks.ts). */
   const personMessageIds = useMemo(() => new Set(thread.messages.filter((m) => m.author.kind === 'person').map((m) => m.id)), [thread.messages]);
   // Code review: `/review-recheck` is offered (and matched at Send) only once a review happened in this thread.
@@ -2215,12 +2215,13 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
   // Comments on the text of agents' messages (approval "inbox-message-comments"), by message.
   const messageComments = useMemo(() => {
     const byMessage = new Map<string, Annotation[]>();
-    for (const record of [...records, ...sentComments.records]) {
+    // A resolved one leaves its words (SentComments.tsx).
+    for (const record of [...records, ...sentComments.open]) {
       if (!record.message) continue;
       byMessage.set(record.message_id, [...(byMessage.get(record.message_id) ?? []), annotationOf(record)]);
     }
     return byMessage;
-  }, [records, sentComments.records]);
+  }, [records, sentComments.open]);
   /** Comments whose words were not found in their message (the reply box's list marks them). */
   const [unanchoredComments, setUnanchoredComments] = useState<ReadonlySet<string>>(NO_IDS);
   const [revealedComment, setRevealedComment] = useState<string | null>(null);
@@ -5643,7 +5644,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
                   }
                 />
                 )}
-                {isAgent && sentComments.byMessage.has(message.id) && <SentComments records={sentComments.byMessage.get(message.id)!} rounds={sentComments.rounds} onOpen={openRecord} />}
+                {isAgent && sentComments.byMessage.has(message.id) && <SentComments records={sentComments.byMessage.get(message.id)!} rounds={sentComments.rounds} onOpen={openRecord} onResolve={liveMessage(message) ? sentComments.resolve : undefined} />}
                 {/* An agent's files, and the person's own (compose): the same tiles and viewers. */}
                 {(message.attachments?.length ?? 0) > 0 && (
                   <AttachmentTiles

@@ -226,7 +226,8 @@ export interface InboxAttachmentRoutesContext {
   /**
    * Whether sent comments stay in the window (experimental
    * "persistent-comments", read on every request): the thread's files list
-   * them as `sent_comments`, and the window may mark one unanchored. Absent: off.
+   * them as `sent_comments`, and the window may mark one unanchored or the
+   * person resolve one. Absent: off.
    */
   persistentCommentsOn?: () => boolean;
 }
@@ -587,6 +588,17 @@ export function createInboxAttachmentRoutes(context: InboxAttachmentRoutesContex
       if (body instanceof Response) return body;
       if (typeof body.unanchored !== "boolean") throw new InboxError("validation_error", "unanchored: a boolean.", { field: "unanchored" });
       return json({ annotation: store.markAnnotationUnanchored(unanchored[1]!, body.unanchored) });
+    }
+
+    // The person resolves a sent comment, or opens it again (experimental "persistent-comments"). No agent tool does.
+    const resolve = /^\/api\/inbox\/annotations\/([A-Za-z0-9_.:-]+)\/resolve$/.exec(path);
+    if (resolve) {
+      if (req.method !== "POST") return json({ error: "Use POST." }, 405);
+      if (!context.persistentCommentsOn?.()) return json({ error: "Sent comments are not kept in view.", code: "persistent_comments_off" }, 409);
+      const body = await guardedBody(req);
+      if (body instanceof Response) return body;
+      if (typeof body.resolved !== "boolean") throw new InboxError("validation_error", "resolved: a boolean.", { field: "resolved" });
+      return json({ annotation: store.resolveAnnotation(resolve[1]!, body.resolved) });
     }
 
     const deleteThread = /^\/api\/inbox\/threads\/([A-Za-z0-9_]+)\/delete$/.exec(path);
