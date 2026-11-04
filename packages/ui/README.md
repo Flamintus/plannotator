@@ -413,7 +413,9 @@ slot and mentions on the edit box (0.45.0)".
   words, whose text "See the marked-up image." is for the agent).
   `actions: false` (Unreleased) draws the card without edit and delete (the
   Inbox's sent comments) and keeps its Reply; `reply: false` (Unreleased)
-  takes the Reply off that card alone. Omit them and the panel is as before.
+  takes the Reply off that card alone, and `passage: false` (Unreleased) the
+  offer to comment on a passage of its words. Omit them and the panel is as
+  before.
 - **`onReply?: (parentId, { text, mentions? }) => void`** (Unreleased) — the
   person's Reply. Supplied (and not `readOnly`), each plan-annotation card of
   the open document gets a Reply action that opens one box under the card's
@@ -428,6 +430,20 @@ slot and mentions on the edit box (0.45.0)".
   and no box. Threads draw depth first whether or not you pass it: a reply to
   a reply sits one indent step deeper, the same step at every level, and a
   reply does not repeat its parent's quote.
+- **`onCommentPassage?: (parentId, { quote, offset }, { text, mentions? }) => void`,
+  `cardPassages?: (annotation) => { quote, offset }[]`** (Unreleased) — a
+  comment on a passage of a card's words (a sub-thread, as crit's). Supplied
+  (and not `readOnly`), words selected in one card's comment text, on the open
+  document, offer the package's selection toolbar, comment-only (Comment, Copy,
+  a letter typed starts the comment); Comment opens the panel's one box under
+  the card, the passage quoted at its head, and saving calls
+  `onCommentPassage`. `offset` is where the words start in the card's text as
+  drawn, whitespace runs counted as one (`@plannotator/core/passage`); a host
+  that could not save answers `false` and the box stays. `cardPassages` names
+  the passages to mark in a card's words (`mark[data-passage-mark]`). The
+  selection helpers and the toolbar are `utils/passageSelection` and
+  `components/PassageToolbar`. Omit them and a card's text is drawn exactly as
+  before.
 - **`renderCardBody?: (annotation) => ReactNode`** (ui 0.54.0) — the host's
   own body for a plan-annotation card, drawn where the comment text goes,
   inside the card (a click on it selects the card). The Inbox draws a

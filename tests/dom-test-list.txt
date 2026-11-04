@@ -381,6 +381,7 @@ packages/editor/actionsLabelMode.test.ts
 packages/ui/webmcp/useToolset.seam.test.tsx
 packages/ui/components/AnnotationPanel.inReplyTo.test.tsx
 packages/ui/components/AnnotationPanel.reply.test.tsx
+packages/ui/components/AnnotationPanel.passage.test.tsx
 packages/editor/webmcp/useDocumentWebMcp.toggle.test.tsx
 packages/editor/components/AppHeader.webmcpIndicator.test.tsx
 packages/ui/components/MathBlock.firstPaint.test.tsx

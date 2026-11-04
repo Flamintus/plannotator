@@ -22,6 +22,9 @@ import { isCommentSubmitKey } from '../utils/commentSubmitKey';
 import { useConfigValue } from '../config/useConfig';
 import { imageRegionNumbers, RegionCardInfo, RegionNumber, regionOf } from './ImageRegions';
 import { CHECKBOX_ANNOTATION_PREFIX } from '../utils/annotationOwnsHighlight';
+import type { TextPassage } from '@plannotator/core/passage';
+import { PASSAGE_BODY_ATTRIBUTE, passageRanges, selectedPassage, selectionWithin, splitByRanges, type SelectedPassage } from '../utils/passageSelection';
+import { PassageToolbar } from './PassageToolbar';
 
 /** What a region card (#2100) needs from its panel: each region's number on
  *  its image, and how to load the image for the crop thumbnail. */
@@ -231,6 +234,27 @@ interface PanelProps {
     *  would carry a text anchor its parent does not have. Absent: no action
     *  and no box. */
   onReply?: (parentId: string, reply: { text: string; mentions?: readonly string[] }) => void | boolean | Promise<void | boolean>;
+  /** Opt-in: the person comments on a passage of a card's words (a
+    *  sub-thread, as crit's). Supplied (and not `readOnly`), words selected
+    *  inside one card's comment text, on the open document, offer the
+    *  package's selection toolbar, comment-only; Comment, or a letter typed,
+    *  opens the panel's one box (the Reply box, with the passage quoted at
+    *  its head) where the comment will appear, after the card's own replies;
+    *  saving calls `onCommentPassage(parentId, passage, { text, mentions })`.
+    *  `passage.offset` is where the words start in the card's text as drawn,
+    *  whitespace runs counted as one (`@plannotator/core/passage`). A save
+    *  the host could not make answers `false`: the box stays. `cardParts`'
+    *  `passage: false` takes the offer off a card. Absent: nothing changes,
+    *  and a card's text carries no extra attribute. */
+  onCommentPassage?: (
+    parentId: string,
+    passage: TextPassage,
+    comment: { text: string; mentions?: readonly string[] },
+  ) => void | boolean | Promise<void | boolean>;
+  /** The passages to mark in a card's comment text (the host's open
+    *  sub-threads on it), found again by their words and offset. Absent: no
+    *  marks. */
+  cardPassages?: (annotation: Annotation) => readonly TextPassage[];
   /** Opt-in host capability: an `@` mention source for the EDIT box of each
     *  plan-annotation card, the same `MentionSource` `Viewer` and `HtmlViewer`
     *  take for their creation composers. Supplied → the edit textarea grows
@@ -305,7 +329,7 @@ interface PanelProps {
    * (`onReply`) stays, and `reply: false` takes that off (a draft nobody can
    * answer yet). Absent: all drawn, exactly as before.
    */
-  cardParts?: (annotation: Annotation) => { quote?: boolean; images?: boolean; text?: boolean; actions?: boolean; reply?: boolean };
+  cardParts?: (annotation: Annotation) => { quote?: boolean; images?: boolean; text?: boolean; actions?: boolean; reply?: boolean; passage?: boolean };
   /**
    * Optional: the host's own body for a plan-annotation card, drawn where the
    * comment text goes, inside the card (a click on it selects the card). The
@@ -350,6 +374,8 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
   renderCardFooter,
   renderCardHeader,
   onReply,
+  onCommentPassage,
+  cardPassages,
   mentionSource,
   readOnly = false,
   presentation = 'panel',
@@ -387,8 +413,13 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
   // The reply being written: the card it answers and its words. One box at a
   // time; Reply on another card moves the box and keeps the words. `opened`
   // counts the Reply presses, so each one puts the caret back in the box.
-  const [replyDraft, setReplyDraft] = useState<{ parentId: string; text: string; opened: number } | null>(null);
+  // With `passage`, the box comments on that passage of the card's words.
+  const [replyDraft, setReplyDraft] = useState<{ parentId: string; text: string; opened: number; passage?: TextPassage } | null>(null);
   const canReply = onReply !== undefined && !readOnly;
+  const canCommentPassage = onCommentPassage !== undefined && !readOnly;
+  // Words selected in a card's text: the toolbar that offers to comment on them.
+  const [passageOffer, setPassageOffer] = useState<SelectedPassage | null>(null);
+  const closePassageOffer = React.useCallback(() => setPassageOffer(null), []);
   // The card the box answers is gone (deleted here, removed by an agent):
   // its words go with it, as its box did.
   const replyParentGone = replyDraft !== null && !annotations.some((a) => a.id === replyDraft.parentId);
@@ -486,6 +517,24 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
   if (!isOpen) return null;
 
   const startReply = (parentId: string) => setReplyDraft((draft) => ({ parentId, text: draft?.text ?? '', opened: (draft?.opened ?? 0) + 1 }));
+  // A selection that ends inside one card's text offers to comment on that passage.
+  const offerPassage = canCommentPassage
+    ? () => {
+        const passage = listRef.current ? selectedPassage(listRef.current) : null;
+        setPassageOffer(passage);
+      }
+    : undefined;
+  const commentOnPassage = (passage: SelectedPassage, initialChar?: string) => {
+    setPassageOffer(null);
+    // The words are quoted in the box now; the selection would stand over them.
+    listRef.current?.ownerDocument.getSelection()?.removeAllRanges();
+    setReplyDraft((draft) => ({
+      parentId: passage.parentId,
+      text: `${draft?.text ?? ''}${initialChar ?? ''}`,
+      opened: (draft?.opened ?? 0) + 1,
+      passage: { quote: passage.quote, offset: passage.offset },
+    }));
+  };
   // A card in a thread: a root as is, a reply inside its indent.
   const inThread = (entry: ThreadedAnnotation, card: React.ReactElement) => (
     entry.depth === 0
@@ -500,12 +549,18 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
   // The reply box, spliced into a thread-ordered list after the parent's
   // subtree, at the depth the reply will have.
   const withReplyBox = (entries: ReadonlyArray<TimelineEntry | ThreadedAnnotation>, nodes: React.ReactNode[]): React.ReactNode[] => {
-    if (!canReply || !replyDraft) return nodes;
+    if (!replyDraft || !(replyDraft.passage ? canCommentPassage : canReply)) return nodes;
     const at = replyBoxIndex(entries, replyDraft.parentId);
     if (!at) return nodes;
+    const passage = replyDraft.passage;
     const box = (
       <ReplyIndent key={`reply-box-${replyDraft.opened}`} depth={at.depth} composer>
-        <div className="rounded-lg bg-surface-1 px-3 py-2.5 ring-1 ring-border/50">
+        <div className="rounded-lg bg-surface-1 px-3 py-2.5 ring-1 ring-border/50" data-annotation-passage-composer={passage ? 'true' : undefined}>
+          {passage && (
+            <p className="mb-1.5 line-clamp-3 whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[11px] leading-relaxed text-muted-foreground/80">
+              "{passage.quote}"
+            </p>
+          )}
           <AnnotationEditComposer
             value={replyDraft.text}
             onChange={(text) => setReplyDraft((draft) => (draft ? { ...draft, text } : draft))}
@@ -517,15 +572,16 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
               const close = (sent: void | boolean) => {
                 if (sent !== false) setReplyDraft((draft) => (draft?.opened === opened ? null : draft));
               };
-              const sent = onReply!(replyDraft.parentId, mentionSource && mentions.length > 0 ? { text, mentions } : { text });
+              const comment = mentionSource && mentions.length > 0 ? { text, mentions } : { text };
+              const sent = passage ? onCommentPassage!(replyDraft.parentId, passage, comment) : onReply!(replyDraft.parentId, comment);
               if (sent instanceof Promise) void sent.then(close, () => {});
               else close(sent);
             }}
             onCancel={() => setReplyDraft(null)}
             mentionSource={mentionSource}
-            placeholder="Reply..."
-            label="Reply"
-            submitLabel="Reply"
+            placeholder={passage ? 'Comment on this passage...' : 'Reply...'}
+            label={passage ? 'Comment on passage' : 'Reply'}
+            submitLabel={passage ? 'Comment' : 'Reply'}
             selectOnOpen={false}
           />
         </div>
@@ -620,7 +676,7 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
 
       {/* List */}
       <OverlayScrollArea className="flex-1 min-h-0">
-        <div ref={listRef} className="p-2 flex flex-col gap-1.5">
+        <div ref={listRef} className="p-2 flex flex-col gap-1.5" onMouseUp={offerPassage}>
         {directEdits?.map((item) => (
           <DirectEditsCard key={item.id} {...item} onDiscard={readOnly ? undefined : item.onDiscard} />
         ))}
@@ -698,6 +754,8 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
                               ? (onEdit ? (updates: Partial<Annotation>) => onEdit(annotation.id, updates) : undefined)
                               : (onEditInDocument ? (updates: Partial<Annotation>) => onEditInDocument(group.path, annotation.id, updates) : undefined)}
                             onReply={group.isCurrent && canReply ? () => startReply(annotation.id) : undefined}
+                            passageBody={group.isCurrent && canCommentPassage}
+                            passages={group.isCurrent ? cardPassages?.(annotation) : undefined}
                             readOnly={readOnly}
                             footer={group.isCurrent ? renderCardFooter?.(annotation) : undefined}
                             header={group.isCurrent ? renderCardHeader?.(annotation) : undefined}
@@ -806,6 +864,8 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
                   onDelete={() => onDelete(entry.annotation.id)}
                   onEdit={onEdit ? (updates: Partial<Annotation>) => onEdit(entry.annotation.id, updates) : undefined}
                   onReply={canReply ? () => startReply(entry.annotation.id) : undefined}
+                  passageBody={canCommentPassage}
+                  passages={cardPassages?.(entry.annotation)}
                   readOnly={readOnly}
                   footer={renderCardFooter?.(entry.annotation)}
                   header={renderCardHeader?.(entry.annotation)}
@@ -850,6 +910,9 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
         )}
         </div>
       </OverlayScrollArea>
+      {passageOffer && canCommentPassage && (
+        <PassageToolbar passage={passageOffer} onComment={(initialChar) => commentOnPassage(passageOffer, initialChar)} onClose={closePassageOffer} />
+      )}
 
       {/* Quick Actions Footer */}
       {headerCount > 0 && (onQuickCopy || (sharingEnabled && onShare)) && (
@@ -1066,18 +1129,38 @@ const AnnotationText: React.FC<{
   className: string;
   sectionRefs?: Map<string, string>;
   onNavigateAnchor?: (hash: string) => void;
-}> = ({ text, className, sectionRefs, onNavigateAnchor }) => {
+  /** The card whose words a passage can be selected in (`onCommentPassage`): marks the element as that card's body. */
+  passageBodyOf?: string;
+  /** Passages to mark in the words (`cardPassages`). */
+  passages?: readonly TextPassage[];
+}> = ({ text, className, sectionRefs, onNavigateAnchor, passageBodyOf, passages }) => {
   const parts = React.useMemo(
     () => (sectionRefs && onNavigateAnchor ? parseSectionRefs(text, sectionRefs) : [text]),
     [text, sectionRefs, onNavigateAnchor],
   );
+  // The passages' places in the words as drawn (a link draws its label).
+  const drawn = React.useMemo(() => parts.map((part) => (typeof part === 'string' ? part : part.label)), [parts]);
+  const ranges = React.useMemo(() => (passages && passages.length > 0 ? passageRanges(drawn.join(''), passages) : []), [drawn, passages]);
+  let base = 0;
 
   return (
-    <p className={className}>
-      {parts.map((part, i) =>
-        typeof part === 'string' ? (
-          part
-        ) : (
+    <p className={className} {...(passageBodyOf !== undefined ? { [PASSAGE_BODY_ATTRIBUTE]: passageBodyOf } : {})}>
+      {parts.map((part, i) => {
+        const start = base;
+        base += drawn[i]!.length;
+        if (typeof part === 'string') {
+          if (ranges.length === 0) return part;
+          return splitByRanges(part, start, ranges).map((piece, j) =>
+            piece.marked ? (
+              <mark key={`${i}-${j}`} data-passage-mark="true" className="rounded-[2px] bg-annotation-comment/20 text-inherit">
+                {piece.text}
+              </mark>
+            ) : (
+              <React.Fragment key={`${i}-${j}`}>{piece.text}</React.Fragment>
+            ),
+          );
+        }
+        return (
           <a
             key={i}
             href={`#${part.anchor}`}
@@ -1092,8 +1175,8 @@ const AnnotationText: React.FC<{
           >
             {part.label}
           </a>
-        ),
-      )}
+        );
+      })}
     </p>
   );
 };
@@ -1208,6 +1291,10 @@ const AnnotationCard: React.FC<{
   onEdit?: (updates: Partial<Annotation>) => void;
   /** Open the panel's reply box under this card's thread (see `onReply`). */
   onReply?: () => void;
+  /** Words selected in this card's text offer a comment on that passage (see `onCommentPassage`). */
+  passageBody?: boolean;
+  /** Passages to mark in the card's text (see `cardPassages`). */
+  passages?: readonly TextPassage[];
   readOnly?: boolean;
   footer?: React.ReactNode;
   /** Host slot in the card's header row (see `renderCardHeader`). */
@@ -1217,12 +1304,12 @@ const AnnotationCard: React.FC<{
   /** The annotation has no live location in the document (host-reported). */
   unanchored?: boolean;
   /** Built-in parts to draw (see `cardParts`). */
-  parts?: { quote?: boolean; images?: boolean; text?: boolean; actions?: boolean; reply?: boolean };
+  parts?: { quote?: boolean; images?: boolean; text?: boolean; actions?: boolean; reply?: boolean; passage?: boolean };
   /** Host body, drawn where the comment text goes (see `renderCardBody`). */
   body?: React.ReactNode;
   sectionRefs?: Map<string, string>;
   onNavigateAnchor?: (hash: string) => void;
-}> = ({ annotation, isSelected, isMe, onSelect, onDelete, onEdit, onReply, readOnly = false, footer, header, mentionSource, unanchored = false, parts, body, sectionRefs, onNavigateAnchor }) => {
+}> = ({ annotation, isSelected, isMe, onSelect, onDelete, onEdit, onReply, passageBody = false, passages, readOnly = false, footer, header, mentionSource, unanchored = false, parts, body, sectionRefs, onNavigateAnchor }) => {
   // `text: false`: the stored text is the host's stand-in, never the person's words; the edit box starts empty.
   const shownText = parts?.text === false ? '' : annotation.text || '';
   const [isEditing, setIsEditing] = useState(false);
@@ -1237,6 +1324,8 @@ const AnnotationCard: React.FC<{
   // turns it off; `actions: false` does not, so a card can take replies
   // without edit or delete (the Inbox's comments already sent).
   const replies = !!onReply && parts?.reply !== false && !region && !annotation.id.startsWith(CHECKBOX_ANNOTATION_PREFIX) && annotation.questionAnswer == null && !isEditing;
+  // Its words take a comment on a passage of them (`onCommentPassage`), unless the host turned that off.
+  const passageOf = passageBody && parts?.passage !== false && !isEditing ? annotation.id : undefined;
   const regionNumber = region ? regionCards.numbers.get(annotation.id) : undefined;
 
   // Update editText when annotation.text changes
@@ -1289,7 +1378,8 @@ const AnnotationCard: React.FC<{
       data-annotation-id={annotation.id}
       role="button"
       tabIndex={0}
-      onClick={onSelect}
+      // A press that ends a selection of the card's words is no click: it offers a comment on them instead.
+      onClick={passageOf !== undefined ? (e: React.MouseEvent<HTMLDivElement>) => { if (!selectionWithin(e.currentTarget)) onSelect(); } : onSelect}
       onKeyDown={(e: React.KeyboardEvent<HTMLDivElement>) => {
         if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) {
           e.preventDefault();
@@ -1392,6 +1482,8 @@ const AnnotationCard: React.FC<{
             className="whitespace-pre-wrap [overflow-wrap:anywhere] text-[13px] leading-relaxed text-foreground/90"
             sectionRefs={sectionRefs}
             onNavigateAnchor={onNavigateAnchor}
+            passageBodyOf={passageOf}
+            passages={passages}
           />
         )
       ) : (
@@ -1418,6 +1510,8 @@ const AnnotationCard: React.FC<{
                   className="whitespace-pre-wrap [overflow-wrap:anywhere] text-[13px] leading-relaxed text-foreground/90"
                   sectionRefs={sectionRefs}
                   onNavigateAnchor={onNavigateAnchor}
+                  passageBodyOf={passageOf}
+                  passages={passages}
                 />
               )
             )
