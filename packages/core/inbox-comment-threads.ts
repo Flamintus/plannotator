@@ -16,14 +16,20 @@
  * - whether it is unanchored: its words are no longer in the file the window
  *   last showed (the record's `unanchored_at`, kept by the store so it holds
  *   from one round to the next);
- * - its state: `open` once sent.
+ * - its state: `open` once sent, `resolved` once the person resolved it (the
+ *   record's `resolved_at`; only the person sets it), open again when they
+ *   reopen it or a reply lands under it (`inboxCommentState`);
+ * - which open comments a reply sends again (`inboxCommentsToCarry`), as a
+ *   section of its feedback (`inboxOpenCommentsFeedback`): each round, the
+ *   agent gets what is still open, as crit sends every unresolved thread.
  *
- * Browser-safe and zero-dep. Built to grow: a resolved state, the agent's
- * replies under a comment and a comment on a passage of another comment are
- * fields of `InboxCommentThread` the record does not carry yet.
+ * Browser-safe and zero-dep. Built to grow: the agent's replies under a
+ * comment and a comment on a passage of another comment are fields of
+ * `InboxCommentThread` the record does not carry yet.
  */
 
 import { readInboxVideoTime, type InboxAnnotationRecord } from "./inbox-attachments";
+import { formatInboxVideoTime } from "./inbox-types";
 
 /** Where a sent comment is. */
 export type InboxCommentAnchor =
@@ -49,8 +55,7 @@ export interface InboxCommentThread {
   reply_id: string;
   /** The round it was sent in, from 1. */
   round: number;
-  /** Sent and kept: nothing closes a comment yet. */
-  state: "open";
+  state: InboxCommentState;
   on: InboxCommentAnchor;
   /** The words, lines or part it is on, as the person selected them. */
   quote: string;
@@ -58,6 +63,22 @@ export interface InboxCommentThread {
   text: string;
   /** Its words were not found in the file the last time the window showed it. */
   unanchored: boolean;
+}
+
+/** A sent comment is open until the person resolves it. */
+export type InboxCommentState = "open" | "resolved";
+
+/**
+ * A sent comment's state: resolved from when the person resolved it
+ * (`resolved_at`) until they reopen it, or until a reply lands under it: a
+ * reply newer than `resolved_at` (`lastReplyAt`, the newest reply's time)
+ * opens it again, as a reply does in crit, with nothing written. The replies
+ * under a comment pass their newest time here; until then none is passed.
+ */
+export function inboxCommentState(record: Pick<InboxAnnotationRecord, "resolved_at">, lastReplyAt: string | null = null): InboxCommentState {
+  const resolved = record.resolved_at;
+  if (typeof resolved !== "string") return "open";
+  return lastReplyAt !== null && lastReplyAt > resolved ? "open" : "resolved";
 }
 
 /** What a round needs of a message: its id and who wrote it. */
@@ -145,7 +166,7 @@ export function inboxCommentThreads(messages: readonly InboxCommentRoundMessage[
       id: record.id,
       reply_id: record.sent_reply_id!,
       round,
-      state: "open",
+      state: inboxCommentState(record),
       on: inboxCommentAnchor(record),
       quote: text(annotation.originalText) || text(annotation.selectedText) || text(annotation.originalCode),
       text: text(annotation.text),
@@ -155,6 +176,83 @@ export function inboxCommentThreads(messages: readonly InboxCommentRoundMessage[
   }
   out.sort((a, b) => a.round - b.round || a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
   return out.map(({ created_at: _created, ...thread }) => thread);
+}
+
+function shownPath(path: string, root: string): string {
+  const base = root.replace(/[\\/]+$/, "");
+  return base !== "" && (path.startsWith(`${base}/`) || path.startsWith(`${base}\\`)) ? path.slice(base.length + 1) : path;
+}
+
+/**
+ * Where a sent comment is, in words an agent reads (`read_thread`, and the
+ * comments a reply sends again): "on message msg_…", "on notes.md lines
+ * 12-14 when commented", "on the guided review in msg_…, src/a.ts (new) line 3".
+ * A file's path is shown from the project's `root`.
+ */
+export function inboxCommentPlace(on: InboxCommentAnchor, root: string): string {
+  if (on.kind === "message") return `on message ${on.message_id}`;
+  const lines = (range: [number, number]) => (range[0] === range[1] ? `line ${range[0]}` : `lines ${range[0]}-${range[1]}`);
+  if (on.kind === "guide") return `on the guided review in ${on.message_id}, ${on.file} (${on.side}) ${lines(on.lines)}`;
+  const parts = [`on ${shownPath(on.path, root)}${on.version === "sent" ? " (the version you sent)" : ""}`];
+  if (on.lines) parts.push(`${lines(on.lines)} when commented`);
+  if (on.at !== undefined) parts.push(`at ${formatInboxVideoTime(on.at)}`);
+  return parts.join(" ");
+}
+
+/** What sending comments again needs of a message: who wrote it, and an agent's session. */
+export interface InboxCommentCarryMessage extends InboxCommentRoundMessage {
+  author: { kind: string; session?: string | null };
+}
+
+/**
+ * The open comments the person's new reply to the agent session `session`
+ * sends again: those that went to that session before it last wrote in the
+ * thread, still open, and only when this reply is the person's first to it
+ * since then (a second reply before it answers repeats nothing). A comment
+ * that went to another session waits for a reply to that one. `sentTo` names
+ * the session a message of the person went to (the store's `recipientOf`).
+ */
+export function inboxCommentsToCarry<M extends InboxCommentCarryMessage>(
+  messages: readonly M[],
+  threads: readonly InboxCommentThread[],
+  session: string,
+  sentTo: (message: M) => string | null,
+): InboxCommentThread[] {
+  let last = -1;
+  messages.forEach((message, index) => {
+    if (message.author.kind === "agent" && message.author.session === session) last = index;
+  });
+  if (last < 0) return [];
+  if (messages.slice(last + 1).some((message) => message.author.kind === "person" && sentTo(message) === session)) return [];
+  const at = new Map(messages.map((message, index) => [message.id, index]));
+  return threads.filter((thread) => {
+    const index = at.get(thread.reply_id);
+    return thread.state === "open" && index !== undefined && index < last && sentTo(messages[index]!) === session;
+  });
+}
+
+/**
+ * The title of the section that sends open comments again. It is a feedback
+ * section of the reply, so the window draws it with the rest of the feedback
+ * (packages/inbox/replyFeedback.ts).
+ */
+export const INBOX_OPEN_COMMENTS_TITLE = "Feedback on comments still open";
+
+/**
+ * The open comments a reply sends again, as a section of its feedback: one
+ * entry per comment with its round, where it is and its words, then the
+ * comment; each heading ends with the comment's id, as every entry of a Send
+ * does. Empty when there is none.
+ */
+export function inboxOpenCommentsFeedback(threads: readonly InboxCommentThread[], root: string): string {
+  if (threads.length === 0) return "";
+  const entries = threads.map((thread, index) => {
+    const place = `${inboxCommentPlace(thread.on, root)}${thread.unanchored ? ", unanchored (its words were not in the file when the person last opened it)" : ""}`;
+    const quote = thread.quote.replace(/\s+/g, " ").trim();
+    const comment = (thread.text.trim() || "(no words)").split(/\r\n?|\n/).map((line) => `> ${line}`.trimEnd());
+    return [`### ${index + 1}. Round ${thread.round}, ${place}${quote ? `: "${quote}"` : ""} (id ${thread.id})`, ...comment].join("\n");
+  });
+  return [`# ${INBOX_OPEN_COMMENTS_TITLE}`, "The person has not resolved these comments from earlier rounds yet.", ...entries].join("\n\n");
 }
 
 /**

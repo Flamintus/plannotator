@@ -212,6 +212,12 @@ export interface InboxAnnotationRecord {
    * (additive; experimental "persistent-comments", inbox-comment-threads.ts).
    */
   unanchored_at?: string | null;
+  /**
+   * A sent comment the person resolved: when; null or absent while it is
+   * open. Only the person sets or clears it (additive; experimental
+   * "persistent-comments", inbox-comment-threads.ts).
+   */
+  resolved_at?: string | null;
 }
 
 export const INBOX_ANNOTATION_CURRENT = "current";

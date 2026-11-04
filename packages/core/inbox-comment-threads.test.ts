@@ -1,6 +1,14 @@
 import { describe, expect, test } from 'bun:test';
 import type { InboxAnnotationRecord } from './inbox-attachments';
-import { inboxCommentRounds, inboxCommentThreads, inboxMovedLines } from './inbox-comment-threads';
+import {
+  INBOX_OPEN_COMMENTS_TITLE,
+  inboxCommentRounds,
+  inboxCommentState,
+  inboxCommentThreads,
+  inboxCommentsToCarry,
+  inboxMovedLines,
+  inboxOpenCommentsFeedback,
+} from './inbox-comment-threads';
 
 const agent = (id: string) => ({ id, author: { kind: 'agent' } });
 const person = (id: string) => ({ id, author: { kind: 'person' } });
@@ -114,5 +122,79 @@ describe('where a run of lines moved to', () => {
   test('lines no longer anywhere are lost', () => {
     expect(inboxMovedLines(['a', 'target 1', 'changed'], 2, 2, reads)).toBeNull();
     expect(inboxMovedLines(['target 1'], 1, 2, reads)).toBeNull();
+  });
+});
+
+describe('the resolved state', () => {
+  test('a sent comment is open until the person resolves it, and open again when they reopen it', () => {
+    expect(inboxCommentState({})).toBe('open');
+    expect(inboxCommentState({ resolved_at: null })).toBe('open');
+    expect(inboxCommentState({ resolved_at: '2026-11-04T10:05:00.000Z' })).toBe('resolved');
+    const threads = inboxCommentThreads([agent('msg_a1'), person('msg_p1')], [record('c1', { sent_reply_id: 'msg_p1', resolved_at: '2026-11-04T10:05:00.000Z' }), record('c2', { sent_reply_id: 'msg_p1' })]);
+    expect(Object.fromEntries(threads.map((t) => [t.id, t.state]))).toEqual({ c1: 'resolved', c2: 'open' });
+  });
+
+  test('a reply under a resolved comment opens it again; one from before the resolution does not', () => {
+    const resolved = { resolved_at: '2026-11-04T10:05:00.000Z' };
+    expect(inboxCommentState(resolved, '2026-11-04T10:06:00.000Z')).toBe('open');
+    expect(inboxCommentState(resolved, '2026-11-04T10:04:00.000Z')).toBe('resolved');
+  });
+});
+
+describe('the open comments a reply sends again', () => {
+  const ses = (id: string, session: string) => ({ id, author: { kind: 'agent', session } });
+  const to = new Map([
+    ['msg_p1', 'ses_a'],
+    ['msg_p2', 'ses_a'],
+    ['msg_q1', 'ses_b'],
+  ]);
+  const sentTo = (message: { id: string }) => to.get(message.id) ?? null;
+  const carried = (messages: { id: string; author: { kind: string; session?: string } }[], records: InboxAnnotationRecord[], session: string) =>
+    inboxCommentsToCarry(messages, inboxCommentThreads(messages, records), session, sentTo).map((t) => t.id);
+
+  test('the first reply to a session after it answered sends its open comments again, not the resolved ones', () => {
+    const messages = [ses('msg_a1', 'ses_a'), person('msg_p1'), ses('msg_a2', 'ses_a')];
+    const records = [record('c1', { sent_reply_id: 'msg_p1' }), record('c2', { sent_reply_id: 'msg_p1', resolved_at: '2026-11-04T10:05:00.000Z' })];
+    expect(carried(messages, records, 'ses_a')).toEqual(['c1']);
+  });
+
+  test('nothing again before the session answered, nor in a second reply of the same round', () => {
+    const records = [record('c1', { sent_reply_id: 'msg_p1' })];
+    expect(carried([ses('msg_a1', 'ses_a'), person('msg_p1')], records, 'ses_a')).toEqual([]);
+    expect(carried([ses('msg_a1', 'ses_a'), person('msg_p1'), ses('msg_a2', 'ses_a'), person('msg_p2')], records, 'ses_a')).toEqual([]);
+  });
+
+  test("a comment that went to another session waits for a reply to that one", () => {
+    const messages = [ses('msg_a1', 'ses_a'), ses('msg_b1', 'ses_b'), person('msg_q1'), ses('msg_b2', 'ses_b'), ses('msg_a2', 'ses_a')];
+    const records = [record('c1', { sent_reply_id: 'msg_q1' })];
+    expect(carried(messages, records, 'ses_a')).toEqual([]);
+    expect(carried(messages, records, 'ses_b')).toEqual(['c1']);
+  });
+
+  test('as feedback: one entry per comment, named by its id with its round and place, the whole comment quoted', () => {
+    expect(inboxOpenCommentsFeedback([], '/repo')).toBe('');
+    const messages = [agent('msg_a1'), person('msg_p1')];
+    const threads = inboxCommentThreads(messages, [
+      record('c1', { sent_reply_id: 'msg_p1', annotation: { originalText: 'every\nstore', text: 'One store first.\nThen the rest.' } }),
+      record('c2', {
+        sent_reply_id: 'msg_p1',
+        message: undefined,
+        attachment_id: 'att_1',
+        path: '/repo/notes.md',
+        unanchored_at: '2026-11-04T11:00:00.000Z',
+        annotation: { originalText: 'Ship on Friday.', text: 'Not on a Friday.' },
+      }),
+    ]);
+    const text = inboxOpenCommentsFeedback(threads, '/repo');
+    expect(text.startsWith(`# ${INBOX_OPEN_COMMENTS_TITLE}\n`)).toBe(true);
+    const headings = text.split('\n').filter((line) => line.startsWith('### '));
+    expect(headings).toHaveLength(2);
+    expect(headings[0]).toContain('Round 1, on message msg_a1: "every store"');
+    expect(headings[0]!.endsWith('(id c1)')).toBe(true);
+    expect(headings[1]).toContain('on notes.md');
+    expect(headings[1]).toContain('unanchored');
+    expect(headings[1]!.endsWith('(id c2)')).toBe(true);
+    // Every line of a comment stays in its quote, so the next heading starts a new entry.
+    expect(text).toContain('> One store first.\n> Then the rest.');
   });
 });
