@@ -45,9 +45,11 @@ import {
 } from '@plannotator/core/inbox-comment-threads';
 import type { TextPassage } from '@plannotator/core/passage';
 import type { InboxAnnotationRecord, InboxCommentReplyRecord } from '@plannotator/core/inbox-types';
+import { useConfigValue } from '@plannotator/ui/config';
 import type { Annotation } from '@plannotator/ui/types';
 import { PassageToolbar } from '@plannotator/ui/components/PassageToolbar';
 import { PASSAGE_BODY_ATTRIBUTE, passageRanges, selectedPassage, splitByRanges, type SelectedPassage } from '@plannotator/ui/utils/passageSelection';
+import { isCommentSubmitKey } from '@plannotator/ui/utils/commentSubmitKey';
 import { InboxApiError, inboxApi, type AttachmentsModel } from '../api';
 import { annotationOf, annotationQuote, isFileComment, shortLabel } from '../attachments';
 import {
@@ -637,9 +639,10 @@ export function SentComments({
 /**
  * The box a reply, or a comment on a passage (`quote`, drawn at its head), is
  * written in under a message's comment: Reply or Comment (or the comment
- * composers' key, ⌘/Ctrl+Enter) saves it as a draft; Escape or Cancel closes
- * it. ⌘/Ctrl+Enter here never reaches the thread's Send. The words are the
- * list's, so a box opened elsewhere keeps them.
+ * composers' key, `isCommentSubmitKey`: ⌘/Ctrl+Enter, and Enter with "Enter
+ * saves a comment") saves it as a draft; Escape or Cancel closes it. That key
+ * here never reaches the thread's Send. The words are the list's, so a box
+ * opened elsewhere keeps them.
  */
 function SentReplyBox({
   value,
@@ -654,6 +657,7 @@ function SentReplyBox({
   onSave: (text: string) => Promise<void>;
   onCancel: () => void;
 }) {
+  const enterSavesComment = useConfigValue('enterSavesComment');
   const [busy, setBusy] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
@@ -686,7 +690,7 @@ function SentReplyBox({
             event.preventDefault();
             event.stopPropagation();
             onCancel();
-          } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) {
+          } else if (isCommentSubmitKey(event, enterSavesComment)) {
             event.preventDefault();
             event.stopPropagation();
             void save();

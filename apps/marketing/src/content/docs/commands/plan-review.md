@@ -84,7 +84,7 @@ Each comment in the annotations panel has a **Reply** button (the curved arrow, 
 > Not on a Friday. Pick a Tuesday.
 **Replies:**
 - **Reply (browser-agent):** Tuesday 10:00 then?
-  - **Reply (Swift Tater):** Yes, Tuesday 10:00.
+  - **Reply (swift-falcon-tater):** Yes, Tuesday 10:00.
 ```
 
 Replies work the same in annotate. A comment on part of an image, a checkbox you ticked and an answer to a question have no Reply.
@@ -103,7 +103,7 @@ The count beside the switch opens the comments on that image; choosing one zooms
 Your agent receives the image as written in the plan, its line, and the box in the image's own pixels, so it can crop the exact spot:
 
 ```
-## 2. (line 63) Feedback on a region of the image figures/status-colors.png
+## 2. (line 63) Feedback on a region of the image figures/status-colors.png (id 9c2e41b7-5d0a-4f3e-8b16-a7d2c0e95f34)
 Image: figures/status-colors.png (line 63)
 Region: x=1820 y=380 w=420 h=160 (of 3664×1453)
 > the "paused" box should be grey, not orange

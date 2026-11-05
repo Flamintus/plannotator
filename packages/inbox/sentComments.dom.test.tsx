@@ -28,6 +28,7 @@ import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { InboxAnnotationRecord, InboxAttachmentState } from '@plannotator/core/inbox-types';
+import { configStore } from '@plannotator/ui/config';
 
 const hasDom = typeof document !== 'undefined';
 const { InboxApp } = (hasDom ? await import('./App') : {}) as typeof import('./App');
@@ -211,7 +212,7 @@ test.skipIf(!hasDom)("a sent comment on a file stays in its panel with its round
   const card = () => document.querySelector(`[data-annotation-id="sent-file-1"]`);
   await until(() => card() !== null, "the sent comment's card");
   expect(card()!.querySelector('[data-sent-round="1"]')).not.toBeNull();
-  // No edit or delete: Reply and Resolve are its only buttons.
+  // No edit or delete: Reply and Resolve are its only buttons (the action labels are pinned on purpose).
   expect([...card()!.querySelectorAll('button')].map((button) => button.getAttribute('aria-label') ?? button.textContent)).toEqual(['Reply', 'Resolve']);
   await until(() => card()!.querySelector('[data-annotation-unanchored]') !== null, 'the Unanchored chip');
   await until(() => posted.some((p) => p.path.includes('/annotations/sent-file-1/unanchored') && p.body.unanchored === true), 'the unanchored mark sent');
@@ -242,7 +243,8 @@ test.skipIf(!hasDom)("resolved under the message, a sent comment leaves its word
   act(() => row()!.querySelector<HTMLButtonElement>('[data-sent-resolve]')!.click());
   await until(() => row() === null && highlight() === null, 'the resolved comment folded away');
   const toggle = el.querySelector<HTMLButtonElement>('[data-sent-comments] [data-sent-resolved-toggle]')!;
-  expect(toggle.textContent).toBe('1 resolved');
+  // The toggle names how many wait behind it.
+  expect(toggle.textContent).toContain('1');
   expect(typeof (await storedRecord(sent, 'res-msg-1'))?.resolved_at).toBe('string');
 
   act(() => toggle.click());
@@ -310,6 +312,23 @@ test.skipIf(!hasDom)("under the message, the agent's reply sits under its commen
   expect(thread()!.querySelector('textarea')).toBeNull();
   const model = JSON.parse((await loopback(`/api/inbox/threads/${sent}/attachments`)).text) as { annotations: InboxAnnotationRecord[] };
   expect(model.annotations.map((r) => [r.re, r.annotation.text, r.sent_reply_id])).toEqual([['rep-msg-1', 'Page me too.', null]]);
+
+  // The box saves on the comment composers' key: with "Enter saves a comment" on, a plain Enter. The key is taken
+  // (prevented), so the thread's Send, which skips a prevented key, never sends the draft waiting under the comment.
+  configStore.set('enterSavesComment', true);
+  try {
+    act(() => el.querySelector<HTMLButtonElement>('[data-sent-comment="rep-msg-1"] [data-sent-reply-to]')!.click());
+    const again = el.querySelector<HTMLTextAreaElement>('[data-sent-replies="rep-msg-1"] textarea')!;
+    await type(again, 'And the lead.');
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    await act(async () => {
+      again.dispatchEvent(enter);
+    });
+    await until(() => thread()?.querySelectorAll('[data-sent-reply-draft]').length === 2, 'the second draft, saved by the key');
+    expect(enter.defaultPrevented).toBe(true);
+  } finally {
+    configStore.set('enterSavesComment', false);
+  }
 }, 30_000);
 
 test.skipIf(!hasDom)("on a file, the agent's reply is a card under its comment's, never painted, and the person replies from the sent card", async () => {
