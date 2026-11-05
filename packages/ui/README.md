@@ -403,7 +403,7 @@ slot and mentions on the edit box (0.45.0)".
   their own (the Inbox sorts a video's comments by the moment they are at).
   Ties keep creation order; replies still thread under their parent. Omit it
   and the panel sorts by creation exactly as before.
-- **`title?`, `titleNote?`, `cardParts?: (annotation) => { quote?, images?, text?, actions? }`**
+- **`title?`, `titleNote?`, `cardParts?: (annotation) => { quote?, images?, text?, actions?, reply? }`**
   (ui 0.53.0; `text` ui 0.54.0) — the header's title (default "Annotations")
   and a quiet note at its right, and per card whether the built-in quote,
   image row and comment text are drawn (the Inbox's video comments draw the
@@ -414,7 +414,8 @@ slot and mentions on the edit box (0.45.0)".
   `actions: false` (Unreleased) draws the card without edit and delete (the
   Inbox's sent comments) and keeps its Reply; `reply: false` (Unreleased)
   takes the Reply off that card alone. Omit them and the panel is as before.
-- **`onReply?: (parentId, { text, mentions? }) => void`** (Unreleased) — the
+- **`onReply?: (parentId, { text, mentions? }) => void | boolean | Promise<void | boolean>`**
+  (Unreleased) — the
   person's Reply. Supplied (and not `readOnly`), each plan-annotation card of
   the open document gets a Reply action that opens one box after the card's
   own replies, where the reply will land; sending calls `onReply` and the host

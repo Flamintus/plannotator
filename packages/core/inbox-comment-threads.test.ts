@@ -309,6 +309,7 @@ describe('replies under a sent comment', () => {
     const text = inboxCommentRepliesFeedback([onFile, personReply('r1', { created_at: '2026-11-04T10:08:00.000Z' })], '/repo');
     expect(text.startsWith(`# ${INBOX_COMMENT_REPLIES_TITLE}\n`)).toBe(true);
     const headings = text.split('\n').filter((line) => line.startsWith('### '));
+    // The headings are pinned on purpose: the agent reads them, and each names a comment and a reply by id.
     expect(headings).toEqual(['### 1. Reply under comment c1, on message msg_a1: "words of c1" (id r1)', '### 2. Reply under comment c9, on notes.md: "Ship on Friday." (id r2)']);
     expect(text).toContain('> Tuesday.\n> EU first.');
   });
