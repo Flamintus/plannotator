@@ -502,7 +502,8 @@ export function inboxWakeItems(
     if (joined) joined.sends.push(send);
     else items.push({ id: send.id, thread_id: send.thread_id, message: null, sends: [send] });
   }
-  const first = (item: InboxWakeItem) => Math.min(item.message ? seqOf(item.message.id) : Infinity, ...item.sends.map((send) => seqOf(send.id)));
+  // A message's item keeps its message's place: a send that waited and rides it never brings its words ahead of words written before them.
+  const first = (item: InboxWakeItem) => (item.message ? seqOf(item.message.id) : Math.min(...item.sends.map((send) => seqOf(send.id))));
   for (const item of items) item.sends.sort((a, b) => seqOf(a.id) - seqOf(b.id));
   return items.sort((a, b) => first(a) - first(b));
 }
