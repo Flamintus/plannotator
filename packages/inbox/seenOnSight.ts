@@ -87,13 +87,14 @@ export function samplePoints(lines: Span, article: { left: number; right: number
 
 /**
  * The seq of the newest agent message in a thread the window read: what the
- * look recorded for that read covers (`through_seq`). Null when the thread
- * carries no seqs (an older Inbox: the look then goes without the cap) or no
- * agent message.
+ * look recorded for that read covers (`through_seq`). An agent's replies sent
+ * alone under comments are its news too (`agent_replies_seq`). Null when the
+ * thread carries no seqs (an older Inbox: the look then goes without the cap)
+ * or no agent news.
  */
-export function latestAgentSeq(thread: { messages: readonly InboxMessageWire[] }): number | null {
+export function latestAgentSeq(thread: { messages: readonly InboxMessageWire[]; agent_replies_seq?: number }): number | null {
   if (thread.messages.some((m) => typeof m.seq !== 'number')) return null;
-  let latest: number | null = null;
+  let latest: number | null = typeof thread.agent_replies_seq === 'number' ? thread.agent_replies_seq : null;
   for (const message of thread.messages) if (message.author.kind === 'agent') latest = Math.max(latest ?? 0, message.seq!);
   return latest;
 }

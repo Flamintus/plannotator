@@ -112,7 +112,7 @@ export interface InboxCommentReply {
   author: InboxCommentAuthor;
   /** The round it was written in: the person's, the round of the Send that carried it; the agent's, the round under way then (`inboxCommentReplyRound`). */
   round: number;
-  /** What it came with: the person's Send (their reply, or a comment send), or the agent's message; '' for a draft. */
+  /** What it came with: the person's Send (their reply, or a comment send), or the agent's message; '' for a draft and for the agent's replies sent alone. */
   message_id: string;
   text: string;
   at: string;
@@ -134,6 +134,11 @@ export function isInboxCommentReplyId(value: unknown): value is string {
   return typeof value === "string" && REPLY_ID_RE.test(value);
 }
 
+/** A new id for one send_message's replies sent alone, which they share (`InboxCommentReplyRecord.call`). */
+export function inboxCommentReplyCallId(now?: number): string {
+  return `call_${ulid(now)}`;
+}
+
 /** A reply's words as kept: trimmed, or null when there are none or more than INBOX_COMMENT_REPLY_TEXT_MAX. */
 export function inboxCommentReplyText(value: unknown): string | null {
   const text = typeof value === "string" ? value.trim() : "";
@@ -146,9 +151,13 @@ export function isInboxCommentReplyRecord(value: unknown): value is InboxComment
   const record = value as Record<string, unknown>;
   const from = record.from as Record<string, unknown> | null | undefined;
   const nullableText = (field: unknown) => field === null || typeof field === "string";
+  const optionalText = (field: unknown) => field === undefined || typeof field === "string";
   return (
     isInboxCommentReplyId(record.id) &&
-    [record.project_id, record.thread_id, record.re, record.message_id, record.text, record.created_at].every((field) => typeof field === "string") &&
+    [record.project_id, record.thread_id, record.re, record.text, record.created_at].every((field) => typeof field === "string") &&
+    // With its message, or sent alone (`call`).
+    (typeof record.message_id === "string" || typeof record.call === "string") &&
+    [record.message_id, record.call, record.idempotency_key].every(optionalText) &&
     !!from &&
     typeof from === "object" &&
     from.kind === "agent" &&
@@ -381,6 +390,42 @@ export function inboxCommentReplyRound(
   return round;
 }
 
+/** One call of an agent's replies sent alone (`call`, no message), as `inboxCommentWrites` lists it. */
+export interface InboxCommentReplyCallWrite {
+  /** The call's id (`call_…`). */
+  id: string;
+  author: { kind: "agent"; session: string | null };
+  /** Its first reply's time. */
+  created_at: string;
+  call: true;
+}
+
+/**
+ * The thread's messages with each call of an agent's replies sent alone as
+ * one entry more, an agent writing, at its first reply's time (after a
+ * message of the same instant): for the rules that read who wrote when, an
+ * answer of the agent's is a message or such a call (a reply's round ends at
+ * the agent's answer; the open comments go again once the session wrote).
+ */
+export function inboxCommentWrites<M extends { created_at: string }>(
+  messages: readonly M[],
+  agentReplies: readonly Pick<InboxCommentReplyRecord, "call" | "from" | "created_at">[] = [],
+): (M | InboxCommentReplyCallWrite)[] {
+  const calls = new Map<string, InboxCommentReplyCallWrite>();
+  for (const reply of agentReplies) {
+    if (reply.call && !calls.has(reply.call)) calls.set(reply.call, { id: reply.call, author: { kind: "agent", session: reply.from.session }, created_at: reply.created_at, call: true });
+  }
+  if (calls.size === 0) return [...messages];
+  const pending = [...calls.values()].sort((a, b) => a.created_at.localeCompare(b.created_at));
+  const out: (M | InboxCommentReplyCallWrite)[] = [];
+  let next = 0;
+  for (const message of messages) {
+    for (; next < pending.length && pending[next]!.created_at < message.created_at; next++) out.push(pending[next]!);
+    out.push(message);
+  }
+  return [...out, ...pending.slice(next)];
+}
+
 /** Whether a record is a comment the person sent (not a draft, not removed). */
 export function isInboxCommentSent(record: Pick<InboxAnnotationRecord, "sent_reply_id" | "removed_at">): boolean {
   return record.sent_reply_id !== null && record.removed_at === null;
@@ -402,10 +447,13 @@ export function isInboxCommentSent(record: Pick<InboxAnnotationRecord, "sent_rep
  * `now`: the round a new send is in.
  */
 function walkRounds(
-  messages: readonly InboxCommentThreadMessage[],
+  thread: readonly InboxCommentThreadMessage[],
   records: readonly Pick<InboxAnnotationRecord, "sent_reply_id" | "removed_at">[],
   sends: readonly InboxCommentRoundSend[],
+  agentReplies: readonly Pick<InboxCommentReplyRecord, "call" | "from" | "created_at">[] = [],
 ): { rounds: Map<string, number>; now: number } {
+  // The agent's replies sent alone answer as its messages do.
+  const messages = inboxCommentWrites(thread, agentReplies);
   const carriers = new Set<string>();
   for (const record of records) if (isInboxCommentSent(record)) carriers.add(record.sent_reply_id!);
   const rounds = new Map<string, number>();
@@ -448,16 +496,17 @@ function walkRounds(
 /**
  * Each reply that carried comments, and each comment send (`sends`), by id,
  * with its round (from 1), in the thread's order (`walkRounds`). With no
- * sends, a round ends when an agent writes in the thread: the person's
- * replies before that answer (one Send to two sessions writes two) share
- * their round.
+ * sends, a round ends when an agent writes in the thread (a message, or
+ * replies sent alone: `agentReplies`): the person's replies before that
+ * answer (one Send to two sessions writes two) share their round.
  */
 export function inboxCommentRounds(
   messages: readonly InboxCommentThreadMessage[],
   records: readonly Pick<InboxAnnotationRecord, "sent_reply_id" | "removed_at">[],
   sends: readonly InboxCommentRoundSend[] = [],
+  agentReplies: readonly Pick<InboxCommentReplyRecord, "call" | "from" | "created_at">[] = [],
 ): Map<string, number> {
-  return walkRounds(messages, records, sends).rounds;
+  return walkRounds(messages, records, sends, agentReplies).rounds;
 }
 
 /** The round under way: the one a new comment send is in, and the counter a thread shows (1 before anything was sent). */
@@ -465,8 +514,9 @@ export function inboxCommentRoundNow(
   messages: readonly InboxCommentThreadMessage[],
   records: readonly Pick<InboxAnnotationRecord, "sent_reply_id" | "removed_at">[],
   sends: readonly InboxCommentRoundSend[] = [],
+  agentReplies: readonly Pick<InboxCommentReplyRecord, "call" | "from" | "created_at">[] = [],
 ): number {
-  return walkRounds(messages, records, sends).now;
+  return walkRounds(messages, records, sends, agentReplies).now;
 }
 
 function text(value: unknown): string {
@@ -520,7 +570,7 @@ export function inboxCommentThreads(
   sends: readonly InboxCommentRoundSend[] = [],
   options: { drafts?: boolean } = {},
 ): InboxCommentThread[] {
-  const { rounds, now } = walkRounds(messages, records, sends);
+  const { rounds, now } = walkRounds(messages, records, sends, agentReplies);
   const replies = new Map<string, InboxCommentReply[]>();
   const add = (id: string, reply: InboxCommentReply) => replies.set(id, [...(replies.get(id) ?? []), reply]);
   const listed: { record: InboxAnnotationRecord; carrier: string; round: number; draft: boolean }[] = [];
@@ -537,7 +587,7 @@ export function inboxCommentThreads(
   }
   for (const reply of agentReplies) {
     const round = inboxCommentReplyRound(messages, rounds, reply.created_at, sends, reply.from.session);
-    add(reply.re, { id: reply.id, author: reply.from, round, message_id: reply.message_id, text: reply.text, at: reply.created_at });
+    add(reply.re, { id: reply.id, author: reply.from, round, message_id: reply.message_id ?? "", text: reply.text, at: reply.created_at });
   }
   const last = inboxCommentLastReplies(
     records.filter((record) => isInboxCommentSent(record) || (options.drafts === true && record.sent_reply_id === null)),
