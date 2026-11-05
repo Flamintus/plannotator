@@ -187,7 +187,16 @@ import {
   isInboxCommentReplyRecord,
   isInboxSubThread,
 } from "@plannotator/core/inbox-comment-threads";
-import { inboxCommentSendId, isInboxCommentSendRecord, type InboxCommentSend, type InboxCommentSendMode } from "@plannotator/core/inbox-comment-sends";
+import {
+  inboxCommentSendId,
+  inboxCommentSendMark,
+  inboxCommentSendMarked,
+  inboxWakeItems,
+  isInboxCommentSendRecord,
+  type InboxCommentSend,
+  type InboxCommentSendMode,
+  type InboxWakeItem,
+} from "@plannotator/core/inbox-comment-sends";
 import {
   inboxInitiativeNameKey,
   INBOX_INITIATIVE_NAME_MAX,
@@ -5858,7 +5867,7 @@ export class InboxStore {
     // A New message, or a reply the person sent to another session, is
     // settled only by its delivery to the session it names, never by another
     // agent's read; so is a reply that tags agents.
-    if (!message.to && !hasTags(message) && (this.messages.get(message.thread_id)?.agent_checked_seq ?? 0) >= seq) return false;
+    if (!message.to && !hasTags(message) && !this.carriesCommentSends(message) && (this.messages.get(message.thread_id)?.agent_checked_seq ?? 0) >= seq) return false;
     return true;
   }
 
@@ -5886,7 +5895,7 @@ export class InboxStore {
    * agent up to it (the Sent band's "Delivered to <agent>, <time>"). A tagged
    * session's delivery marks nothing for the owner. Idempotent per session.
    */
-  recordDelivery(replyId: string, by: { host: string; session: string; intoTurn?: boolean }): InboxMessage {
+  recordDelivery(replyId: string, by: { host: string; session: string; intoTurn?: boolean; commentSends?: boolean }): InboxMessage {
     const reply = this.messages.get(replyId);
     if (!reply || reply.author.kind !== "person" || (!reply.reply_to && !reply.to)) throw new InboxError("message_not_found", `No reply ${replyId}.`);
     if (!this.isFor(reply, by.session)) {
@@ -5903,12 +5912,15 @@ export class InboxStore {
         ),
       };
       this.appendMessage(delivered, at);
+      if (by.commentSends) this.recordCommentSendsDelivery(this.commentSendsRiding(reply.id, by.session), by);
       return delivered;
     }
     if (reply.delivery) return reply;
     const at = this.stamp();
     const delivered: InboxMessage = { ...reply, delivery: { state: "delivered", host: by.host, session: by.session, at, ...intoTurnOf(reply.deliver_now_by, by.intoTurn) } };
     this.appendMessage(delivered, at);
+    // The comment sends its words carry went with it (while sent comments are on).
+    if (by.commentSends) this.recordCommentSendsDelivery(this.commentSendsRiding(reply.id, by.session), by);
     // Up to it, but never past a reply still owed to another session.
     this.markAgentChecked(reply.thread_id, this.messageSeq.get(reply.id) ?? 0, at, by.session);
     // A 👍 that reached the agent was seen.
@@ -5975,6 +5987,96 @@ export class InboxStore {
       const read: InboxCommentSend = own ? { ...send, read_at: at } : { ...send, tags: send.tags!.map((t) => (t.session === session ? { ...t, read_at: at } : t)) };
       this.appendCommentSend(read, at);
     }
+  }
+
+  // ──────────── comment sends on the wake ────────────
+  // The person's comment sends wait for their session beside its replies, on
+  // the same wake (the rules: packages/core/inbox-comment-sends.ts; the
+  // commands: packages/server/inbox-comment-send-delivery.ts). The caller
+  // says whether sent comments are on (`sends`, `commentSends`): off, no
+  // send is handed or settled here.
+
+  /** What `session`'s wake hands over (`inboxWakeItems`): its waiting replies, and while `sends`, its waiting comment sends. */
+  pendingWakeItems(session: string, options: { tags?: boolean; together?: boolean; sends?: boolean } = {}): InboxWakeItem[] {
+    return this.pendingWakeItemsFor(new Set([session]), options).get(session) ?? [];
+  }
+
+  /** `pendingWakeItems` for many sessions (the Codex, Qwen and T3 wakes), one pass over the messages and one over the sends. */
+  pendingWakeItemsFor(sessions: ReadonlySet<string>, options: { tags?: boolean; together?: boolean; sends?: boolean } = {}): Map<string, InboxWakeItem[]> {
+    const messages = sessions.size === 1 ? new Map([[[...sessions][0]!, this.pendingReplies([...sessions][0]!, options)]]) : this.pendingRepliesFor(sessions, options);
+    const sends = new Map<string, InboxCommentSend[]>();
+    if (options.sends === true) {
+      for (const send of this.commentSendRecords.values()) {
+        for (const session of [send.to.session, ...(options.tags === false ? [] : (send.tags ?? []).map((tag) => tag.session))]) {
+          const mark = sessions.has(session) ? inboxCommentSendMark(send, session) : null;
+          if (mark && !mark.delivery && !mark.read_at) (sends.get(session) ?? sends.set(session, []).get(session)!).push(send);
+        }
+      }
+    }
+    const seqOf = (id: string) => this.messageSeq.get(id) ?? this.commentSendSeq.get(id) ?? 0;
+    const out = new Map<string, InboxWakeItem[]>();
+    for (const session of new Set([...messages.keys(), ...sends.keys()])) {
+      const items = inboxWakeItems(session, messages.get(session) ?? [], sends.get(session) ?? [], { together: options.together === true, seqOf });
+      if (items.length > 0) out.set(session, items);
+    }
+    return out;
+  }
+
+  /** Whether the person's message carries words a comment send names (`with_message`): it settles only by its delivery or its session's own read. */
+  private carriesCommentSends(message: InboxMessage): boolean {
+    return this.commentSendRecords.size > 0 && this.commentSends(message.thread_id).some((send) => send.with_message === message.id);
+  }
+
+  /** The ids of the sends a message's words carry for `session`. */
+  commentSendsRiding(messageId: string, session: string): string[] {
+    const message = this.messages.get(messageId);
+    if (!message || this.commentSendRecords.size === 0) return [];
+    return this.commentSends(message.thread_id)
+      .filter((send) => send.with_message === message.id && inboxCommentSendMark(send, session))
+      .map((send) => send.id);
+  }
+
+  /** Comment sends reached `by.session` (alone, or with a message): each records it on its mark there; a send for another session is skipped. Idempotent. */
+  recordCommentSendsDelivery(ids: readonly string[], by: { host: string; session: string }): InboxCommentSend[] {
+    const done: InboxCommentSend[] = [];
+    for (const id of new Set(ids)) {
+      const send = this.commentSendRecords.get(id);
+      const mark = send ? inboxCommentSendMark(send, by.session) : null;
+      if (!send || !mark) continue;
+      if (mark.delivery) {
+        done.push(send);
+        continue;
+      }
+      const at = this.stamp();
+      const next = inboxCommentSendMarked(send, by.session, { delivery: { state: "delivered", host: by.host, session: by.session, at } });
+      this.appendCommentSend(next, at);
+      done.push(next);
+    }
+    return done;
+  }
+
+  /** Send now for a comment send (as `requestDeliverNow`): its recipient's, or `session`'s, a session it tags. Refused once delivered. */
+  requestCommentSendNow(id: string, session: string | null = null, by: InboxDeliverNowBy = "person"): InboxCommentSend {
+    const send = this.commentSendRecords.get(id);
+    if (!send) throw new InboxError("message_not_found", `No comment send ${id}.`);
+    const to = session ?? send.to.session;
+    const mark = inboxCommentSendMark(send, to);
+    if (!mark) throw new InboxError("not_addressed", "That session is not one this comment send goes to.");
+    if (mark.delivery) throw new InboxError("already_delivered", "That session already took this.", { delivery: mark.delivery });
+    if (mark.deliver_now_at) return send;
+    const at = this.stamp();
+    const next = inboxCommentSendMarked(send, to, { deliver_now_at: at, deliver_now_by: by });
+    this.appendCommentSend(next, at);
+    return next;
+  }
+
+  /** The connection could not put a Send now comment send into the running turn: its mark goes (as `clearDeliverNow`), its `deliver_now_by` kept. */
+  clearCommentSendNow(id: string, session: string): void {
+    const send = this.commentSendRecords.get(id);
+    const mark = send ? inboxCommentSendMark(send, session) : null;
+    if (!send || !mark || mark.delivery || !mark.deliver_now_at) return;
+    const at = this.stamp();
+    this.appendCommentSend(inboxCommentSendMarked(send, session, { deliver_now_at: null }), at);
   }
 
   /**
@@ -6163,6 +6265,8 @@ export class InboxStore {
       afterMs: number;
       tags?: boolean;
       clockOf: (itemId: string) => { autoSince: number | null; since: number } | null;
+      /** Sent comments are on: the comment sends waiting alone go in too (`requestCommentSendNow`). */
+      commentSends?: boolean;
     },
   ): InboxMessage[] {
     const now = this.now().getTime();
@@ -6185,6 +6289,14 @@ export class InboxStore {
         : { ...item, deliver_now_at: at, deliver_now_by: "auto", wait_started_at: waited };
       this.appendMessage(next, at);
       marked.push(next);
+    }
+    // The comment sends waiting alone, while sent comments are on.
+    if (options.commentSends) {
+      for (const item of this.pendingWakeItems(session, { tags: options.tags, sends: true })) {
+        const mark = item.message ? null : inboxCommentSendMark(item.sends[0]!, session);
+        const clock = mark && !mark.deliver_now_at && !mark.deliver_now_by ? options.clockOf(item.id) : null;
+        if (clock && clock.autoSince !== null && clock.autoSince + options.afterMs <= now) this.requestCommentSendNow(item.id, session, "auto");
+      }
     }
     return marked;
   }

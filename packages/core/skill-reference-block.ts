@@ -11,7 +11,7 @@
  * (approval "inbox-skill-references", Option B as amended): the person's
  * request, about "this reply" or "this message".
  *
- * The renderer stays in `@plannotator/ui`; this module holds the heading and
+ * The renderer is `@plannotator/core/skill-references` (re-exported by the ui); this module holds the heading and
  * the reader the Inbox needs to find the block in a stored body again (the
  * window folds it behind one "Skills: …" line, and the folded line's snippet
  * and the search index read the person's words without it). Browser-safe,

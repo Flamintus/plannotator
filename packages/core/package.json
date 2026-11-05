@@ -40,6 +40,8 @@
     "./goal-setup": "./goal-setup.ts",
     "./question-block": "./question-block.ts",
     "./skill-reference-block": "./skill-reference-block.ts",
+    "./skill-references": "./skill-references.ts",
+    "./inbox-skills-block": "./inbox-skills-block.ts",
     "./server-session": "./server-session.ts",
     "./markdown-structure": "./markdown-structure.ts",
     "./html-anchor": "./html-anchor.ts",

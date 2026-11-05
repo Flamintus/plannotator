@@ -7,8 +7,11 @@ import {
   inboxCommentSendId,
   inboxCommentSendRoutes,
   inboxCommentSendStatus,
+  inboxCommentEntryNotes,
   inboxCommentSendText,
+  inboxCommentsWake,
   inboxCommentThreadView,
+  inboxQuoteLines,
   inboxLiveCommentThreads,
   inboxOpenCommentsToName,
   isInboxCommentSendable,
@@ -483,5 +486,55 @@ describe("the person's view while a Send is being read", () => {
     const view = inboxCommentThreadView({ messages, records: [c1, fresh], sends });
     expect(view.threads[0]!.replies.map((r) => [r.id, r.round, r.draft])).toEqual([['r1', 1, false]]);
     expect(inboxCommentThreads(messages, [c1, fresh], [], sends)[0]!.replies).toEqual([]);
+  });
+});
+
+describe('delivery: what the server adds to an entry, and the command field', () => {
+  test("a document comment's lines: its words whole, or their first and last lines; none when the words are not there as written", () => {
+    const text = '# Rollout\n\nStart with the Lyon store\nfor a week.\n\nThen all stores.\n';
+    expect(inboxQuoteLines(text, 'Start with the Lyon store')).toEqual([3, 3]);
+    expect(inboxQuoteLines(text, 'Lyon store\nfor a week.')).toEqual([3, 4]);
+    expect(inboxQuoteLines(text, 'Start with the Lyon store\n\nThen all stores.')).toEqual([3, 6]);
+    expect(inboxQuoteLines(text, 'the **Lyon** store')).toBeNull();
+    expect(inboxQuoteLines(text, '   ')).toBeNull();
+  });
+
+  test('the notes: a diagram part, an HTML element, the images attached, the agents tagged', () => {
+    const notes = inboxCommentEntryNotes(
+      record('c1', {
+        annotation: {
+          type: 'COMMENT',
+          text: 'Here.',
+          diagramAnchor: { v: 1, kind: 'node', family: 'flowchart', id: 'D', label: 'Approve?', sourceLine: [4, 4] },
+          elementContext: { tag: 'button', path: 'body > main > button#buy', name: 'Buy now' },
+          images: [{ path: '/tmp/shot.png', name: 'shot' }],
+          mentions: ['ses_pi'],
+        },
+      }),
+      (sessions) => (sessions.includes('ses_pi') ? ['Pi'] : []),
+    );
+    expect(notes.some((line) => line.includes('Approve?'))).toBe(true);
+    expect(notes).toContain('Element: body > main > button#buy "Buy now"');
+    expect(notes).toContain('Images attached: /tmp/shot.png');
+    expect(notes.some((line) => line.startsWith('Tagged Pi'))).toBe(true);
+    // A plain comment adds nothing.
+    expect(inboxCommentEntryNotes(record('c2'))).toEqual([]);
+  });
+
+  test("the text takes each entry's detail: lines in the heading's place, notes under it; none, and the entry is as before", () => {
+    const carried = record('c1', { message: undefined, attachment_id: 'att_1', path: '/work/rollout.md', sent_reply_id: 'snd_1' });
+    const sends = [send('snd_1', 2, { comments: ['c1'] })];
+    const plain = inboxCommentSendText({ sends, records: [carried], root: '/work' });
+    const detailed = inboxCommentSendText({ sends, records: [carried], root: '/work', detail: () => ({ lines: [3, 4], notes: ['Images attached: /tmp/a.png'] }) });
+    expect(headings(plain)[0]).toContain('on rollout.md:');
+    expect(headings(detailed)[0]).toContain('on rollout.md lines 3-4 when commented');
+    const lines = detailed.split('\n');
+    expect(lines[lines.indexOf(headings(detailed)[0]!) + 1]).toBe('Images attached: /tmp/a.png');
+  });
+
+  test('the command field: the sends in the order given, the newest one\'s round and mode, the comments they carry', () => {
+    const sends = [send('snd_1', 2, { comments: ['c1'] }), send('snd_2', 3, { mode: 'round', round: 2, comments: ['c2', 'c0'] })];
+    const records = [record('c1', { sent_reply_id: 'snd_1' }), record('c2', { sent_reply_id: 'snd_2' }), record('c0', { sent_reply_id: 'snd_0' }), record('c3', { sent_reply_id: 'snd_2', removed_at: at(4) })];
+    expect(inboxCommentsWake(sends, records)).toEqual({ sends: ['snd_1', 'snd_2'], round: 2, mode: 'round', count: 2 });
   });
 });

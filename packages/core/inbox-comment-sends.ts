@@ -43,10 +43,13 @@ import {
   isInboxCommentThreadFolded,
   type InboxCommentReply,
   type InboxCommentRoundSend,
+  type InboxCommentEntryDetail,
   type InboxCommentThread,
   type InboxCommentThreadMessage,
 } from "./inbox-comment-threads";
-import { inboxAgentName, type InboxDelivery, type InboxTag } from "./inbox-types";
+import { diagramAnchorLocationLine, parseDiagramAnchor } from "./diagram-anchor";
+import type { InboxDeliverNowBy } from "./inbox-delivery";
+import { inboxAgentName, type InboxDelivery, type InboxMessage, type InboxTag } from "./inbox-types";
 import { ulid } from "./ulid";
 
 /** `now`: one draft at once, the round stays open; `round`: the person's Finish, every draft left, and the round ends. */
@@ -80,6 +83,8 @@ export interface InboxCommentSend {
   created_at: string;
   /** The person asked for it to go into the running turn (as a reply's `deliver_now_at`). */
   deliver_now_at?: string | null;
+  /** Who asked for `deliver_now_at`: the person, or the Inbox after the wait (as a reply's `deliver_now_by`). */
+  deliver_now_by?: InboxDeliverNowBy | null;
   /** It reached its session, through the session's connection. */
   delivery?: InboxDelivery | null;
   /** Its session read it (read_thread), with or without a delivery. */
@@ -276,6 +281,8 @@ export function inboxCommentSendText(input: {
   /** The project's root: a file's place is shown from it. */
   root: string;
   words?: string;
+  /** What the caller knows of each entry beyond its record (`inboxCommentEntry`'s `detail`): its lines in the file, its notes. */
+  detail?: (record: InboxAnnotationRecord) => InboxCommentEntryDetail;
 }): string {
   const words = input.words?.trim() ?? "";
   const sends = [...input.sends].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
@@ -285,7 +292,7 @@ export function inboxCommentSendText(input: {
   const carriedIds = new Set(carried.map((record) => record.id));
   const named = [...new Set(sends.filter((send) => send.mode === "round").flatMap((send) => send.comments))].filter((id) => !carriedIds.has(id));
   const messages = inboxCommentMessages(input.records, input.agentReplies ?? []);
-  const entries = carried.map((record, index) => inboxCommentEntry(record, index + 1, input.root, messages));
+  const entries = carried.map((record, index) => inboxCommentEntry(record, index + 1, input.root, messages, input.detail?.(record)));
   const last = sends.at(-1)!;
   const finished = sends.filter((send) => send.mode === "round").reduce<number | null>((round, send) => (round === null || send.round > round ? send.round : round), null);
   const done = finished !== null ? `The person finished round ${finished}.` : "";
@@ -432,4 +439,157 @@ export function inboxCommentThreadView(input: {
     else top.push(node);
   }
   return { v: INBOX_COMMENT_THREAD_VIEW_VERSION, round: inboxCommentRoundNow(input.messages, input.records, sends), threads: top };
+}
+
+// ──────────── Delivery (the wake): what a session's connection hands over ────────────
+
+/**
+ * One item a session's wake hands over, oldest first: the person's message
+ * (`message`) with the comment sends that ride it (its words' sends, and,
+ * when the connection takes them together, the thread's other sends waiting
+ * for that session), or comment sends alone (`message` null). `id` is the
+ * message's, or the oldest send's: the wake's command carries it, and
+ * `reply_to` takes it.
+ */
+export interface InboxWakeItem {
+  id: string;
+  thread_id: string;
+  message: InboxMessage | null;
+  sends: InboxCommentSend[];
+}
+
+/** What a send records for one session: its own fields for its recipient, a tag's for a session it tags. */
+export type InboxCommentSendMark = Pick<InboxCommentSend, "delivery" | "read_at" | "deliver_now_at" | "deliver_now_by">;
+
+/** A send's mark for `session` (its own, or the tag's), or null when the send does not go to that session. */
+export function inboxCommentSendMark(send: InboxCommentSend, session: string): InboxCommentSendMark | null {
+  if (send.to.session === session) return send;
+  return send.tags?.find((tag) => tag.session === session) ?? null;
+}
+
+/** The send with `patch` on its mark for `session` (its own fields, or that tag's). */
+export function inboxCommentSendMarked(send: InboxCommentSend, session: string, patch: Partial<InboxCommentSendMark>): InboxCommentSend {
+  if (send.to.session === session) return { ...send, ...patch };
+  return { ...send, tags: (send.tags ?? []).map((tag) => (tag.session === session ? { ...tag, ...patch } : tag)) };
+}
+
+/**
+ * What `session`'s wake hands over, oldest first by `seqOf`: each of the
+ * person's messages waiting for it, with the sends its words carry
+ * (`with_message`), and each send waiting alone. `together` (a connection
+ * that posts `sends` back with `delivered`): a thread's sends go as one
+ * item, riding its first item with sends of its own, never mixing what goes
+ * to the session as the recipient with what only tags it.
+ */
+export function inboxWakeItems(
+  session: string,
+  messages: readonly InboxMessage[],
+  sends: readonly InboxCommentSend[],
+  options: { together: boolean; seqOf: (id: string) => number },
+): InboxWakeItem[] {
+  const { seqOf } = options;
+  const items: InboxWakeItem[] = messages.map((message) => ({ id: message.id, thread_id: message.thread_id, message, sends: [] }));
+  const byMessage = new Map(items.map((item) => [item.id, item]));
+  const own = (send: InboxCommentSend) => send.to.session === session;
+  const alone: InboxCommentSend[] = [];
+  for (const send of [...sends].sort((a, b) => seqOf(a.id) - seqOf(b.id))) {
+    const words = send.with_message ? byMessage.get(send.with_message) : undefined;
+    if (words) words.sends.push(send);
+    else alone.push(send);
+  }
+  for (const send of alone) {
+    const joined = options.together ? items.find((item) => item.thread_id === send.thread_id && item.sends.length > 0 && own(item.sends[0]!) === own(send)) : undefined;
+    if (joined) joined.sends.push(send);
+    else items.push({ id: send.id, thread_id: send.thread_id, message: null, sends: [send] });
+  }
+  const first = (item: InboxWakeItem) => Math.min(item.message ? seqOf(item.message.id) : Infinity, ...item.sends.map((send) => seqOf(send.id)));
+  for (const item of items) item.sends.sort((a, b) => seqOf(a.id) - seqOf(b.id));
+  return items.sort((a, b) => first(a) - first(b));
+}
+
+/** The `comments` field of a wake's command: the sends it delivers (frozen when the command is made), their round and mode, how many comments they carry. */
+export interface InboxCommentsWake {
+  sends: string[];
+  round: number;
+  mode: InboxCommentSendMode;
+  count: number;
+}
+
+/**
+ * The `comments` field for the sends one command delivers, oldest first (the
+ * order given, the store's): their ids, the newest send's round and mode,
+ * and the comments, replies and sub-threads they carry (`records`, the
+ * thread's comment records; the threads a Finish only names are not
+ * counted).
+ */
+export function inboxCommentsWake(sends: readonly InboxCommentSend[], records: readonly Pick<InboxAnnotationRecord, "sent_reply_id" | "removed_at">[]): InboxCommentsWake {
+  const ids = new Set(sends.map((send) => send.id));
+  const last = sends.at(-1)!;
+  return {
+    sends: sends.map((send) => send.id),
+    round: last.round,
+    mode: last.mode,
+    count: records.filter((record) => record.removed_at === null && record.sent_reply_id !== null && ids.has(record.sent_reply_id)).length,
+  };
+}
+
+/**
+ * The lines of `text` a document comment's words are on (from 1), or null
+ * when they are not there as written: the words whole, else their first and
+ * last lines, in that order. The words are the rendered text the person
+ * selected, so a formatted span may not be found; the entry then names no
+ * lines.
+ */
+export function inboxQuoteLines(text: string, quote: string): [number, number] | null {
+  const lineAt = (index: number) => text.slice(0, index).split("\n").length;
+  const words = quote.replace(/\r\n?/g, "\n").trim();
+  if (!words) return null;
+  const whole = text.indexOf(words);
+  if (whole >= 0) return [lineAt(whole), lineAt(whole + words.length)];
+  const lines = words.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (lines.length < 2) return null;
+  const first = text.indexOf(lines[0]!);
+  const last = first < 0 ? -1 : text.indexOf(lines.at(-1)!, first + lines[0]!.length);
+  return first >= 0 && last >= 0 ? [lineAt(first), lineAt(last)] : null;
+}
+
+const ENTRY_NOTE_MAX = 300;
+
+function noteLine(value: string): string {
+  const line = value.replace(/\s+/g, " ").replace(/`+/g, "'").trim();
+  return line.length > ENTRY_NOTE_MAX ? `${line.slice(0, ENTRY_NOTE_MAX - 1)}…` : line;
+}
+
+/** A pinpointed HTML element, as one line: its path (or tag) and accessible name, else its selector. */
+function elementNote(context: unknown, anchor: unknown): string | null {
+  const c = context && typeof context === "object" ? (context as Record<string, unknown>) : null;
+  const where = typeof c?.path === "string" && c.path ? c.path : typeof c?.tag === "string" ? c.tag : null;
+  const selector = anchor && typeof anchor === "object" && typeof (anchor as Record<string, unknown>).selector === "string" ? ((anchor as Record<string, unknown>).selector as string) : null;
+  const name = typeof c?.name === "string" && c.name ? ` "${c.name}"` : "";
+  if (where) return noteLine(`Element: ${where}${name}`);
+  return selector ? noteLine(`Element: ${selector}`) : null;
+}
+
+/**
+ * The lines a comment send's entry adds under its heading, from the record
+ * alone: the part of a diagram it is on, the HTML element it pinpoints, the
+ * images attached to it (their paths), and the agents it tags with `@`
+ * (`tagNames` names their sessions; none without it). The window's export of
+ * a comment says the same.
+ */
+export function inboxCommentEntryNotes(record: Pick<InboxAnnotationRecord, "annotation">, tagNames: (sessions: readonly string[]) => string[] = () => []): string[] {
+  const annotation = record.annotation as Record<string, unknown>;
+  const notes: string[] = [];
+  const diagram = annotation.diagramAnchor === undefined ? null : parseDiagramAnchor(annotation.diagramAnchor);
+  if (diagram) notes.push(noteLine(diagramAnchorLocationLine(diagram)));
+  const element = elementNote(annotation.elementContext, annotation.htmlAnchor);
+  if (element) notes.push(element);
+  const images = Array.isArray(annotation.images)
+    ? annotation.images.flatMap((image) => (image && typeof image === "object" && typeof (image as { path?: unknown }).path === "string" && (image as { path: string }).path ? [(image as { path: string }).path] : []))
+    : [];
+  if (images.length > 0) notes.push(`Images attached: ${images.join(", ")}`);
+  const mentions = Array.isArray(annotation.mentions) ? annotation.mentions.filter((id): id is string => typeof id === "string" && id !== "") : [];
+  const names = mentions.length > 0 ? tagNames(mentions) : [];
+  if (names.length > 0) notes.push(`Tagged ${names.join(", ")}: ${names.length === 1 ? "it gets" : "they get"} this comment too.`);
+  return notes;
 }

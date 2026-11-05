@@ -68,6 +68,7 @@ import {
   inboxToolResultText,
   INBOX_SEND_NOW_POLL_FIELD,
   INBOX_TAGS_POLL_FIELD,
+  INBOX_COMMENTS_POLL_FIELD,
   INBOX_SESSION_LABEL_INPUT_MAX,
   inboxSentNowFollowUpText,
   inboxHealthPeeks,
@@ -791,6 +792,8 @@ export class InboxLink {
   private settled = new Set<string>()
   /** Delivered here (or by a claimant that quit), not yet acknowledged to the Inbox. */
   private unacked = new Set<string>()
+  /** The comment sends each delivered command carried (`comments.sends`): its acknowledgement names them. */
+  private ackSends = new Map<string, string[]>()
   /** Claimed by another process, watched until delivered or reported. */
   private elsewhere = new Map<string, { command: InboxReplyCommand; since: number }>()
   /** The reply whose turn this process is submitting, kept alive in its claim. */
@@ -1178,6 +1181,8 @@ export class InboxLink {
       ...((await this.sendNowNow()) ? { [INBOX_SEND_NOW_POLL_FIELD]: true } : {}),
       // Tags (approval "inbox-tag-agents"): this connection words a reply it was tagged in truthfully.
       [INBOX_TAGS_POLL_FIELD]: true,
+      // Comment sends: a thread's waiting sends come as one command, and `delivered` names them.
+      [INBOX_COMMENTS_POLL_FIELD]: true,
       // What this process loaded (additive): the Inbox says when a restart would load a newer plugin.
       ...(loaded.plugin ? { plugin: loaded.plugin } : {}),
       ...(loaded.engine ? { engine: loaded.engine } : {}),
@@ -1283,16 +1288,22 @@ export class InboxLink {
    * the running turn while one runs (`appendUserRow`), else as a turn.
    */
   private async deliverNext(urgent = false): Promise<void> {
-    const command = this.pending.values().next().value as InboxReplyCommand | undefined
-    if (!command) return
+    const held = this.pending.values().next().value as InboxReplyCommand | undefined
+    if (!held) return
     // Still waiting? An agent may have read it through the tool meanwhile, or
     // another process delivered it.
     const fresh = await this.pendingNow(0)
     if (fresh === null) return
-    if (!fresh.some((candidate) => candidate.id === command.id)) {
-      this.settle(command.id)
+    const current = fresh.find((candidate) => candidate.id === held.id)
+    if (!current) {
+      // The person's comment sends may have joined another command (their words came): never settled here.
+      if (held.comments) this.pending.delete(held.id)
+      else this.settle(held.id)
       return
     }
+    // Comment sends go as the Inbox words them now: the ones that came since ride them.
+    const command = current.comments ? current : held
+    this.pending.set(command.id, command)
     if (this.disposed || !(await this.holdLease(await this.host.now()))) return
     const dir = this.claimDir(command.id)
     const claim = await this.host.run(inboxClaimArgv(dir, this.options.instanceId), { timeoutMs: 5_000 }).catch(() => null)
@@ -1358,6 +1369,7 @@ export class InboxLink {
     await this.host.writeFile(`${dir}/delivered`, String(await this.host.now())).catch(() => undefined)
     this.settle(command.id)
     this.unacked.add(command.id)
+    if (command.comments) this.ackSends.set(command.id, command.comments.sends)
     await this.acknowledge(command.id)
   }
 
@@ -1370,10 +1382,14 @@ export class InboxLink {
 
   /** Tell the Inbox a reply was delivered (retried every tick until it answers). */
   private async acknowledge(id: string): Promise<void> {
-    const response = await this.bridge(INBOX_BRIDGE_EVENT_PATH, { type: 'delivered', id })
+    const sends = this.ackSends.get(id)
+    const response = await this.bridge(INBOX_BRIDGE_EVENT_PATH, { type: 'delivered', id, ...(sends ? { sends } : {}) })
     if (!response) return
     // 200, or a refusal that will not change (the reply is gone or not ours): done.
-    if (response.status === 200 || (response.status >= 400 && response.status < 500 && response.status !== 401)) this.unacked.delete(id)
+    if (response.status === 200 || (response.status >= 400 && response.status < 500 && response.status !== 401)) {
+      this.unacked.delete(id)
+      this.ackSends.delete(id)
+    }
   }
 
   /**
@@ -1394,6 +1410,7 @@ export class InboxLink {
     if (await this.host.exists(`${dir}/delivered`)) {
       this.elsewhere.delete(id)
       this.settled.add(id)
+      // Its own list is the claimant's to name: acknowledged by the id alone, a send it did not deliver is never settled.
       this.unacked.add(id)
       return
     }

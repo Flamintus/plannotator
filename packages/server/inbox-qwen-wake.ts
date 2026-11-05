@@ -65,7 +65,9 @@ import { isPidAlive } from "@plannotator/shared/inbox/registry";
 import { listQwenSessionRecords } from "@plannotator/shared/inbox/qwen-sessions";
 import type { InboxReplyCommand } from "@plannotator/shared/inbox/connection";
 import type { InboxStore } from "@plannotator/shared/inbox/store";
+import type { InboxWakeItem } from "@plannotator/core/inbox-comment-sends";
 import { stripJsonComments } from "./agent-files";
+import { commentSendWakes, recordWakeDelivery } from "./inbox-comment-send-delivery";
 import { codexQueueMessage } from "./inbox-codex-wake";
 import type { AgentEnvironment } from "./inbox-agents";
 import { checkQwenTrust, qwenTrustHome, qwenWakeToken } from "./inbox-qwen-trust";
@@ -270,9 +272,11 @@ export function createInboxQwenWake(options: {
   /** The Plannotator data dir (the trusted-sender token is under it). */
   dataDir: string;
   /** The wake command for an item and the session it goes to (the bridge's `replyCommand`). */
-  commandOf: (item: InboxMessage, session: string) => InboxReplyCommand;
+  commandOf: (item: InboxWakeItem, session: string) => InboxReplyCommand;
   /** An item not to hand at all (a steps-only Tidy wake once steps are off: the server withdraws it). */
-  skip?: (item: InboxMessage, session: string) => boolean;
+  skip?: (item: InboxWakeItem, session: string) => boolean;
+  /** The person's sent comments are on: their comment sends wait here too, one per item (inbox-comment-send-delivery.ts). */
+  commentSends?: () => boolean;
   now?: () => number;
   sendTimeoutMs?: number;
   receiptTimeoutMs?: number;
@@ -423,7 +427,7 @@ export function createInboxQwenWake(options: {
     const claim = claims.get(key);
     if (!claim) return;
     try {
-      store.recordDelivery(claim.itemId, { host: INBOX_QWEN_HOST, session: claim.session });
+      recordWakeDelivery(store, claim.itemId, { host: INBOX_QWEN_HOST, session: claim.session }, undefined, options.commentSends?.() === true);
     } catch {
       // Gone, or no longer this session's.
     }
@@ -432,7 +436,10 @@ export function createInboxQwenWake(options: {
   const isUncertain = (claim: Claim) => claim.state !== "delivered" && claim.state !== "sent";
 
   /** Whether the item goes to `session` through a wake: its owner's message woke, it is addressed to it, or a waking tag. */
-  const wakesItem = (item: InboxMessage, session: string): boolean => {
+  const wakesItem = (wakeItem: InboxWakeItem, session: string): boolean => {
+    // The person's comment sends waiting alone (inbox-comment-send-delivery.ts).
+    if (!wakeItem.message) return commentSendWakes(store, wakeItem, session, INBOX_QWEN_HOST);
+    const item = wakeItem.message;
     if (!store.isOwner(item, session)) return item.tags?.some((tag) => tag.session === session && tag.host === INBOX_QWEN_HOST && tag.wakes) ?? false;
     if (item.to) return item.to.host === INBOX_QWEN_HOST;
     const asked = item.reply_to ? store.message(item.reply_to) : null;
@@ -686,7 +693,7 @@ export function createInboxQwenWake(options: {
       socket.on("close", () => finish(connected ? "sent" : "unreachable"));
     });
 
-  const sendOne = async (item: InboxMessage, session: string, record: InboxQwenSessionRecord, controller: string): Promise<void> => {
+  const sendOne = async (item: InboxWakeItem, session: string, record: InboxQwenSessionRecord, controller: string): Promise<void> => {
     const key = keyOf(item.id, session);
     const retry = retryAt.get(key);
     if (retry && retry.at > now()) return;
@@ -758,9 +765,9 @@ export function createInboxQwenWake(options: {
     forgetRegistry();
     const sessions = knownSessions();
     if (sessions.size === 0 && claims.size === 0) return;
-    const pending = store.pendingRepliesFor(sessions, { tags: true });
+    const pending = store.pendingWakeItemsFor(sessions, { tags: true, sends: options.commentSends?.() === true });
     const pendingKeys = new Set<string>();
-    const work: { item: InboxMessage; session: string; record: InboxQwenSessionRecord }[] = [];
+    const work: { item: InboxWakeItem; session: string; record: InboxQwenSessionRecord }[] = [];
     let waitsForComeback = false;
     for (const [session, items] of pending) {
       for (const item of items) {
@@ -816,12 +823,13 @@ export function createInboxQwenWake(options: {
 
   let sweepQueued = false;
   const unsubscribe = store.subscribe((line) => {
-    if (line.kind !== "message") return;
-    const message = line.record as InboxMessage;
-    if (message.author.kind === "agent") {
+    if (line.kind !== "message" && line.kind !== "comment_send") return;
+    // A comment send waits for a session its own messages made known: only a moment to look again.
+    const message = line.kind === "message" ? (line.record as InboxMessage) : null;
+    if (message?.author.kind === "agent") {
       if (message.wakes !== true || message.author.host !== INBOX_QWEN_HOST || !isQwenSessionId(message.author.session)) return;
       knownSessions().add(message.author.session);
-    } else {
+    } else if (message) {
       if (message.to?.host === INBOX_QWEN_HOST && isQwenSessionId(message.to.session)) knownSessions().add(message.to.session);
       for (const tag of message.tags ?? []) if (tag.host === INBOX_QWEN_HOST && tag.wakes && isQwenSessionId(tag.session)) knownSessions().add(tag.session);
     }

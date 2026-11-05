@@ -756,9 +756,9 @@ function quoted(quote: string): string {
  * passage is in (`In: "…"`); then the person's words, every line quoted, so
  * the next heading starts a new entry.
  */
-function feedbackEntry(number: number, heading: string, id: string, around: string | null, words: string): string {
+function feedbackEntry(number: number, heading: string, id: string, around: string | null, words: string, notes: readonly string[] = []): string {
   const lines = (words.trim() || "(no words)").split(/\r\n?|\n/).map((line) => `> ${line}`.trimEnd());
-  return [`### ${number}. ${heading} (id ${id})`, ...(around ? [`In: "${around}"`] : []), ...lines].join("\n");
+  return [`### ${number}. ${heading} (id ${id})`, ...(around ? [`In: "${around}"`] : []), ...notes, ...lines].join("\n");
 }
 
 /** Comment records in the order the person wrote them (by time, then id): the order a Send lists them in. */
@@ -776,17 +776,35 @@ export function inboxCommentsInOrder<R extends Pick<InboxAnnotationRecord, "id" 
  * - any other comment: "Comment <place>", or "Remove this, <place>" for a
  *   deletion (a redline on a file's words).
  */
-export function inboxCommentEntry(record: InboxAnnotationRecord, number: number, root: string, messages: ReadonlyMap<string, InboxCommentMessage> = new Map()): string {
+export function inboxCommentEntry(
+  record: InboxAnnotationRecord,
+  number: number,
+  root: string,
+  messages: ReadonlyMap<string, InboxCommentMessage> = new Map(),
+  /** What a caller knows beyond the record: a document comment's lines in the version commented, and lines under the heading. */
+  detail: InboxCommentEntryDetail = {},
+): string {
   const quote = text(record.annotation.originalText) || text(record.annotation.selectedText) || text(record.annotation.originalCode);
   const words = text(record.annotation.text);
-  if (isInboxCommentReply(record)) return feedbackEntry(number, `Reply under comment ${record.re}, ${inboxCommentPlace(inboxCommentAnchor(record), root)}${quoted(quote)}`, record.id, null, words);
+  const notes = detail.notes ?? [];
+  const anchor = inboxCommentAnchor(record);
+  const on = anchor.kind === "file" && !anchor.lines && detail.lines ? { ...anchor, lines: detail.lines } : anchor;
+  if (isInboxCommentReply(record)) return feedbackEntry(number, `Reply under comment ${record.re}, ${inboxCommentPlace(on, root)}${quoted(quote)}`, record.id, null, words, notes);
   if (isInboxSubThread(record)) {
-    const sub = { on: inboxCommentAnchor(record), quote: quote.replace(/\s+/g, " ").trim(), parent: { id: record.parent!, quote_offset: inboxQuoteOffset(record), ...messages.get(record.parent!) } };
-    return feedbackEntry(number, `Comment ${inboxCommentThreadPlace(sub, root)}${quoted(quote)}`, record.id, inboxSubThreadWords(sub, INBOX_SUB_THREAD_WORDS_SENT), words);
+    const sub = { on, quote: quote.replace(/\s+/g, " ").trim(), parent: { id: record.parent!, quote_offset: inboxQuoteOffset(record), ...messages.get(record.parent!) } };
+    return feedbackEntry(number, `Comment ${inboxCommentThreadPlace(sub, root)}${quoted(quote)}`, record.id, inboxSubThreadWords(sub, INBOX_SUB_THREAD_WORDS_SENT), words, notes);
   }
-  const place = inboxCommentPlace(inboxCommentAnchor(record), root);
-  if (record.annotation.type === "DELETION") return feedbackEntry(number, `Remove this, ${place}${quoted(quote)}`, record.id, null, words);
-  return feedbackEntry(number, `Comment ${place}${quoted(quote)}`, record.id, null, words);
+  const place = inboxCommentPlace(on, root);
+  if (record.annotation.type === "DELETION") return feedbackEntry(number, `Remove this, ${place}${quoted(quote)}`, record.id, null, words, notes);
+  return feedbackEntry(number, `Comment ${place}${quoted(quote)}`, record.id, null, words, notes);
+}
+
+/** What `inboxCommentEntry` may add to a record's entry (a comment send's text); nothing by default, so the Send's sections keep their words. */
+export interface InboxCommentEntryDetail {
+  /** A file comment's lines in the version it was made on, when the record names none (a document's). */
+  lines?: [number, number];
+  /** Lines under the heading, before the person's words (attached images, an element, a diagram part, tags). */
+  notes?: readonly string[];
 }
 
 /**

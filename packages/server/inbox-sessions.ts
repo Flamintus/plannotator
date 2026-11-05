@@ -40,6 +40,7 @@ import { INBOX_AUTO_SEND_AFTER_MS, INBOX_TAGS_MAX, type InboxHostSessions, type 
 import { checkServerSession, INBOX_SERVER_SESSION_MISMATCH_ERROR, serverSessionMismatchBody } from "@plannotator/core/server-session";
 import { INBOX_ASK_POLL_FIELD, INBOX_SEND_NOW_POLL_FIELD, INBOX_SESSION_LABEL_INPUT_MAX, INBOX_SESSION_LIVE_MS, INBOX_TAGS_POLL_FIELD } from "@plannotator/shared/inbox/connection";
 import { InboxError } from "@plannotator/shared/inbox/schema";
+import { isInboxCommentSendId } from "@plannotator/core/inbox-comment-sends";
 import { graphemesOf, inboxStoredAgentName } from "@plannotator/core/inbox-format";
 import type { InboxStore } from "@plannotator/shared/inbox/store";
 import { parseEngine, parseLoadedPlugin, parseSessionFolder, runtimeOf, tagUpdateFix, type LoadedPlugin } from "./inbox-restart";
@@ -263,6 +264,8 @@ export function createInboxLiveSessions(options: {
   wakeOnlyStatus?: (session: string) => "alive" | "dead" | null;
   /** The items of a session the Inbox wakes itself that may not have reached it (a `codex queue` that ran out of time). */
   uncertainItemsOf?: (session: string) => string[];
+  /** The person's sent comments are on: their comment sends wait on a session too (clocks, Send now). */
+  commentSendsOn?: () => boolean;
 }) {
   const { store, serverSession } = options;
   const now = options.now ?? Date.now;
@@ -350,7 +353,8 @@ export function createInboxLiveSessions(options: {
       return;
     }
     if (entry.busy !== true && !clocks) return;
-    const pending = store.pendingReplies(session, { tags: entry.tags });
+    // The person's replies and the comment sends waiting alone, each by its item id.
+    const pending = store.pendingWakeItems(session, { tags: entry.tags, sends: options.commentSendsOn?.() === true });
     if (clocks) {
       const ids = new Set(pending.map((item) => item.id));
       for (const id of [...clocks.keys()]) if (!ids.has(id)) clocks.delete(id);
@@ -1030,6 +1034,7 @@ export function createInboxLiveSessions(options: {
    * running turn (`send_now_unavailable`), or once delivered.
    */
   const sendNow = (messageId: string, session: string | null = null) => {
+    if (isInboxCommentSendId(messageId)) return sendCommentsNow(messageId, session);
     const message = store.message(messageId);
     if (!message) throw new InboxError("message_not_found", `No message ${messageId}.`);
     // A tagged session's own line (approval "inbox-tag-agents"): its own Send now.
@@ -1047,6 +1052,21 @@ export function createInboxLiveSessions(options: {
       );
     }
     return store.requestDeliverNow(messageId, tag ? tag.session : null);
+  };
+
+  /** Send now for the person's comment send (`snd_…`), on the same terms as a reply's. */
+  const sendCommentsNow = (id: string, session: string | null) => {
+    if (options.commentSendsOn?.() !== true) throw new InboxError("persistent_comments_off", "Sent comments are not kept in view.");
+    const send = store.commentSend(id);
+    if (!send) throw new InboxError("message_not_found", `No comment send ${id}.`);
+    const connection = connectionOf(session ?? send.to.session);
+    if (!connection?.send_now) {
+      throw new InboxError(
+        "send_now_unavailable",
+        connection ? "This agent's connection cannot take a message mid-turn; it gets it when its turn ends." : "That session is not connected now; it gets this when it is back.",
+      );
+    }
+    return store.requestCommentSendNow(id, session);
   };
 
   /** When `session` last went idle, live or not; null when never seen idle (Tidy's "Nothing to change"). */
