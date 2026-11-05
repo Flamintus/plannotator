@@ -252,6 +252,15 @@ export function cleanupArgv(dir: string): string[] {
   ]
 }
 
+/**
+ * A decision delivered for a review its tab may reopen (the review loop): its
+ * record goes, then its claim, so the review's next decision is claimed afresh
+ * (in that order: a process that sees the claim gone sees no decision left).
+ */
+export function rearmArgv(dir: string): string[] {
+  return ['/bin/sh', '-c', `rm -f "$1/${LAUNCH_FILES.result}" && rm -rf "$1/${SETTLED_DIR}"`, 'plannotator-rearm', dir]
+}
+
 /** Exit codes of `CLAIM_SCRIPT`. */
 export const CLAIM_EXIT = { won: 0, lost: 3, failed: 4 } as const
 
@@ -645,12 +654,14 @@ const PLUGIN_FRAME = /^The [^\n]{1,200}? plugin sent a message:\s*/
  *   a terminal client pastes (`plannotator threads send`), headed alike:
  *   `Plannotator: notes.md (pn-3f2a9c) — Round 2 done · 3 comments. …`
  *   (`plannotatorSendOutcome`);
+ * - the line a reopen of an ended review becomes (`Plannotator: notes.md
+ *   (pn-3f2a9c) — Reopened. …`);
  * - the Inbox's wake on comments alone, named by the oldest send's id:
  *   `Plannotator Inbox: <subject> (snd_…)` (`inboxWakeText`).
  */
 export function isRoundWakeText(text: string): boolean {
   const first = text.trim().replace(PLUGIN_FRAME, '').split('\n', 1)[0] ?? ''
-  return /^Plannotator: .+ — Round \d+ (?:done|still open) · /.test(first) || /^Plannotator Inbox: .*\(snd_[0-9A-HJKMNP-TV-Z]{26}\)$/.test(first.trimEnd())
+  return /^Plannotator: .+ — (?:Round \d+ (?:done|still open) · |Reopened\. )/.test(first) || /^Plannotator Inbox: .*\(snd_[0-9A-HJKMNP-TV-Z]{26}\)$/.test(first.trimEnd())
 }
 
 /**

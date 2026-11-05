@@ -17,6 +17,7 @@ import {
   CLAIM_EXIT,
   claimArgv,
   cleanupArgv,
+  rearmArgv,
   stopArgv,
   STOP_EXIT,
   cliArgvFor,
@@ -136,6 +137,14 @@ export interface LaunchRecord {
   tailnet?: { ask: boolean }
   /** Opened by the tool with `tailscale: true`: a ready line without `tailnet` means a CLI too old for it. */
   tailscaleAsked?: boolean
+  /**
+   * The review loop: the person ended this review (its decision is Claude's)
+   * and its server stays up while its tab may reopen it (`reopenable` on the
+   * record). Watched still, for the bridge and its next decision, but no
+   * longer open: not in `list` or the status line. A `reopen` send opens it
+   * again; its server stopping is the quiet end.
+   */
+  ended?: boolean
 }
 
 /** What the mod says when a tool `tailscale` launch came up late from a CLI too old for it. */
@@ -714,7 +723,7 @@ export class PlannotatorMod {
     )
     // A decision waiting for Claude to go idle keeps its record: if this
     // process quits first, the next restore finds and reports it.
-    const mine: LaunchRecord[] = [...[...this.launches.values()].map(recordOf), ...this.awaitingIdle.values()]
+    const mine: LaunchRecord[] = [...[...this.launches.values()].map(recordOf), ...[...this.awaitingIdle.values()].filter((record) => !this.launches.has(record.id))]
     await this.host.storeSet(STORE_LAUNCHES, [...others, ...mine])
   }
 
@@ -1098,6 +1107,12 @@ export class PlannotatorMod {
     })
     this.delivering = turn.catch(() => undefined)
     this.host.debug(`send ${command.sendId} for ${launch.id}: round ${command.round} (${command.mode})`)
+    if (command.mode === 'reopen' && launch.ended) {
+      // The person took the review up again: it is open, in `list` and the status line.
+      launch.ended = false
+      await this.persist()
+      this.refreshStatus()
+    }
     await turn
   }
 
@@ -1134,7 +1149,7 @@ export class PlannotatorMod {
 
   /** The reviews this Claude session opened that are still open (not settling, not closed by Claude). */
   private openLaunches(): LiveLaunch[] {
-    return [...this.launches.values()].filter((launch) => !launch.settling && !launch.closedByAgent)
+    return [...this.launches.values()].filter((launch) => !launch.settling && !launch.closedByAgent && !launch.ended)
   }
 
   private hostHeaders(launch: LiveLaunch): Record<string, string> {
@@ -1574,6 +1589,11 @@ export class PlannotatorMod {
     // Started from the timer, never from inside a hook: the loop outlives any one dispatch.
     if (launch.port && !launch.bridge && !launch.bridgeOff && (await this.host.now()) >= launch.bridgeRetryAt) this.startBridge(launch)
     const resultPath = fileIn(launch.dir, 'result')
+    // An ended review's server stopped with no new decision: its tab can no longer reopen it. Nothing to say.
+    if (launch.ended && !(await this.host.exists(resultPath)) && (await this.host.exists(fileIn(launch.dir, 'exit')))) {
+      await this.endQuietly(launch)
+      return
+    }
     if (launch.closedByAgent) {
       // Only a record marked closedBy "agent" (or an exit with no decision) is
       // Claude's close. A record without it, or an older CLI that exited 0, is
@@ -1608,8 +1628,10 @@ export class PlannotatorMod {
     if (await this.host.exists(resultPath)) {
       const record = parseHostResult(await this.host.readFile(resultPath))
       if (record) {
+        // Before the claim: the bridge keeps polling while it is delivered, so the review stays reopenable.
+        if (this.reopens(record)) launch.ended = true
         if (!(await this.claimSettlement(launch))) return
-        this.host.debug(`result ${launch.id}: ${record.surface} ${record.decision}${record.noop ? ' (no-op)' : ''}`)
+        this.host.debug(`result ${launch.id}: ${record.surface} ${record.decision}${record.noop ? ' (no-op)' : ''}${launch.ended ? ' (reopenable)' : ''}`)
         // Claude closed it from another process on this session: nothing to deliver.
         if (record.closedBy === 'agent') {
           await this.finishAgentClose(launch, record)
@@ -1662,6 +1684,10 @@ export class PlannotatorMod {
       if (!(await this.claimSettlement(launch))) return
       if (launch.closedByAgent) {
         await this.finishAgentClose(launch, null)
+        return
+      }
+      if (launch.ended) {
+        await this.endQuietly(launch)
         return
       }
       this.host.log(`The review server for ${launch.subject} is no longer running. Your draft is saved.`)
@@ -1772,7 +1798,10 @@ export class PlannotatorMod {
     }
     const stored = recordOf(launch)
     this.awaitingIdle.set(launch.id, stored)
-    await this.forget(launch)
+    // The review loop: a review its tab may reopen stays watched (its bridge, its next decision).
+    const reopenable = launch.ended === true && this.reopens(record)
+    if (reopenable) this.refreshStatus()
+    else await this.forget(launch)
     await this.host
       .writeFile(fileIn(launch.dir, 'watcher'), JSON.stringify({ owner: this.instanceId, at: await this.host.now(), touchedAt: 0 }))
       .catch(() => undefined)
@@ -1800,12 +1829,33 @@ export class PlannotatorMod {
     // `$.prompt.submit` resolves once Claude was idle and took the turn: a long
     // turn means a long wait, which this process may not survive (quit, crash).
     await this.delivering
+    if (reopenable) {
+      // Ready for its next decision: the record and the claim go, so the next one is claimed afresh.
+      await this.host.run(rearmArgv(launch.dir), { timeoutMs: 5_000 }).catch(() => undefined)
+      this.awaitingIdle.delete(launch.id)
+      launch.settling = false
+      await this.persist()
+      return
+    }
     await this.markDelivered(launch.dir)
     this.awaitingIdle.delete(launch.id)
     await this.persist()
     this.stopTimerIfIdle()
     // The launch's copies of the plan/message and feedback are not kept once
     // delivered (feedback.md stays: Claude reads it after this turn).
+    await this.host.run(cleanupArgv(launch.dir), { timeoutMs: 5_000 }).catch(() => undefined)
+  }
+
+  /** A decision this mod keeps watching the review after (the review loop's reopen; its server says `reopenable`). */
+  private reopens(record: HostResultRecord): boolean {
+    return record.reopenable === true && this.session.reviewLoop !== undefined && record.closedBy === undefined
+  }
+
+  /** An ended review that can no longer be reopened: forgotten, its launch files gone, nothing said. */
+  private async endQuietly(launch: LiveLaunch): Promise<void> {
+    if (!(await this.claimSettlement(launch))) return
+    this.host.debug(`launch ${launch.id}: ended, its server stopped`)
+    await this.forget(launch)
     await this.host.run(cleanupArgv(launch.dir), { timeoutMs: 5_000 }).catch(() => undefined)
   }
 
@@ -1828,7 +1878,7 @@ export class PlannotatorMod {
       token: launch.bridgeToken,
       turns: this.turns,
       isLive: () =>
-        !this.disposed && this.launches.get(launch.id) === launch && !launch.settling && !launch.closedByAgent && launch.leader,
+        !this.disposed && this.launches.get(launch.id) === launch && (!launch.settling || launch.ended === true) && !launch.closedByAgent && launch.leader,
       // The review loop: this server's sends become turns of this session.
       ...(reviewLoop
         ? { sends: { toolReply: reviewLoop.toolReply, deliver: (command: BridgeSendCommand) => this.deliverSend(launch, command), states: (launch.sendStates ??= new Map()) } }

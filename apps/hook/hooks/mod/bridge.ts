@@ -85,7 +85,8 @@ export interface BridgeSendCommand {
   type: 'send'
   sendId: string
   text: string
-  mode: 'now' | 'round'
+  /** `reopen`: the person reopened the review they had ended (the line tells Claude it goes on). */
+  mode: 'now' | 'round' | 'reopen'
   round: number
   comments: number
 }
@@ -109,6 +110,8 @@ type BridgeEvent =
 /** What this client says it takes on its polls (`features`). */
 export const BRIDGE_SEND_FEATURE = 'send'
 export const BRIDGE_TOOL_REPLY_FEATURE = 'tool_reply'
+/** This client keeps watching a review the person ended, which may then be reopened (a `reopen` send, then its next decision). */
+export const BRIDGE_REOPEN_FEATURE = 'reopen'
 
 export interface BridgeOptions {
   host: Host
@@ -390,7 +393,7 @@ export function createBridge(options: BridgeOptions): BridgeHandle {
             status,
             modes: { turn: true, transient: false },
             waitMs: pollWaitFor(turns),
-            ...(options.sends ? { features: [BRIDGE_SEND_FEATURE, ...(options.sends.toolReply() ? [BRIDGE_TOOL_REPLY_FEATURE] : [])] } : {}),
+            ...(options.sends ? { features: [BRIDGE_SEND_FEATURE, BRIDGE_REOPEN_FEATURE, ...(options.sends.toolReply() ? [BRIDGE_TOOL_REPLY_FEATURE] : [])] } : {}),
           }),
         })
       } catch {

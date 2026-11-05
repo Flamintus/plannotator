@@ -509,7 +509,7 @@ in this repo; what matters is written here.)
 (`resolveReviewLoopEnabled` in `enabled.ts`, mirroring `resolveExperimental`;
 read once, like the tool switch), the mod carries a screen's rounds (server
 side: "The review loop on the screens" in `server-and-storage.md`):
-- Each review's bridge polls with `features: ["send"]`, plus `"tool_reply"`
+- Each review's bridge polls with `features: ["send", "reopen"]`, plus `"tool_reply"`
   once the `plannotator` tool is registered, so the server hands it the
   person's sends (`send` commands). Each is acknowledged at once
   (`received`), submitted as one plugin turn in order with the decisions
@@ -531,6 +531,18 @@ side: "The review loop on the screens" in `server-and-storage.md`):
   the decision's `feedback.md`. A plan review's send ends with
   `PLAN_ROUND_NEXT_STEP`: once replied, revise the plan and call
   ExitPlanMode again, which arrives as a revision in the same review.
+- A decision whose record says `reopenable: true` (an `annotate` or `last`
+  review ended under the loop, whose server stays up so its tab may reopen
+  it) is delivered as any other, but the launch is kept: marked `ended`
+  (stored) before the claim, so its bridge goes on polling while the turn
+  waits for Claude, then `rearmArgv` removes `result.json` and the
+  `settled/` claim, so the review's next decision is claimed afresh. An
+  ended launch is out of `list` and the status line. A send of mode
+  `reopen` (the person reopened it) becomes one line headed "Reopened"
+  (`PLANNOTATOR_OUTCOME_REOPENED`, no plan step) and opens the launch again;
+  an `exit` with no new decision, or a dead pid, while ended, forgets it and
+  cleans its files up without a word (`endQuietly`). `isRoundWakeText` counts
+  the reopen line as a round's wake.
 - The tool is registered with `plannotatorToolLoopDescription` /
   `plannotatorToolLoopInputSchema` over the tailscale variant: `reply {
   session, replies: [{ id, text }] }` and `threads { session }`, parsed first

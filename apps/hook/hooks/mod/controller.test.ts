@@ -1779,10 +1779,63 @@ describe('the review loop: reply, threads, and last\'s next messages', () => {
       expect(heading).toContain(`(${id}`)
       expect(heading).toContain('— Round 1 done · 2 comments.')
       expect(host.submits[0]!.includes('call ExitPlanMode again')).toBe(kind === 'plan')
-      expect((polls[0] as { features?: string[] }).features).toEqual(['send', 'tool_reply'])
+      expect((polls[0] as { features?: string[] }).features).toEqual(['send', 'reopen', 'tool_reply'])
       expect(events).toContainEqual({ type: 'send', sendId: `snd_${'0'.repeat(26)}`, state: 'delivered' })
       polls = []
     }
+  })
+
+  // The owner's report (second bench, R11): after Done the page came back, but its server had stopped.
+  test('a decision its tab may reopen is delivered and the review stays watched: a reopen opens it again, its next decision arrives, its server stopping says nothing', async () => {
+    const host = fakeHost()
+    serveOnLaunch(host)
+    let reopenSend: unknown = null
+    const events: unknown[] = []
+    host.onFetch = (url, body) => {
+      if (url.endsWith('/api/ai/bridge/poll')) {
+        const commands = reopenSend ? [reopenSend] : []
+        reopenSend = null
+        return { status: 200, ok: true, text: JSON.stringify({ commands }) }
+      }
+      if (url.endsWith('/api/ai/bridge/event')) events.push(body)
+      return { status: 404, ok: false, text: '' }
+    }
+    const mod = new PlannotatorMod(host, LOOP_SESSION)
+    await mod.runCommand('annotate', 'a.md')
+    const [call] = launches(host)
+    const dir = launchDirOf(call!)
+    for (let tick = 0; tick < 3; tick += 1) await host.tick()
+
+    decide(host, call!, { surface: 'annotate', decision: 'annotated', message: '# Markdown Annotations\n\nfix it', noop: false, annotationCount: 1, reopenable: true })
+    for (let tick = 0; tick < 3 && host.submits.length === 0; tick += 1) await host.tick()
+    expect(host.submits).toHaveLength(1)
+    expect(host.submits[0]).toStartWith('Plannotator: a.md (pn-ababab) — Feedback · 1 comment.')
+    // Ready for the next decision; no longer open (not in the status line), but still watched.
+    expect(host.files.has(`${dir}/result.json`)).toBe(false)
+    expect(host.files.has(`${dir}/settled/by`)).toBe(false)
+    expect(host.files.has(`${dir}/stdin`)).toBe(true)
+    expect(host.statuses.at(-1)).toBeUndefined()
+
+    // The person reopens it: one line, headed "Reopened"; it is open again.
+    reopenSend = { type: 'send', sendId: 'reopen-1', text: 'The person reopened this review after ending it.', mode: 'reopen', round: 2, comments: 0 }
+    for (let tick = 0; tick < 5 && host.submits.length === 1; tick += 1) await host.tick()
+    expect(host.submits[1]).toBe('Plannotator: a.md (pn-ababab) — Reopened. The person reopened this review after ending it.')
+    expect(events).toContainEqual({ type: 'send', sendId: 'reopen-1', state: 'delivered' })
+    expect(host.statuses.at(-1)).toBe('a.md · waiting for you')
+
+    // Its next decision comes in the same file and is delivered as the first was.
+    decide(host, call!, { surface: 'annotate', decision: 'annotated', message: '', noop: true, annotationCount: 0, reopenable: true })
+    for (let tick = 0; tick < 3; tick += 1) await host.tick()
+    expect(host.logs.some((line) => line.includes('a.md closed with no annotations'))).toBe(true)
+    expect(host.files.has(`${dir}/result.json`)).toBe(false)
+
+    // Its server stops (no page, or no host, for the grace): forgotten, its files gone, nothing said.
+    const logged = host.logs.length
+    host.files.set(`${dir}/exit`, '0')
+    for (let tick = 0; tick < 3; tick += 1) await host.tick()
+    expect(host.submits).toHaveLength(2)
+    expect(host.logs).toHaveLength(logged)
+    expect(host.runs.some((run) => run.argv[3] === 'plannotator-cleanup' && run.argv[4] === dir)).toBe(true)
   })
 
   test('a code review has no comment threads: reply is refused without asking its server', async () => {

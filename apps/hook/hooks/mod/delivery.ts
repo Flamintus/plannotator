@@ -31,6 +31,11 @@ export interface HostResultRecord {
    * Absent from a CLI older than the field and for annotate-last.
    */
   target?: string | string[]
+  /**
+   * The review loop: the review stays open in its tab after this decision and
+   * the person may reopen it; its next decision comes in the same file.
+   */
+  reopenable?: true
 }
 
 /** A well-formed `target`, or undefined (a malformed one is dropped, never trusted). */
@@ -56,6 +61,9 @@ export const PLAN_APPROVAL_NEXT_STEP =
 export const PLAN_ROUND_NEXT_STEP =
   'Before you end your turn, once you have replied: if they asked for changes, revise the plan and call ExitPlanMode again: the new version opens in the same review. Stay in plan mode.'
 
+/** How a send of mode `reopen` is headed: the person reopened the review they had ended. */
+export const PLANNOTATOR_OUTCOME_REOPENED = 'Reopened'
+
 /**
  * The turn a send of the review loop becomes (a screen's comments, `send` on
  * the session bridge): a round is not a message, so one line, headed like a
@@ -67,11 +75,12 @@ export const PLAN_ROUND_NEXT_STEP =
  * the launch's overflow file, which Claude is told to Read.
  */
 export function sendDeliveryFor(
-  send: { text: string; mode: 'now' | 'round'; round: number; comments: number },
+  send: { text: string; mode: 'now' | 'round' | 'reopen'; round: number; comments: number },
   context: { subject: string; sessionId?: string; overflowPath: string; plan: boolean; inlineLimitBytes?: number },
 ): { text: string; overflow?: { path: string; text: string } } {
-  const prefix = plannotatorDecisionHeading(context.subject, context.sessionId, plannotatorSendOutcome(send.mode, send.round, send.comments))
-  const nextStep = context.plan ? `\n\n${PLAN_ROUND_NEXT_STEP}` : ''
+  const outcome = send.mode === 'reopen' ? PLANNOTATOR_OUTCOME_REOPENED : plannotatorSendOutcome(send.mode, send.round, send.comments)
+  const prefix = plannotatorDecisionHeading(context.subject, context.sessionId, outcome)
+  const nextStep = context.plan && send.mode !== 'reopen' ? `\n\n${PLAN_ROUND_NEXT_STEP}` : ''
   const body = send.text.trim()
   if (byteLength(body) <= (context.inlineLimitBytes ?? INLINE_LIMIT_BYTES)) return { text: `${prefix}${body.includes('\n') ? '\n\n' : ' '}${body}${nextStep}` }
   return {

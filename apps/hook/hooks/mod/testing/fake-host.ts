@@ -80,6 +80,11 @@ export function fakeHost(): FakeHost {
         if (!host.files.has(`${dir}/pid`)) host.files.set(`${dir}/pid`, '4242\n')
       } else if (argv[3] === 'plannotator-rm') {
         host.files.delete(argv[4] as string)
+      } else if (argv[3] === 'plannotator-rearm') {
+        // rm the record, then the claim (a reopenable review's next decision is claimed afresh).
+        const dir = argv[4] as string
+        host.files.delete(`${dir}/result.json`)
+        for (const path of [...host.files.keys()]) if (path === `${dir}/settled` || path.startsWith(`${dir}/settled/`)) host.files.delete(path)
       } else if (argv[3] === 'plannotator-claim') {
         // mkdir "$dir/settled" (one winner), naming the claimant; a claimant's own claim wins again.
         const dir = argv[4] as string
