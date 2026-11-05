@@ -299,8 +299,15 @@ describe.skipIf(!hasDom)('SentThreads', () => {
     expect(box('c1')!.querySelector('[data-sent-passage-box]')).toBeNull();
   });
 
-  test('a comment on the whole document (no passage) says so at its head and on its folded line', async () => {
+  test('a comment on the whole document (no passage) says so at its head and on its folded line; one on part of an image does not', async () => {
+    const region = record('i1', 'Crop this.', '');
+    await render([region], { ...TREE, replies: new Map(), subThreads: new Map(), openBelow: new Set() });
+    expect(box('i1')!.querySelector('.ib-sentb-general')).toBeNull();
+    await act(async () => root!.unmount());
+    root = null;
+    host?.remove();
     const general = record('g1', 'Split this plan in two.', '');
+    general.annotation = { ...general.annotation, type: 'GLOBAL_COMMENT' };
     await render([general], { ...TREE, replies: new Map(), subThreads: new Map(), openBelow: new Set() });
     expect(box('g1')!.querySelector('.ib-sentb-head .ib-sentb-general')?.textContent).toBe('General comment');
     await act(async () => root!.unmount());

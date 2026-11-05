@@ -85,7 +85,7 @@ export function indexReviewLoop(view: ReviewThreadView | null | undefined): Revi
   return { elements, sent, count: anySent ? { round: view.round, open } : null };
 }
 
-/** The sent comment threads still open (comments and sub-threads, at any depth), by id, oldest first. */
+/** The sent comment threads still open (comments and sub-threads, at any depth), by id, in the view's order. */
 export function reviewLoopOpenThreads(index: ReviewLoopIndex): string[] {
   const open: string[] = [];
   for (const element of index.elements.values()) {
@@ -103,11 +103,10 @@ export function reviewLoopOpenThreads(index: ReviewLoopIndex): string[] {
 export function reviewLoopEndState(index: ReviewLoopIndex, ending: 'approved' | 'done'): string | null {
   if (index.count === null) return null;
   const open = reviewLoopOpenThreads(index);
-  const lead = ending === 'approved' ? 'Review approved' : 'Review done';
-  const rest = ending === 'done' ? ' Nothing more is asked.' : '';
-  if (open.length === 0) return `${lead}: every comment thread is resolved.${rest}`;
-  const threads = open.length === 1 ? '1 comment thread stays open' : `${open.length} comment threads stay open`;
-  return `${lead}; ${threads}: ${open.join(', ')}.${rest}`;
+  const threads = open.length === 0 ? 'every comment thread is resolved' : `${open.length === 1 ? '1 comment thread stays' : `${open.length} comment threads stay`} open: ${open.join(', ')}`;
+  if (ending === 'approved') return open.length === 0 ? `Review approved: ${threads}.` : `Review approved; ${threads}.`;
+  // Done reads as feedback to the agent's host: say plainly there is nothing to do.
+  return `The person ended the review (Done): ${threads}. This is not a request: there is nothing to change or answer.`;
 }
 
 /** An annotation not yet sent: the page's own, minus what the loop says went. The same list when nothing went (the loop off). */
