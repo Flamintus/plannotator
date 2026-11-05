@@ -8,7 +8,9 @@ import {
   LEGACY_REVIEW_APPROVED_WITH_NOTES_HEADING,
   legacyResult,
   PLAN_APPROVAL_NEXT_STEP,
+  PLAN_ROUND_NEXT_STEP,
   parseHostResult,
+  sendDeliveryFor,
   type HostResultRecord,
 } from './delivery'
 import { splitShellWords } from './shell-words'
@@ -185,5 +187,27 @@ describe('splitShellWords', () => {
     expect(splitShellWords(`"my file.md" 'it''s' a\\ b`)).toEqual(['my file.md', 'its', 'a b'])
     expect(splitShellWords('"say \\"hi\\"" $HOME *.md')).toEqual(['say "hi"', '$HOME', '*.md'])
     expect(splitShellWords('--base "feature one"')).toEqual(['--base', 'feature one'])
+  })
+})
+
+// The review loop: a screen's send becomes a turn headed like a decision.
+describe('sendDeliveryFor', () => {
+  const send = { text: '# Comments on your work\n\nThe person finished round 2. Answer under each id.', mode: 'round' as const, round: 2, comments: 3 }
+
+  test('headed with the review, its round and its target; a plan review says how the revised plan comes back', () => {
+    const annotate = sendDeliveryFor(send, { subject: 'notes.md', sessionId: 'pn-3f2a9c', target: '/repo/notes.md', overflowPath: '/l/feedback.md', plan: false })
+    const [heading, target] = annotate.text.split('\n')
+    expect(heading).toBe('Plannotator: notes.md (pn-3f2a9c) — Round 2 done · 3 comments.')
+    expect(target).toBe('Target: /repo/notes.md')
+    expect(annotate.text).toContain(send.text)
+    expect(annotate.text).not.toContain(PLAN_ROUND_NEXT_STEP)
+    expect(sendDeliveryFor(send, { subject: 'Plan', sessionId: 'pn-3f2a9c', overflowPath: '/l/feedback.md', plan: true }).text.endsWith(PLAN_ROUND_NEXT_STEP)).toBe(true)
+  })
+
+  test('a send past the inline limit goes to the overflow file, which Claude is told to read', () => {
+    const big = sendDeliveryFor({ ...send, text: 'x'.repeat(200) }, { subject: 'notes.md', overflowPath: '/l/feedback.md', plan: false, inlineLimitBytes: 100 })
+    expect(big.overflow).toEqual({ path: '/l/feedback.md', text: `${'x'.repeat(200)}\n` })
+    expect(big.text).toContain('/l/feedback.md')
+    expect(big.text).not.toContain('x'.repeat(200))
   })
 })

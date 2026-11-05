@@ -83,7 +83,7 @@
  */
 
 import { PlannotatorMod } from './controller'
-import { resolveAgentToolEnabled, resolveClaudeModEnabled, resolveInboxReminderCustom, resolveInboxReminderEnabled, resolveInboxToolEnabled } from './enabled'
+import { resolveAgentToolEnabled, resolveClaudeModEnabled, resolveInboxReminderCustom, resolveInboxReminderEnabled, resolveInboxToolEnabled, resolveReviewLoopEnabled } from './enabled'
 import type { Host, LoadedPluginInfo } from './host'
 import {
   claudeTranscriptPaths,
@@ -110,7 +110,13 @@ import { INBOX_DEFAULT_TOOLS } from './inbox-default-tools'
 import { COMMANDS, debugAppendArgv, INBOX_COMMAND, isModCommand, resolveDataDir, waitArgv } from './launch'
 import { PLAN_TOOL } from './plan'
 import { answerShellCall, SHELL_TOOL, shellTakeOver } from './take-over'
-import { PLANNOTATOR_TOOL_NAME, PLANNOTATOR_TOOL_TAILSCALE_DESCRIPTION, PLANNOTATOR_TOOL_TAILSCALE_INPUT_SCHEMA } from './tool'
+import {
+  PLANNOTATOR_TOOL_NAME,
+  PLANNOTATOR_TOOL_TAILSCALE_DESCRIPTION,
+  PLANNOTATOR_TOOL_TAILSCALE_INPUT_SCHEMA,
+  plannotatorToolLoopDescription,
+  plannotatorToolLoopInputSchema,
+} from './tool'
 
 // Minimal local types: the engine's declarations are written by `/plugin-types`
 // and not vendored here.
@@ -277,6 +283,8 @@ interface Allowed {
   inboxReminder: boolean
   /** The person's own reminder text (config.json `prompts.inbox`), or null: the built-in line. */
   inboxReminderCustom: string | null
+  /** The review loop of the screens (experimental "persistent-comments", enabled.ts). */
+  reviewLoop: boolean
 }
 
 // One plugin instance per Claude Code process.
@@ -529,6 +537,8 @@ async function currentMod($: Engine): Promise<PlannotatorMod | null> {
       // and where a plan's history chain is also looked for (#2197).
       root: async () => String(await $.session.root()),
       label: async () => (await title.read().catch(() => null)) ?? sessionNameOf($, String(sessionId)),
+      // The review loop: the agent answers with the tool's `reply` once it is registered.
+      ...(settings.reviewLoop ? { reviewLoop: { toolReply: () => toolName !== null } } : {}),
       ...(inboxTools
         ? {
             inboxTools,
@@ -584,6 +594,7 @@ async function resolveAllowed($: Engine, e: { isInteractive?: unknown }): Promis
     inboxTool: resolveInboxToolEnabled(await $.env.get('PLANNOTATOR_INBOX_TOOL'), configText),
     inboxReminder: resolveInboxReminderEnabled(await $.env.get('PLANNOTATOR_INBOX_TOOL'), configText),
     inboxReminderCustom: resolveInboxReminderCustom(configText),
+    reviewLoop: resolveReviewLoopEnabled(await $.env.get('PLANNOTATOR_EXPERIMENTAL'), configText),
   }
 }
 
@@ -610,13 +621,14 @@ async function registerCommands($: Engine): Promise<void> {
 let toolName: string | null = null
 
 /** Register Claude's `plannotator` tool (tool.ts): agent-initiated opens get the slash commands' launch. */
-async function registerTool($: Engine): Promise<void> {
+async function registerTool($: Engine, reviewLoop: boolean): Promise<void> {
   try {
     const registered = await $.tool.register({
       // The tailscale variant: the mod's CLI launch can publish over the tailnet (#2166).
+      // With the review loop, also `reply` and `threads`: the mod carries a screen's sends to this session.
       name: PLANNOTATOR_TOOL_NAME,
-      description: PLANNOTATOR_TOOL_TAILSCALE_DESCRIPTION,
-      inputSchema: PLANNOTATOR_TOOL_TAILSCALE_INPUT_SCHEMA,
+      description: reviewLoop ? plannotatorToolLoopDescription(PLANNOTATOR_TOOL_TAILSCALE_DESCRIPTION) : PLANNOTATOR_TOOL_TAILSCALE_DESCRIPTION,
+      inputSchema: reviewLoop ? plannotatorToolLoopInputSchema(PLANNOTATOR_TOOL_TAILSCALE_INPUT_SCHEMA) : PLANNOTATOR_TOOL_TAILSCALE_INPUT_SCHEMA,
     })
     toolName = registered && typeof registered.tool === 'string' ? registered.tool : null
   } catch (error) {
@@ -680,7 +692,7 @@ export function register(on: On) {
     await registerCommands($)
     // Decided once per process, here: the tool list is part of Claude's
     // prompt, so it never changes under a running session.
-    if (allowed.agentTool) await registerTool($)
+    if (allowed.agentTool) await registerTool($, allowed.reviewLoop)
     return result
   })
 

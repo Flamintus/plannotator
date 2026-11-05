@@ -19,6 +19,12 @@
  * started, which that plugin may be waiting on, and any turn once the launch is
  * not live here. Plan review does not block the session under the mod, so the
  * status is never `blocked`.
+ *
+ * The review loop (experimental "persistent-comments"): with `sends`, the
+ * polls list `send` (and `tool_reply` while the `plannotator` tool has its
+ * `reply` action), and the server hands over the person's comments as a
+ * `send` command. It is acknowledged at once (`received`), put in the session
+ * as a turn by `sends.deliver`, then reported `delivered` or `failed`.
  */
 
 import type { Host } from './host'
@@ -74,10 +80,21 @@ export function takenOverFallback(streamed: string, message: string | undefined)
   return { delta, answer: `${streamed}${delta}` }
 }
 
+/** A send of the review loop: the person's comments, composed for Claude by the server. */
+export interface BridgeSendCommand {
+  type: 'send'
+  sendId: string
+  text: string
+  mode: 'now' | 'round'
+  round: number
+  comments: number
+}
+
 type BridgeCommand =
   | { type: 'ask'; askId: string; text: string; mode: string }
   | { type: 'cancel'; askId: string }
   | { type: 'interrupt'; interruptId: string }
+  | BridgeSendCommand
 
 type BridgeEvent =
   | { type: 'status'; status: 'ready' | 'busy' | 'blocked' | 'gone' }
@@ -87,6 +104,11 @@ type BridgeEvent =
   | { type: 'done'; askId: string; answer: string }
   | { type: 'error'; askId: string; code: string; message?: string }
   | { type: 'interrupted'; interruptId: string; ok: boolean; message?: string }
+  | { type: 'send'; sendId: string; state: 'received' | 'delivered' | 'failed'; message?: string }
+
+/** What this client says it takes on its polls (`features`). */
+export const BRIDGE_SEND_FEATURE = 'send'
+export const BRIDGE_TOOL_REPLY_FEATURE = 'tool_reply'
 
 export interface BridgeOptions {
   host: Host
@@ -97,6 +119,16 @@ export interface BridgeOptions {
   /** False once the review settled or the session ended: the loop stops. */
   isLive: () => boolean
   maxFailures?: number
+  /**
+   * The review loop: takes the server's sends and puts each in the session
+   * (resolves once the turn is in). Absent: the polls say nothing, and the
+   * server sends nothing.
+   */
+  sends?: {
+    /** Claude answers with the `plannotator` tool's `reply` action (read at each poll). */
+    toolReply: () => boolean
+    deliver: (command: BridgeSendCommand) => Promise<void>
+  }
 }
 
 export function bridgeBaseUrl(port: number): string {
@@ -153,6 +185,8 @@ export function createBridge(options: BridgeOptions): BridgeHandle {
   const maxFailures = options.maxFailures ?? 6
   const seenAsks = new Set<string>()
   const seenInterrupts = new Set<string>()
+  /** Each send taken, and what became of it: a command sent again is answered with its state, never put in twice. */
+  const sends = new Map<string, 'received' | 'delivered' | 'failed'>()
   let outbox: BridgeEvent[] = []
   let sending: Promise<void> = Promise.resolve()
   let lastStatus: 'ready' | 'busy' = turns.busy ? 'busy' : 'ready'
@@ -273,8 +307,40 @@ export function createBridge(options: BridgeOptions): BridgeHandle {
     }
   }
 
+  const runSend = (command: BridgeSendCommand) => {
+    const { sendId } = command
+    if (typeof sendId !== 'string' || !sendId) return
+    const known = sends.get(sendId)
+    if (known) {
+      // Our acknowledgement was lost: say again what became of it.
+      emit({ type: 'send', sendId, state: known })
+      return
+    }
+    sends.set(sendId, 'received')
+    emit({ type: 'send', sendId, state: 'received' })
+    // Past the session's end or a lease move, the turn would land in whatever conversation the process goes on with.
+    if (!options.sends || !options.isLive() || typeof command.text !== 'string' || !command.text.trim()) {
+      sends.set(sendId, 'failed')
+      emit({ type: 'send', sendId, state: 'failed', message: 'The session is no longer available.' })
+      return
+    }
+    options.sends.deliver(command).then(
+      () => {
+        sends.set(sendId, 'delivered')
+        emit({ type: 'send', sendId, state: 'delivered' })
+      },
+      (error: unknown) => {
+        sends.set(sendId, 'failed')
+        emit({ type: 'send', sendId, state: 'failed', message: error instanceof Error ? error.message : String(error) })
+      },
+    )
+  }
+
   const handle = (command: BridgeCommand) => {
     switch (command.type) {
+      case 'send':
+        runSend(command)
+        break
       case 'ask':
         runAsk(command)
         break
@@ -314,7 +380,12 @@ export function createBridge(options: BridgeOptions): BridgeHandle {
         response = await host.fetch(`${base}${BRIDGE_POLL_PATH}`, {
           method: 'POST',
           headers,
-          body: JSON.stringify({ status, modes: { turn: true, transient: false }, waitMs: pollWaitFor(turns) }),
+          body: JSON.stringify({
+            status,
+            modes: { turn: true, transient: false },
+            waitMs: pollWaitFor(turns),
+            ...(options.sends ? { features: [BRIDGE_SEND_FEATURE, ...(options.sends.toolReply() ? [BRIDGE_TOOL_REPLY_FEATURE] : [])] } : {}),
+          }),
         })
       } catch {
         failures += 1

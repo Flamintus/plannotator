@@ -391,3 +391,68 @@ describe('how a bridge loop ends', () => {
     expect(await client(host, () => live).run()).toEqual({ reason: 'ended', connected: true })
   })
 })
+
+// The review loop: a screen's sends, carried by the same bridge.
+describe('sends over the pull bridge', () => {
+  test('a client that takes sends says so, puts each in the session once, and reports it delivered', async () => {
+    live = true
+    server = createPullSessionBridge({ token: TOKEN, host: 'claude-code', modes: { turn: true, transient: false }, resendAfterMs: 20 })
+    const host = fakeHost()
+    wire(host, server)
+    const turns = new TurnTracker()
+    let release: () => void = () => {}
+    const delivering: string[] = []
+    const client = createBridge({
+      host,
+      baseUrl: 'http://127.0.0.1:4321',
+      token: TOKEN,
+      turns,
+      isLive: () => live,
+      sends: {
+        toolReply: () => true,
+        deliver: (command) => {
+          delivering.push(command.text)
+          // The turn waits for Claude to go idle: the server sends again meanwhile, and nothing is put in twice.
+          return new Promise<void>((resolve) => {
+            release = resolve
+          })
+        },
+      },
+    })
+    const running = client.run()
+    await until(() => server!.sends.ready)
+    expect(server.sends.toolReply).toBe(true)
+
+    const outcome: string[] = []
+    server.sends.deliver('snd_1', '# Comments on your work', { mode: 'round', round: 1, comments: 1 }, { delivered: () => outcome.push('delivered'), failed: (message) => outcome.push(`failed ${message}`) })
+    await until(() => delivering.length === 1)
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(delivering).toEqual(['# Comments on your work'])
+    expect(outcome).toEqual([])
+    release()
+    await until(() => outcome.length === 1)
+    expect(outcome).toEqual(['delivered'])
+
+    live = false
+    server.dispose()
+    await running
+  })
+
+  test('a client without the review loop takes no send: the server keeps it', async () => {
+    live = true
+    server = createPullSessionBridge({ token: TOKEN, host: 'claude-code', modes: { turn: true, transient: false } })
+    const host = fakeHost()
+    wire(host, server)
+    const client = createBridge({ host, baseUrl: 'http://127.0.0.1:4321', token: TOKEN, turns: new TurnTracker(), isLive: () => live })
+    const running = client.run()
+    await until(() => server!.bridge.status() === 'ready')
+    expect(server.sends.ready).toBe(false)
+    server.sends.deliver('snd_1', 'text', { mode: 'now', round: 1, comments: 1 }, { delivered: () => {}, failed: () => {} })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(host.submits).toEqual([])
+
+    live = false
+    server.dispose()
+    await running
+  })
+})

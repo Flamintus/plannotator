@@ -7,8 +7,8 @@
  * bun tests drive this class with a host made of memory.
  */
 
-import { BRIDGE_HOST, BRIDGE_MODES, bridgeBaseUrl, createBridge, type BridgeEnd, type BridgeHandle } from './bridge'
-import { deliveryFor, legacyResult, parseHostResult, type HostResultRecord, type SessionKind } from './delivery'
+import { BRIDGE_HOST, BRIDGE_MODES, bridgeBaseUrl, createBridge, type BridgeEnd, type BridgeHandle, type BridgeSendCommand } from './bridge'
+import { deliveryFor, legacyResult, parseHostResult, sendDeliveryFor, type HostResultRecord, type SessionKind } from './delivery'
 import type { Host, HttpResult } from './host'
 import { InboxLink, inboxSessionProjectEnvValue, sessionProjectFolder } from './inbox'
 import { inboxCommandBriefing, type InboxToolInfo } from './inbox-contract'
@@ -68,6 +68,10 @@ import {
   isOlderCliBundleRefusal,
   isOlderCliTailscaleRefusal,
   parsePlannotatorToolInput,
+  parsePlannotatorToolLoopInput,
+  plannotatorToolRepliedText,
+  PLANNOTATOR_TOOL_LOOP_UNAVAILABLE_TEXT,
+  type PlannotatorToolLoopInput,
   plannotatorDecisionSubject,
   plannotatorDistinctSubjects,
   plannotatorSameTarget,
@@ -149,6 +153,15 @@ export const HOST_STATUS_PATH = '/api/host/status'
 export const HOST_CLOSE_PATH = '/api/host/close'
 /** The code a current CLI's 404 carries while host control is off (packages/shared/host-control.ts). */
 export const HOST_CONTROL_DISABLED_CODE = 'host_control_disabled'
+/**
+ * The review loop's host paths and the code they answer while it is off for a
+ * review (copies of packages/shared/review-loop.ts; controller.test.ts keeps
+ * them equal).
+ */
+export const HOST_THREADS_PATH = '/api/host/threads'
+export const HOST_THREADS_REPLY_PATH = '/api/host/threads/reply'
+export const HOST_MESSAGES_PATH = '/api/host/messages'
+export const REVIEW_LOOP_OFF_CODE = 'review_loop_off'
 
 function jsonObjectOf(text: string): Record<string, unknown> | null {
   try {
@@ -251,6 +264,7 @@ function recordOf(launch: LiveLaunch): LaunchRecord {
     leaseTick: _leaseTick,
     touchedAt: _touchedAt,
     checking: _checking,
+    messagePushed: _messagePushed,
     ...record
   } = launch
   return record
@@ -284,6 +298,8 @@ interface LiveLaunch extends LaunchRecord {
    * recent touch wins the watcher lease.
    */
   touchedAt: number
+  /** `last` under the review loop: the newest message id its server was last handed (`/api/host/messages`). */
+  messagePushed?: string
 }
 
 interface WatcherLease {
@@ -321,6 +337,14 @@ export interface SessionInfo {
   root?: () => Promise<string>
   /** The name the person gave the session, read for each Inbox poll (`InboxLinkOptions.label`). */
   label?: () => string | Promise<string>
+  /**
+   * The review loop of the screens (experimental "persistent-comments"): the
+   * bridges take a screen's sends and put them in the session, the tool
+   * answers `reply` and `threads`, and an open `last` screen gets the next
+   * messages. `toolReply`: the `plannotator` tool, with those actions, is
+   * registered. Absent: off.
+   */
+  reviewLoop?: { toolReply: () => boolean }
 }
 
 export class PlannotatorMod {
@@ -925,6 +949,9 @@ export class PlannotatorMod {
   async runTool(input: unknown): Promise<{ text: string } | { deny: string }> {
     await this.adoptNewStoredLaunches()
     await this.touchLaunches()
+    // The review loop's `reply` and `threads`, registered only with it on.
+    const loop = this.session.reviewLoop ? parsePlannotatorToolLoopInput(input) : null
+    if (loop) return loop.ok ? this.runLoopAction(loop.input) : { deny: loop.error }
     // The mod's launch can publish over the tailnet, so `tailscale` is accepted (#2166).
     const parsed = parsePlannotatorToolInput(input, { tailscale: true })
     if (!parsed.ok) return { deny: parsed.error }
@@ -998,6 +1025,100 @@ export class PlannotatorMod {
     await this.forget(launch)
     await this.host.run(cleanupArgv(launch.dir), { timeoutMs: 5_000 }).catch(() => undefined)
     this.host.debug(`abandoned ${launch.id}: the CLI cannot serve the tailnet session the tool asked for`)
+  }
+
+  // --- The review loop: Claude's replies and reads (reply, threads) -------
+
+  /**
+   * The tool's `reply` and `threads` on a review this session opened: its
+   * server's host paths (`/api/host/threads/reply`, `/api/host/threads`,
+   * packages/shared/review-loop.ts) write the replies under the person's
+   * comments and read the threads, never a resolution.
+   */
+  private async runLoopAction(call: PlannotatorToolLoopInput): Promise<{ text: string } | { deny: string }> {
+    const launch = this.openLaunches().find((candidate) => sessionIdOf(candidate) === call.session)
+    if (!launch) return { deny: plannotatorUnknownSessionText(call.session) }
+    if (!launch.port || !launch.bridgeToken) return { deny: `Plannotator is still opening ${call.session}; there is nothing to reply to yet.` }
+    const base = bridgeBaseUrl(launch.port)
+    let response: HttpResult
+    try {
+      response =
+        call.action === 'reply'
+          ? await this.host.fetch(`${base}${HOST_THREADS_REPLY_PATH}`, {
+              method: 'POST',
+              headers: { ...this.hostHeaders(launch), 'content-type': 'application/json' },
+              body: JSON.stringify({ replies: call.replies }),
+            })
+          : await this.host.fetch(`${base}${HOST_THREADS_PATH}`, { method: 'GET', headers: this.hostHeaders(launch) })
+    } catch (error) {
+      return { deny: `Plannotator did not answer for ${call.session} (${error instanceof Error ? error.message : String(error)}).` }
+    }
+    const body = jsonObjectOf(response.text)
+    if (response.ok && body) {
+      if (call.action === 'threads') return { text: `Session: ${call.session}\n${typeof body.text === 'string' ? body.text : ''}` }
+      const replies = Array.isArray(body.replies) ? (body.replies as { re?: unknown }[]) : []
+      const ids = [...new Set(replies.map((reply) => (typeof reply.re === 'string' ? reply.re : '')).filter(Boolean))]
+      return { text: plannotatorToolRepliedText(call.session, ids) }
+    }
+    // An older CLI answers an unknown /api path with a 404 that names no code (or its page).
+    if (!body || (response.status === 404 && typeof body.code !== 'string')) return { deny: PLANNOTATOR_TOOL_LOOP_UNAVAILABLE_TEXT }
+    if (body.code === REVIEW_LOOP_OFF_CODE) {
+      return { deny: `${call.session} has no comment threads: the person did not send its comments in rounds (the review loop is off for it). Answer in chat.` }
+    }
+    return { deny: typeof body.error === 'string' && body.error ? body.error : `Plannotator refused the call (HTTP ${response.status}).` }
+  }
+
+  // --- The review loop: a screen's sends, and last's next messages ---------
+
+  /**
+   * A send a screen's server handed over (the bridge's `send`): one plugin
+   * turn, in order with the decisions, headed with the review's id and round.
+   * Resolves once the turn is in the session.
+   */
+  private async deliverSend(launch: LiveLaunch, command: BridgeSendCommand): Promise<void> {
+    const delivery = sendDeliveryFor(command, {
+      subject: launch.subject,
+      sessionId: sessionIdOf(launch),
+      ...(launch.target !== undefined ? { target: launch.target } : {}),
+      overflowPath: fileIn(launch.dir, 'overflow'),
+      plan: launch.kind === 'plan',
+    })
+    const turn = this.delivering.then(async () => {
+      if (delivery.overflow) await this.host.writeFile(delivery.overflow.path, delivery.overflow.text)
+      await this.host.submit(delivery.text)
+    })
+    this.delivering = turn.catch(() => undefined)
+    this.host.debug(`send ${command.sendId} for ${launch.id}: round ${command.round} (${command.mode})`)
+    await turn
+  }
+
+  /**
+   * A main turn ended: each open `last` review this process watches gets the
+   * session's recent messages, the newest first, so the agent's answer joins
+   * its picker (`/api/host/messages`). Only when the newest changed; a
+   * server with the loop off refuses it, and nothing else happens.
+   */
+  private async pushLastMessages(): Promise<void> {
+    const launches = this.openLaunches().filter((launch) => launch.kind === 'last' && launch.port && launch.bridgeToken && launch.leader)
+    if (launches.length === 0) return
+    const picker = await pickerFile(recentAssistantTexts(await this.host.messages()), (value) => this.host.sha256(value))
+    const newest = picker.messages[0]?.messageId
+    if (!newest) return
+    for (const launch of launches) {
+      if (launch.messagePushed === newest) continue
+      try {
+        const response = await this.host.fetch(`${bridgeBaseUrl(launch.port!)}${HOST_MESSAGES_PATH}`, {
+          method: 'POST',
+          headers: { ...this.hostHeaders(launch), 'content-type': 'application/json' },
+          body: picker.json,
+        })
+        // Pushed, or refused for good (the loop off, an older CLI): not asked again for this message.
+        launch.messagePushed = newest
+        if (!response.ok) this.host.debug(`last messages for ${launch.id}: HTTP ${response.status}`)
+      } catch {
+        // The server did not answer: the next turn's end tries again.
+      }
+    }
   }
 
   // --- The agent's own sessions (list, close) ------------------------------
@@ -1690,6 +1811,7 @@ export class PlannotatorMod {
 
   private startBridge(launch: LiveLaunch): void {
     if (launch.bridge || !launch.port || !launch.bridgeToken) return
+    const reviewLoop = this.session.reviewLoop
     const bridge = createBridge({
       host: this.host,
       baseUrl: bridgeBaseUrl(launch.port),
@@ -1697,6 +1819,8 @@ export class PlannotatorMod {
       turns: this.turns,
       isLive: () =>
         !this.disposed && this.launches.get(launch.id) === launch && !launch.settling && !launch.closedByAgent && launch.leader,
+      // The review loop: this server's sends become turns of this session.
+      ...(reviewLoop ? { sends: { toolReply: reviewLoop.toolReply, deliver: (command: BridgeSendCommand) => this.deliverSend(launch, command) } } : {}),
     })
     launch.bridge = bridge
     this.host.debug(`bridge ${launch.id}: started`)
@@ -1787,6 +1911,8 @@ export class PlannotatorMod {
     this.turns.onTurnComplete(turnId, answer, aborted)
     this.inbox?.onMainTurnComplete(turnId)
     this.pushBridgeStatus()
+    // The review loop: the agent's answer joins an open `last` screen's picker.
+    if (this.session.reviewLoop && !aborted) void this.pushLastMessages().catch(() => undefined)
   }
 
   private pushBridgeStatus(): void {

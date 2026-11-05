@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import { AGENT_TOOL_DEFAULTS, INBOX_TOOL_DEFAULTS, resolveAgentTool, resolveClaudeCodeMod, resolveInboxReminder, resolveInboxTool } from '@plannotator/shared/config'
-import { AGENT_TOOL_DEFAULT, INBOX_TOOL_DEFAULT, resolveAgentToolEnabled, resolveClaudeModEnabled, resolveInboxReminderEnabled, resolveInboxToolEnabled } from './enabled'
+import { AGENT_TOOL_DEFAULTS, INBOX_TOOL_DEFAULTS, resolveAgentTool, resolveClaudeCodeMod, resolveExperimental, resolveInboxReminder, resolveInboxTool } from '@plannotator/shared/config'
+import { AGENT_TOOL_DEFAULT, INBOX_TOOL_DEFAULT, resolveAgentToolEnabled, resolveClaudeModEnabled, resolveInboxReminderEnabled, resolveInboxToolEnabled, resolveReviewLoopEnabled } from './enabled'
 
 // The mod cannot import packages/shared, so it mirrors resolveClaudeCodeMod.
 // The failure this guards: the two drift, and the CLI docs/settings say the
@@ -115,5 +115,24 @@ describe('inbox reminder switch', () => {
   test('never without the tool, whatever the reminder key says', () => {
     expect(resolveInboxReminderEnabled('0', '{"inboxReminder":true}')).toBe(false)
     expect(resolveInboxReminderEnabled(undefined, '{"inboxTool":false,"inboxReminder":true}')).toBe(false)
+  })
+})
+
+// The review loop's switch is the CLI's experimental "persistent-comments":
+// the failure this guards is the mod registering reply/threads (or carrying
+// sends) while the screens' servers read the switch as off, or the reverse.
+describe('review loop switch', () => {
+  test('the mod and packages/shared resolve every combination the same way', () => {
+    const envs = [undefined, '', 'persistent-comments', ' Persistent-Comments ', 'decision-mode', 'decision-mode,persistent-comments', '-persistent-comments', 'persistent-comments,-persistent-comments']
+    const values: unknown[] = [undefined, true, false, 'true', 'false', '1', '0', 'yes', 1, null]
+    for (const env of envs) {
+      for (const value of values) {
+        for (const config of [{}, { experimental: value === undefined ? {} : { persistentComments: value } }, { experimental: [] }, { experimental: 'on' }]) {
+          const shared = resolveExperimental(config as never, 'persistent-comments', env === undefined ? {} : { PLANNOTATOR_EXPERIMENTAL: env })
+          expect([env, config, resolveReviewLoopEnabled(env, JSON.stringify(config))]).toEqual([env, config, shared])
+        }
+      }
+    }
+    expect(resolveReviewLoopEnabled(undefined, '{ not json')).toBe(false)
   })
 })

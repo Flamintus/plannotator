@@ -178,3 +178,43 @@ export function resolveInboxReminderCustom(configText: string | null | undefined
     return null
   }
 }
+
+/**
+ * Whether the review loop of the screens is on (experimental
+ * "persistent-comments", packages/shared/review-loop.ts): the mod then
+ * carries a screen's sends to this session (the session bridge's `send`),
+ * registers the `plannotator` tool's `reply` and `threads` actions, and hands
+ * an open `last` screen the agent's next messages. On with:
+ *
+ *   PLANNOTATOR_EXPERIMENTAL=persistent-comments   (a comma list; `-persistent-comments` turns it off; wins over the config file)
+ *   { "experimental": { "persistentComments": true } }   (config.json in the data dir)
+ *
+ * Mirrors `resolveExperimental(config, "persistent-comments", env)` in
+ * packages/shared/config.ts (enabled.test.ts keeps them equal). Read once, at
+ * the first session.start, with the tool switch: the tool list never changes
+ * under a running session.
+ */
+export function resolveReviewLoopEnabled(experimentalEnv: string | undefined, configText: string | null | undefined): boolean {
+  let fromEnv: boolean | undefined
+  for (const part of (experimentalEnv ?? '').split(',')) {
+    const token = part.trim().toLowerCase()
+    if (token === 'persistent-comments') fromEnv = true
+    else if (token === '-persistent-comments') fromEnv = false
+  }
+  if (fromEnv !== undefined) return fromEnv
+  if (!configText) return false
+  let value: unknown
+  try {
+    const saved = (JSON.parse(configText) as Record<string, unknown> | null)?.experimental
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return false
+    value = (saved as Record<string, unknown>).persistentComments
+  } catch {
+    return false
+  }
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'string') {
+    const v = value.trim().toLowerCase()
+    if (v === 'true' || v === '1') return true
+  }
+  return false
+}

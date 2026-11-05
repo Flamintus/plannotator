@@ -1666,3 +1666,103 @@ describe('/plannotator-inbox', () => {
     expect((await new PlannotatorMod(failing, SESSION).openInbox()).text).toContain('/data/inbox/inbox.log')
   })
 })
+
+// The review loop (experimental "persistent-comments"): Claude's replies and
+// reads go to the review's server, and `last` gets the next messages.
+describe('the review loop: reply, threads, and last\'s next messages', () => {
+  const LOOP_SESSION = { ...SESSION, reviewLoop: { toolReply: () => true } }
+
+  function sessionIdIn(answer: { text: string } | { deny: string }): string {
+    return /Session: (pn-[0-9a-f]{6})/.exec('text' in answer ? answer.text : '')?.[1] ?? ''
+  }
+
+  // The failure: the mod and the servers name the host paths differently, and every reply is "an older Plannotator".
+  test("the host paths are the servers' own", async () => {
+    const shared = await import('../../../../packages/shared/review-loop.ts')
+    const { HOST_MESSAGES_PATH, HOST_THREADS_PATH, HOST_THREADS_REPLY_PATH, REVIEW_LOOP_OFF_CODE } = await import('./controller')
+    expect([HOST_THREADS_PATH, HOST_THREADS_REPLY_PATH, HOST_MESSAGES_PATH, REVIEW_LOOP_OFF_CODE]).toEqual([
+      shared.HOST_THREADS_PATH,
+      shared.HOST_THREADS_REPLY_PATH,
+      shared.HOST_MESSAGES_PATH,
+      shared.REVIEW_LOOP_OFF_CODE,
+    ])
+  })
+
+  test('reply writes under the ids through the review\'s server, and names what it answered', async () => {
+    const host = fakeHost()
+    serveOnLaunch(host)
+    const asked: { url: string; body: unknown }[] = []
+    host.onFetch = (url, body) => {
+      asked.push({ url, body })
+      if (url.endsWith('/api/host/threads/reply')) {
+        return { status: 200, ok: true, text: JSON.stringify({ review: 'file-abc', replies: [{ id: 'rep_1', re: 'c1' }, { id: 'rep_2', re: 'c2' }], replayed: false }) }
+      }
+      return { status: 404, ok: false, text: '' }
+    }
+    const mod = new PlannotatorMod(host, LOOP_SESSION)
+    const id = sessionIdIn(await mod.runTool({ action: 'annotate', target: 'a.md' }))
+    const answer = await mod.runTool({ action: 'reply', session: id, replies: [{ id: 'c1', text: 'Moved to Tuesday.' }, { id: 'c2', text: 'Kept: see line 4.' }] })
+    expect('text' in answer && answer.text).toContain('c1, c2')
+    const call = asked.find((entry) => entry.url.endsWith('/api/host/threads/reply'))
+    expect(call?.url).toBe('http://127.0.0.1:4321/api/host/threads/reply')
+    expect(call?.body).toEqual({ replies: [{ id: 'c1', text: 'Moved to Tuesday.' }, { id: 'c2', text: 'Kept: see line 4.' }] })
+  })
+
+  test('threads reads the review; an older CLI, a review with the loop off and an unknown id are refused', async () => {
+    const host = fakeHost()
+    serveOnLaunch(host)
+    let answerWith: { status: number; ok: boolean; text: string } = { status: 200, ok: true, text: JSON.stringify({ review: 'file-abc', round: 2, text: 'Round 2\n- c1 (open, round 1) on a.md' }) }
+    host.onFetch = () => answerWith
+    const mod = new PlannotatorMod(host, LOOP_SESSION)
+    const id = sessionIdIn(await mod.runTool({ action: 'annotate', target: 'a.md' }))
+    const read = await mod.runTool({ action: 'threads', session: id })
+    expect('text' in read && read.text).toContain('- c1 (open, round 1)')
+
+    answerWith = { status: 404, ok: false, text: JSON.stringify({ error: 'Not found', path: '/api/host/threads' }) }
+    const older = await mod.runTool({ action: 'threads', session: id })
+    expect('deny' in older && older.deny).toContain('update Plannotator')
+
+    answerWith = { status: 404, ok: false, text: JSON.stringify({ error: 'This review has no comment threads.', code: 'review_loop_off' }) }
+    const off = await mod.runTool({ action: 'threads', session: id })
+    expect('deny' in off && off.deny).toContain('Answer in chat')
+
+    const unknown = await mod.runTool({ action: 'threads', session: 'pn-000000' })
+    expect('deny' in unknown && unknown.deny).toContain('pn-000000')
+  })
+
+  test('without the review loop the tool has no reply action', async () => {
+    const mod = new PlannotatorMod(fakeHost(), SESSION)
+    const answer = await mod.runTool({ action: 'reply', session: 'pn-3f2a9c', replies: [{ id: 'c1', text: 'ok' }] })
+    expect('deny' in answer && answer.deny).toContain('Invalid plannotator call')
+  })
+
+  test("a main turn's end hands an open last review the session's messages, newest first, once per new message", async () => {
+    const host = fakeHost()
+    serveOnLaunch(host)
+    const pushed: unknown[] = []
+    host.onFetch = (url, body) => {
+      if (url.endsWith('/api/host/messages')) {
+        pushed.push(body)
+        return { status: 200, ok: true, text: JSON.stringify({ messages: 2, changed: true }) }
+      }
+      return { status: 404, ok: false, text: '' }
+    }
+    host.transcript = [{ role: 'assistant', text: 'First answer.' }]
+    const mod = new PlannotatorMod(host, LOOP_SESSION)
+    await mod.runTool({ action: 'last' })
+    await host.tick()
+
+    host.transcript = [...host.transcript, { role: 'user', text: 'Comments.' }, { role: 'assistant', text: 'Second answer.' }]
+    mod.onTurnComplete('turn-1', 'Second answer.', false)
+    await host.tick()
+    expect(pushed).toHaveLength(1)
+    const list = (pushed[0] as { v: number; messages: { text: string }[] }).messages.map((message) => message.text)
+    expect(list).toEqual(['Second answer.', 'First answer.'])
+
+    // The same newest message is not pushed again; an aborted turn pushes nothing.
+    mod.onTurnComplete('turn-2', '', true)
+    mod.onTurnComplete('turn-3', 'Second answer.', false)
+    await host.tick()
+    expect(pushed).toHaveLength(1)
+  })
+})
