@@ -248,7 +248,9 @@ async function clientAction(action: ThreadsAction, argv: readonly string[], deps
       case "send": {
         const root = typeof args.root === "string" && args.root ? args.root : deps.cwd;
         if (args.id !== undefined) {
-          // A send already written, its text composed again: a client that closed before handing it over.
+          // A send already written, its text composed again from the review as it is now: a client that closed before handing it over.
+          const extra = ["mode", "ids", "to", "words", "idempotency_key"].filter((field) => args[field] !== undefined);
+          if (extra.length > 0) throw new ReviewJournalError("invalid", `id names a send already written: ${extra.join(", ")} cannot go with it.`);
           const state = readReviewJournal(deps.dataDir, ref);
           const send = state?.sends.find((known) => known.id === args.id);
           if (!state || !send) throw new ReviewJournalError("not_found", `No send ${String(args.id)}.`);

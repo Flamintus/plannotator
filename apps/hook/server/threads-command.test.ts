@@ -63,6 +63,7 @@ describe("a client's side through the CLI", () => {
     expect([again.replayed, again.send, again.text]).toEqual([true, sent.send, sent.text]);
     expect(readReviewJournal(dataDir, { key: key() })!.sends).toHaveLength(1);
     expect((await threads(["send", JSON.stringify({ target, id: "snd_nope" })])).err).toStartWith("not_found:");
+    expect((await threads(["send", JSON.stringify({ target, id: sent.send.id, mode: "round" })])).err).toStartWith("invalid:");
     // Nothing new, and the open threads went to that session already: still a round naming them.
     expect((await call("send", { mode: "round" })).send.comments).toEqual(["c1", "c2"]);
     await call("resolve", { id: "c1" });
