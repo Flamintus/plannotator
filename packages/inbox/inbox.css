@@ -7818,5 +7818,5 @@ dialog.ib-zx .ib-listcol.ib-zx-list { position: relative; inset: auto; visibilit
 .ib-sentc-item { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .ib-sentc-item .ib-sentc-row { flex: 1; min-width: 0; }
 .ib-sentc-item[data-sent-resolved] .ib-sentc-row { color: var(--muted-foreground); }
-.ib-sentc-act, .ib-sentc-more { flex: none; padding: 2px 6px; border-radius: 6px; background: none; border: 0; color: var(--muted-foreground); font: inherit; font-size: 0.8em; cursor: pointer; }
+.ib-sentc-act, .ib-sentc-more { flex: none; padding: 2px 6px; border-radius: 6px; background: none; border: 0; color: var(--muted-foreground); font: inherit; font-size: var(--ib-fs-11, 11px); cursor: pointer; }
 .ib-sentc-act:hover, .ib-sentc-act:focus-visible, .ib-sentc-more:hover, .ib-sentc-more:focus-visible { background: var(--muted); color: var(--foreground); }
