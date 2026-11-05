@@ -421,6 +421,12 @@ slot and mentions on the edit box (0.45.0)".
   `exportLinkedDocAnnotations`): one line printed under the entry's heading
   (the Inbox's `At 1:42 (102.4 s of 7:41)`). Never stored; an annotation
   without it exports byte-identically.
+- **Export: `commentIds`** (Unreleased) — an option of `exportAnnotations`,
+  and the optional last argument of `exportLinkedDocAnnotations`,
+  `exportMessageAnnotations`, `exportCodeFileAnnotations` and
+  `exportEditorAnnotations`: each entry's heading ends with its annotation's
+  own id, ` (id <id>)` (`commentIdSuffix`), for feedback an agent receives.
+  Off by default: a host that passes nothing exports byte-identically.
 
 ### Image annotator seams (`components/ImageAnnotator`; ui 0.54.0)
 
