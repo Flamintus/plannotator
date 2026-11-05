@@ -15,7 +15,7 @@ import { createRoot } from 'react-dom/client';
 import type { Annotation } from '../../types';
 import { AnnotationType } from '../../types';
 import { BRIDGE_PROTOCOL_VERSION } from './bridge-script';
-import { quickLabelText, THUMBS_UP_LABEL } from '../../utils/quickLabels';
+import { THUMBS_UP_LABEL } from '../../utils/quickLabels';
 
 const hasDom = typeof document !== 'undefined';
 const hookModule = hasDom ? await import('./useHtmlAnnotation') : null;
@@ -435,8 +435,7 @@ describe.if(hasDom)('pinpoint click-to-pin flow', () => {
     expect(added).toHaveLength(1);
     expect(added[0]?.type).toBe(AnnotationType.COMMENT);
     expect(added[0]?.isQuickLabel).toBe(true);
-    // The label's words as every surface writes them (`quickLabelText`), so any client reads it back as Looks good.
-    expect(added[0]?.text).toBe('👍 Looks good');
+    expect(added[0]?.text).toBe('Looks good');
   });
 
   function composerThumbsUp(): HTMLButtonElement | null {
@@ -465,7 +464,7 @@ describe.if(hasDom)('pinpoint click-to-pin flow', () => {
     expect(added).toHaveLength(1);
     expect(added[0]!.type).toBe(AnnotationType.COMMENT);
     expect(added[0]!.isQuickLabel).toBe(true);
-    expect(added[0]!.text).toBe(quickLabelText(THUMBS_UP_LABEL));
+    expect(added[0]!.text).toBe(THUMBS_UP_LABEL.text);
     expect(added[0]!.quickLabelTip).toBe(THUMBS_UP_LABEL.tip);
     expect(added[0]!.originalText).toBe('Pinpoint target');
     expect(added[0]!.htmlAnchor).toEqual(selectionMessage.anchor);

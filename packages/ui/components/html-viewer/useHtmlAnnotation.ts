@@ -1,6 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, type RefObject } from "react";
 import { AnnotationType, type Annotation, type EditorMode, type HostDraft, type HtmlAnnotationTarget, type HtmlElementAnchor, type HtmlElementContext, type ImageAttachment } from "../../types";
-import { quickLabelText, THUMBS_UP_LABEL, type QuickLabel } from "../../utils/quickLabels";
+import { THUMBS_UP_LABEL, type QuickLabel } from "../../utils/quickLabels";
 import { getIdentity } from "../../utils/identity";
 import type {
   ToolbarState,
@@ -1154,7 +1154,7 @@ export function useHtmlAnnotation({
   const handleCommentLooksGood = useCallback(
     () =>
       commitComposerDraft({
-        text: quickLabelText(THUMBS_UP_LABEL),
+        text: THUMBS_UP_LABEL.text,
         isQuickLabel: true,
         quickLabelTip: THUMBS_UP_LABEL.tip,
       }),
@@ -1207,7 +1207,7 @@ export function useHtmlAnnotation({
         startOffset: 0,
         endOffset: 0,
         type: AnnotationType.COMMENT,
-        text: quickLabelText(label),
+        text: label.text,
         originalText: text,
         isQuickLabel: true,
         quickLabelTip: label.tip,
