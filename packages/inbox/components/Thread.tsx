@@ -1713,7 +1713,8 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
   const showNew = !one && fresh.size > 0;
   // The fold is decided once, when the thread opens: opening a message never
   // makes others appear or disappear. One exception, below: a message holding
-  // a comment thread still open opens once the thread's comments are read.
+  // a comment thread still open opens once the thread's comments are read, or
+  // once a thread on it opens again later in the visit.
   const [foldState, setFoldState] = useState<FoldState | null>(null);
   let fold = foldState;
   if (!fold || fold.threadId !== thread.thread_id) {
@@ -1993,7 +1994,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
   const records = files?.annotations ?? [];
   // Comments that stay after Send (experimental "persistent-comments"; SentComments.tsx): only while the person has it on.
   const sentComments = useSentComments({ messages: thread.messages, files, drafts: records, patchDrafts: patchRecords, onError: setError, canResolve: !machine });
-  // A message holding a comment thread still open opens unfolded, once the thread's comments are read.
+  // A message holding a comment thread still open opens unfolded, once the thread's comments are read (and when one opens again later).
   if (sentComments.openMessages && fold.threadId === thread.thread_id) {
     const kept = unfoldOpenThreads(fold, sentComments.openMessages);
     if (kept !== fold) setFoldState(kept);
