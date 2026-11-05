@@ -109,6 +109,37 @@ describe('reviewLoopCommentInputs', () => {
   });
 });
 
+describe('reviewLoopCommentInputs, what a draft keeps', () => {
+  const index = indexReviewLoop(view([thread('c1', { replies: [agentReply('rep_1')] })]));
+  const onFile = { kind: 'file' as const, path: '/w/release.md' };
+
+  test('a reply under a sub-thread not sent yet, or under a draft, is a comment of its own naming the one it answers (never the thread above)', () => {
+    const passage = annotation('ann-passage-1', { inReplyTo: 'rep_1', originalText: 'Tuesday', text: 'Why Tuesday?' });
+    const underPassage = annotation('reply-3', { inReplyTo: 'ann-passage-1', text: 'Or Wednesday.' });
+    const draft = annotation('d1');
+    const underDraft = annotation('reply-4', { inReplyTo: 'd1', text: 'And EU first.' });
+    const byId = new Map([passage, underPassage, draft, underDraft].map((a) => [a.id, a]));
+    const inputs = reviewLoopCommentInputs([{ on: onFile, annotations: [passage, underPassage, draft, underDraft] }], { index, byId, offsets: new Map() });
+    expect(inputs.find((input) => input.id === 'reply-3')).toMatchObject({ on: onFile, notes: ['In reply to comment ann-passage-1.'] });
+    expect(inputs.find((input) => input.id === 'reply-3')!.re).toBeUndefined();
+    expect(inputs.find((input) => input.id === 'reply-4')).toMatchObject({ on: onFile, notes: ['In reply to comment d1.'] });
+  });
+
+  test('a comment on a file or the plan names its lines; an answer keeps its question; words over the limits are cut, not refused', () => {
+    const blocks = [{ id: 'b1', startLine: 3, content: 'Ship to all stores.\nOn Friday.' }];
+    const answer = annotation('ann-question-q1', { questionAnswer: { key: 'q1' } as unknown as Annotation['questionAnswer'], text: 'Tuesday' });
+    const long = annotation('long', { originalText: 'x'.repeat(25_000), text: 'y'.repeat(12_000) });
+    const [onLines, answered, clipped] = reviewLoopCommentInputs(
+      [{ on: { kind: 'plan', version: 2 }, annotations: [annotation('a'), answer, long], blocks }],
+      { index, byId: new Map(), offsets: new Map(), entry: (a) => (a.questionAnswer ? 'Answer to the question "Which day?"\n> Tuesday' : 'unused') },
+    );
+    expect(onLines!.on).toEqual({ kind: 'plan', version: 2, lines: [3, 4] });
+    expect(answered!.notes).toEqual(['Answer to the question "Which day?"', '> Tuesday']);
+    expect(clipped!.quote!.length).toBe(20_000);
+    expect(clipped!.text.length).toBe(10_000);
+  });
+});
+
 describe('reviewLoopCards', () => {
   const index = indexReviewLoop(view([
     thread('c1', { replies: [agentReply('rep_1')] }),

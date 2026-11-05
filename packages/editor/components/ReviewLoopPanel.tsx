@@ -17,7 +17,9 @@
  *   once when the thread is live (a single send reached it);
  * - words selected in a sent card offer a comment on that passage, a
  *   sub-thread: a draft card under it, its passage marked in the card's words;
- * - a draft has Send, which sends it alone at once and leaves the round open.
+ * - a draft has Send, which sends it alone at once and leaves the round open;
+ *   Reply under a draft is today's (the reply goes as a comment of its own,
+ *   naming the one it answers), except under a sub-thread not sent yet.
  */
 import React, { useCallback, useMemo } from 'react';
 import type { TextPassage } from '@plannotator/core/passage';
@@ -206,10 +208,10 @@ export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanel
       if (folded(element)) return { actions: false, quote: false, text: false, images: false, reply: false, passage: false };
       return { actions: false };
     }
-    // A draft: edited and removed as today; no sub-thread on its words, and no reply under an unsent comment.
-    const underSent = annotation.inReplyTo ? reviewLoopThreadOf(annotation.inReplyTo, index, byId) !== null : false;
-    return underSent ? { passage: false } : { passage: false, reply: false };
-  }, [index, folded, byId]);
+    // A draft: edited, removed and replied to as today; no sub-thread on its words until it is sent, and no reply
+    // under a sub-thread not sent yet (its reply would land under the thread it is on).
+    return isPassageAnnotation(annotation) ? { passage: false, reply: false } : { passage: false };
+  }, [index, folded]);
 
   const renderCardHeader = useCallback((annotation: Annotation): React.ReactNode => {
     const element = index.elements.get(annotation.id);

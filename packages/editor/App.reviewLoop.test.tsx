@@ -245,6 +245,8 @@ afterAll(() => {
 describe.if(hasDom)("the review loop on an annotate screen", () => {
   test("Send Feedback ends the round in the same tab; the agent's reply, a reply to it and Resolve go through the loop", async () => {
     await mountAndRestore();
+    // A draft keeps today's Reply (nested replies, PR 2).
+    expect(card("annRetry")?.querySelector('button[title="Reply"]')).not.toBeNull();
 
     await pressPrimary();
     expect(posts.map((post) => post.path)).toEqual(["/api/threads/send"]);
@@ -254,6 +256,7 @@ describe.if(hasDom)("the review loop on an annotate screen", () => {
     });
     // The tab stays: the comment is still in the panel, sent, and the header counts the round.
     expect(card("annRetry")?.querySelector('[data-review-loop-chip="status"]')?.textContent).toBe("Delivered");
+    // Pinned on purpose: the count's words are the initiative's ("Round N · M open"), the numbers the server's.
     expect(document.querySelector("[data-review-loop-count]")?.textContent).toBe("Round 2 · 1 open");
     // Sent: no longer feedback, so the primary is no longer a Send of it, and the card takes no edit.
     expect(card("annRetry")?.querySelector('button[title="Edit"]')).toBeNull();
@@ -290,6 +293,22 @@ describe.if(hasDom)("the review loop on an annotate screen", () => {
     expect(posts[2]).toEqual({ path: "/api/threads/resolve", body: { id: "annRetry", resolved: true } });
     expect(card("annRetry")?.querySelector('[data-review-loop-chip="resolved"]')).not.toBeNull();
     expect(posts.some((post) => post.path === "/api/feedback")).toBe(false);
+
+    // Nothing left to send: the primary is today's Done, and what went is not carried again.
+    await press("[data-decision-primary]");
+    for (let attempt = 0; attempt < 10 && !posts.some((post) => post.path === "/api/feedback"); attempt += 1) await settle(10);
+    const done = posts.find((post) => post.path === "/api/feedback");
+    expect(done?.body).toMatchObject({ nothingToSend: true, annotations: [] });
+    expect(posts.filter((post) => post.path === "/api/threads/send")).toHaveLength(2);
+  });
+
+  test("with the host gone, Send Feedback is today's decision again", async () => {
+    await mountAndRestore();
+    await act(async () => { StreamEventSource.current?.push({ type: "review-threads", available: false }); });
+    await settle();
+    await pressPrimary();
+    expect(posts.map((post) => post.path)).toEqual(["/api/feedback"]);
+    expect((posts[0]!.body.annotations as { id: string }[]).map((annotation) => annotation.id)).toEqual(["annRetry"]);
   });
 
   test("with the loop unavailable, Send Feedback is today's decision", async () => {

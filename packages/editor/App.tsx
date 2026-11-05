@@ -40,7 +40,7 @@ import { ImageLightbox } from '@plannotator/ui/components/ImageLightbox';
 import { LINK_WAITS_FOR_DRAFT_TITLE, linkWaitsForDraftDescription, typedCommentDraft } from './htmlLinkDraftGuard';
 import { createPortal } from 'react-dom';
 import { annotateFileFeedback, annotateMessageFeedback, wrapFeedbackForClipboard, type AnnotateFeedbackTemplates } from '@plannotator/shared/feedback-templates';
-import { parseMarkdownToBlocks, exportAnnotations, exportLinkedDocAnnotations, exportEditorAnnotations, exportCodeFileAnnotations, exportMessageAnnotations, formatDraftAnnotationsForAsk, extractFrontmatter, wrapFeedbackForAgent, Frontmatter, type LinkedDocAnnotationEntry, type MessageAnnotationEntry } from '@plannotator/ui/utils/parser';
+import { parseMarkdownToBlocks, exportAnnotations, exportAnnotationEntry, exportLinkedDocAnnotations, exportEditorAnnotations, exportCodeFileAnnotations, exportMessageAnnotations, formatDraftAnnotationsForAsk, extractFrontmatter, wrapFeedbackForAgent, Frontmatter, type LinkedDocAnnotationEntry, type MessageAnnotationEntry } from '@plannotator/ui/utils/parser';
 import { primeSkillCatalog, primeSkillContentsForExport } from '@plannotator/ui/utils/skillCatalog';
 import { Viewer, ViewerHandle } from '@plannotator/ui/components/Viewer';
 import type { AnnotationRestoreReport } from '@plannotator/ui/hooks/useAnnotationHighlighter';
@@ -2496,9 +2496,9 @@ const App: React.FC = () => {
   // Multi-message annotate-last entries for the export and the submit body.
   // Each message's entry is built from LOCAL annotations only, so SSE
   // externals (agent / WebMCP comments) ride the current message's entry.
-  const buildFeedbackMessageEntries = useCallback(() => {
+  const buildFeedbackMessageEntries = useCallback((withSent = false) => {
     const entries = mergeExternalsIntoMessageEntries(buildMessageAnnotationEntries(), selectedMessageId, externalAnnotations);
-    if (reviewSent.size === 0) return entries;
+    if (withSent || reviewSent.size === 0) return entries;
     return entries.map((entry) => ({
       ...entry,
       annotations: withoutSent(entry.annotations, reviewSent),
@@ -2591,8 +2591,12 @@ const App: React.FC = () => {
   // live state is the ACTIVE document, which getDocAnnotations() also carries,
   // so exporting both used to print the open document twice (folder sessions
   // always; any session submitted while a linked document was open).
-  const getFeedbackSections = useCallback(() => {
+  // `withSent`: what the person exports, copies or saves keeps the review loop's sent comments too.
+  const getFeedbackSections = useCallback((withSent = false) => {
     const feedbackDocuments = linkedDocHook.getFeedbackDocuments();
+    if (withSent && reviewSent.size > 0) {
+      return resolveFeedbackSections({ feedbackDocuments, live: { annotations: allAnnotations, globalAttachments, blocks }, externalAnnotations, sourceFilePath, sourceConverted, annotateSource, bundleOrder: bundlePaths });
+    }
     return resolveFeedbackSections({
       // The review loop's sent comments are no longer feedback to send (none sent: the documents as they are).
       feedbackDocuments: reviewSent.size === 0 ? feedbackDocuments : {
@@ -2609,6 +2613,8 @@ const App: React.FC = () => {
   }, [
     linkedDocHook.getFeedbackDocuments,
     reviewSent,
+    allAnnotations,
+    externalAnnotations,
     feedbackAllAnnotations,
     globalAttachments,
     blocks,
@@ -2620,7 +2626,7 @@ const App: React.FC = () => {
   ]);
 
   const annotationsOutput = useMemo(() => {
-    const sections = getFeedbackSections();
+    const sections = getFeedbackSections(true);
     const hasDocAnnotations = Array.from(sections.linkedDocuments.values()).some(
       (d) => d.annotations.length > 0 || d.globalAttachments.length > 0
     );
@@ -3688,10 +3694,12 @@ const App: React.FC = () => {
       discardAnnotations?: boolean;
       /** Positive-finish framing for the non-gated discard (spec §3.1). */
       approvalFraming?: boolean;
+      /** For the person (export, copy, download): the review loop's sent comments too. */
+      withSent?: boolean;
     },
   ): string => {
     const discard = options?.discardAnnotations === true;
-    const sections = getFeedbackSections();
+    const sections = getFeedbackSections(options?.withSent === true);
     return buildCompleteAnnotateFeedback({
       blocks: sections.blocks,
       annotations: discard ? [] : sections.annotations,
@@ -3714,7 +3722,7 @@ const App: React.FC = () => {
       directEditsSection: buildEditsSection(),
       savedFileChangesSection: buildSavedChangesSection(checkedSavedFileChanges),
       ...(messageMultiSelectMode && !discard
-        ? { messageEntries: buildFeedbackMessageEntries() }
+        ? { messageEntries: buildFeedbackMessageEntries(options?.withSent === true) }
         : {}),
       ...(options?.approvalFraming ? { approvalFraming: true } : {}),
     });
@@ -4737,69 +4745,100 @@ const App: React.FC = () => {
     if (annotateMode) return { kind: 'file', path: sourceFilePath || 'document' };
     return { kind: 'plan', ...(versionInfo?.version ? { version: versionInfo.version } : {}) };
   };
-  /** The drafts a round carries, by what they are on: every document's (every message's on `last`), what was sent left out. */
-  const reviewDraftGroups = (): { on: ReviewAnchor; annotations: Annotation[] }[] => {
+  type ReviewDraftGroup = { on: ReviewAnchor; annotations: Annotation[]; blocks?: Block[]; globalAttachments: ImageAttachment[]; codeAnnotations?: CodeAnnotation[]; place: string | null };
+  /** What a round carries, by what it is on: every document's (every message's on `last`) drafts and reference images, what was sent left out. */
+  const reviewDraftGroups = (): ReviewDraftGroup[] => {
     if (messageMultiSelectMode) {
       return buildFeedbackMessageEntries().flatMap((entry) => [
-        { on: { kind: 'message' as const, message_id: entry.messageId }, annotations: entry.annotations },
-        ...[...entry.linkedDocs].map(([path, doc]) => ({ on: { kind: 'file' as const, path }, annotations: doc.annotations })),
+        { on: { kind: 'message' as const, message_id: entry.messageId }, annotations: entry.annotations, globalAttachments: entry.globalAttachments, codeAnnotations: entry.codeAnnotations, place: `message ${entry.messageId}` },
+        ...[...entry.linkedDocs].map(([path, doc]) => ({ on: { kind: 'file' as const, path }, annotations: doc.annotations, blocks: doc.blocks, globalAttachments: doc.globalAttachments, place: path })),
       ]);
     }
     const sections = getFeedbackSections();
     return [
-      { on: reviewRootAnchor(), annotations: sections.annotations },
-      ...[...sections.linkedDocuments].map(([path, doc]) => ({ on: { kind: 'file' as const, path }, annotations: doc.annotations })),
+      { on: reviewRootAnchor(), annotations: sections.annotations, blocks: sections.blocks, globalAttachments: sections.globalAttachments, place: null },
+      ...[...sections.linkedDocuments].map(([path, doc]) => ({ on: { kind: 'file' as const, path }, annotations: doc.annotations, blocks: doc.blocks, globalAttachments: doc.globalAttachments, place: path })),
     ];
   };
   /** The drafts as a send carries them (a reply draft is walked up to its thread through the page's annotations and the panel's cards). */
-  const reviewCommentsOf = (groups: readonly { on: ReviewAnchor; annotations: readonly Annotation[] }[]): ReviewLoopCommentInput[] => {
+  const reviewCommentsOf = (groups: readonly { on: ReviewAnchor; annotations: readonly Annotation[]; blocks?: readonly Block[] }[]): ReviewLoopCommentInput[] => {
     const byId = new Map<string, Annotation>();
     for (const annotation of allAnnotations) byId.set(annotation.id, annotation);
     for (const group of groups) for (const annotation of group.annotations) byId.set(annotation.id, annotation);
-    return reviewLoopCommentInputs(groups, { index: reviewLoop.index, byId, offsets: reviewLoop.offsets });
+    return reviewLoopCommentInputs(groups, { index: reviewLoop.index, byId, offsets: reviewLoop.offsets, entry: (annotation) => exportAnnotationEntry(annotation) });
   };
   /**
-   * The feedback a comment record cannot hold, as the person's words before
-   * the comments: direct edits, saved file changes, editor and code-file
-   * comments, reference images (today's sections, unchanged).
+   * What a round already carried that is not a comment record and that the
+   * page cannot take off every document (a reference image on a document not
+   * open, a code-file comment of another message): never in a round's words
+   * again. By image path or comment id, per place.
    */
-  const reviewOtherFeedback = (checkedSavedFileChanges: SavedFileChangeDraftData[]): string => [
-    buildEditsSection(),
-    buildSavedChangesSection(checkedSavedFileChanges),
-    exportEditorAnnotations(editorAnnotations, { commentIds: true }),
-    exportCodeFileAnnotations(codeAnnotations, { commentIds: true }),
-    globalAttachments.length > 0
-      ? ['## Reference Images', 'Please review these reference images (use the Read tool to view):', ...globalAttachments.map((img, idx) => `${idx + 1}. [${img.name}] \`${img.path}\``)].join('\n')
-      : '',
-  ].map((part) => part.trim()).filter(Boolean).join('\n\n');
+  const reviewSentOtherRef = useRef<Set<string>>(new Set());
+  /**
+   * The feedback a comment record cannot hold, as the person's words before
+   * the comments, in today's sections: direct edits, saved file changes,
+   * editor and code-file comments, reference images. No comment ids: the
+   * agent answers under the ids of the comments only.
+   */
+  const reviewOtherFeedback = (groups: readonly ReviewDraftGroup[], checkedSavedFileChanges: SavedFileChangeDraftData[]): { words: string; keys: string[] } => {
+    const sent = reviewSentOtherRef.current;
+    const keys: string[] = [];
+    const code = (messageMultiSelectMode ? groups.flatMap((group) => group.codeAnnotations ?? []) : codeAnnotations).filter((annotation) => !sent.has(`code:${annotation.id}`));
+    for (const annotation of code) keys.push(`code:${annotation.id}`);
+    const images = groups.flatMap((group) => {
+      const fresh = group.globalAttachments.filter((image) => !sent.has(`image:${group.place ?? ''}:${image.path}`));
+      for (const image of fresh) keys.push(`image:${group.place ?? ''}:${image.path}`);
+      return fresh.length === 0 ? [] : [[`## Reference Images${group.place ? ` (${group.place})` : ''}`, 'Please review these reference images (use the Read tool to view):', ...fresh.map((img, idx) => `${idx + 1}. [${img.name}] \`${img.path}\``)].join('\n')];
+    });
+    const words = [
+      buildEditsSection(),
+      buildSavedChangesSection(checkedSavedFileChanges),
+      exportEditorAnnotations(editorAnnotations),
+      exportCodeFileAnnotations(code),
+      ...images,
+    ].map((part) => part.trim()).filter(Boolean).join('\n\n');
+    return { words, keys };
+  };
   /** A round's key, kept until it went: a retry of a press whose answer was lost writes nothing twice. */
   const reviewRoundKeyRef = useRef<string | null>(null);
   /**
    * Send Feedback (Deny on a plan) with the review loop: the round ends, its
    * drafts go to the agent session as comments under their ids, and the tab
    * stays open, the sent comments in place with their threads. Null when
-   * there is nothing to send (the caller goes on: Done). False when it did
-   * not go (said so; the drafts stay).
+   * nothing at all counts as feedback (the caller goes on: Done); with only
+   * what went before still listed, the round ends with nothing new. False
+   * when it did not go (said so; the drafts stay).
    */
   const sendReviewRound = async (checkedSavedFileChanges: SavedFileChangeDraftData[]): Promise<boolean | null> => {
-    const comments = reviewCommentsOf(reviewDraftGroups());
-    const words = reviewOtherFeedback(checkedSavedFileChanges);
-    if (comments.length === 0 && !words) return null;
+    const groups = reviewDraftGroups();
+    const comments = reviewCommentsOf(groups);
+    const other = reviewOtherFeedback(groups, checkedSavedFileChanges);
+    if (comments.length === 0 && !other.words && !hasFeedbackContent) return null;
     const key = reviewRoundKeyRef.current ?? `page-round-${generateId()}`;
     reviewRoundKeyRef.current = key;
-    const result = await reviewLoop.send({ mode: 'round', comments, ...(words ? { words } : {}), key });
+    const result = await reviewLoop.send({ mode: 'round', comments, ...(other.words ? { words: other.words } : {}), key });
     if (!result.ok) {
       toast.error('Feedback not sent', { description: `${result.error ?? ''} Your comments are kept.`.trim() });
       return false;
     }
     reviewRoundKeyRef.current = null;
-    // What went as the person's words leaves the page; the comments stay, sent.
-    if (words) {
+    // A replay answered an earlier press whose answer was lost: what this press added stays, for the next one.
+    if (!result.replayed && other.words) {
+      for (const sentKey of other.keys) reviewSentOtherRef.current.add(sentKey);
+      // What went as the person's words leaves the page where it can: the open document's, the editor's, the saved files'.
       codeAnnotationsRef.current = [];
       setCodeAnnotations([]);
       for (const annotation of editorAnnotations) deleteEditorAnnotation(annotation.id);
       setGlobalAttachments([]);
       if (checkedSavedFileChanges.length > 0) editableDocuments.clearSavedFileChanges(checkedSavedFileChanges.map((change) => change.key));
+      // Direct edits that went are the document now: the next round's diff starts from them.
+      const edited = buildEditsSection() ? getEditedMarkdown() : null;
+      if (edited !== null) {
+        originalMarkdownRef.current = edited;
+        editedMarkdownRef.current = null;
+        setEditStats(null);
+        setEditorDiffersFromBaseline(false);
+      }
     }
     annotationHistory.clear();
     toast(`Round ${result.send!.round} sent`, { description: 'The agent answers under each comment, in this tab.' });
@@ -4807,7 +4846,10 @@ const App: React.FC = () => {
   };
   /** One draft (or a live thread's reply) sent alone, at once: the round stays open. */
   const sendReviewDraftsNow = async (drafts: readonly Annotation[]) => {
-    const comments = reviewCommentsOf([{ on: linkedDocHook.isActive && linkedDocHook.filepath ? { kind: 'file', path: linkedDocHook.filepath } : reviewRootAnchor(), annotations: drafts }]);
+    const group = messageMultiSelectMode || !linkedDocHook.isActive || !linkedDocHook.filepath
+      ? { on: reviewRootAnchor(), annotations: [...drafts], blocks }
+      : { on: { kind: 'file' as const, path: linkedDocHook.filepath }, annotations: [...drafts], blocks };
+    const comments = reviewCommentsOf([group]);
     if (comments.length === 0) return null;
     const result = await reviewLoop.send({ mode: 'now', comments });
     // What went cannot be undone: its card stays, sent.
@@ -4825,8 +4867,9 @@ const App: React.FC = () => {
         setIsSubmitting(false);
         return false;
       }
-      // The review loop: Deny ends the round, the review stays open for the revised plan.
-      if (reviewLoop.available) {
+      // The review loop: Deny ends the round, the review stays open for the revised plan
+      // (with the host away, today's decision).
+      if (reviewLoop.connected) {
         const round = await sendReviewRound(checkedSavedFileChanges);
         if (round !== null) {
           setIsSubmitting(false);
@@ -4920,8 +4963,9 @@ const App: React.FC = () => {
       }
       const discard = options?.discardAnnotations === true;
       // The review loop: Send Feedback ends the round and the tab stays open
-      // (the agent terminal, when ready, still takes the feedback as today).
-      if (reviewLoop.available && !discard && !options?.approvalFraming && !isAgentTerminalReady) {
+      // (the agent terminal, when ready, still takes the feedback as today; with
+      // the host away, today's decision).
+      if (reviewLoop.connected && !discard && !options?.approvalFraming && !isAgentTerminalReady) {
         const round = await sendReviewRound(checkedSavedFileChanges);
         if (round !== null) {
           setIsSubmitting(false);
@@ -5517,13 +5561,43 @@ const App: React.FC = () => {
     return roots;
   }, [fileBrowser.dirs, projectRoot]);
 
+  // The review loop's threads in the panel (null while unavailable: the panel is today's).
+  const reviewHere = useCallback((top: ReviewThreadNode) => {
+    const on = top.on;
+    if (on.kind === 'message') {
+      const current = selectedMessageId ?? '';
+      return on.message_id === current || (on.message_id === '' && current === (reviewOpenedMessageRef.current ?? ''));
+    }
+    if (on.kind === 'file') {
+      const current = linkedDocHook.isActive ? linkedDocHook.filepath : annotateMode ? (sourceFilePath || 'document') : null;
+      return current !== null && on.path === current;
+    }
+    return !annotateMode && !linkedDocHook.isActive;
+  }, [selectedMessageId, linkedDocHook.isActive, linkedDocHook.filepath, annotateMode, sourceFilePath]);
+  const reviewPanel = useReviewLoopPanel({
+    loop: reviewLoop,
+    annotations: allAnnotations,
+    here: reviewHere,
+    person: getIdentity(),
+    readOnly: documentReadOnly,
+    addDraft: (annotation, paint) => {
+      handleAddAnnotation(annotation);
+      if (paint) viewerRef.current?.applySharedAnnotations([annotation]);
+    },
+    sendNow: sendReviewDraftsNow,
+    select: handleSelectAnnotation,
+    reply: handleReplyToAnnotation,
+    notify: (message) => toast.error(message),
+  });
+
   const annotationDocumentGroups = useMemo(() => {
     return buildAnnotationDocumentGroups({
       cached: Array.from(linkedDocHook.getDocAnnotations(), ([filepath, entry]) => [filepath, entry.annotations] as const),
       current: {
         key: currentDocumentGroupKey,
         label: currentDocumentGroupLabel,
-        annotations: allAnnotations,
+        // With the review loop, the open document's cards are the panel's (the agent's replies, the folds).
+        annotations: reviewPanel?.annotations ?? allAnnotations,
       },
       roots: annotationDocumentRoots,
       // A review of several files lists them in review order.
@@ -5532,6 +5606,7 @@ const App: React.FC = () => {
   }, [
     linkedDocHook.getDocAnnotations,
     allAnnotations,
+    reviewPanel?.annotations,
     currentDocumentGroupKey,
     currentDocumentGroupLabel,
     annotationDocumentRoots,
@@ -6100,7 +6175,7 @@ const App: React.FC = () => {
 
   // Quick-save handlers for export dropdown and keyboard shortcut
   const handleDownloadAnnotations = () => {
-    const output = getCurrentFeedbackPayload();
+    const output = getCurrentFeedbackPayload(undefined, { withSent: true });
     const blob = new Blob([output], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -7582,35 +7657,6 @@ const App: React.FC = () => {
     requestAnimationFrame(go);
   }, [closeCompactPlanSurface, isCompactAnnotationsOpen, isPlanDiffActive, linkedDocHook.cancelScrollRestore]);
 
-  // The review loop's threads in the panel (null while unavailable: the panel is today's).
-  const reviewHere = useCallback((top: ReviewThreadNode) => {
-    const on = top.on;
-    if (on.kind === 'message') {
-      const current = selectedMessageId ?? '';
-      return on.message_id === current || (on.message_id === '' && current === (reviewOpenedMessageRef.current ?? ''));
-    }
-    if (on.kind === 'file') {
-      const current = linkedDocHook.isActive ? linkedDocHook.filepath : annotateMode ? (sourceFilePath || 'document') : null;
-      return current !== null && on.path === current;
-    }
-    return !annotateMode && !linkedDocHook.isActive;
-  }, [selectedMessageId, linkedDocHook.isActive, linkedDocHook.filepath, annotateMode, sourceFilePath]);
-  const reviewPanel = useReviewLoopPanel({
-    loop: reviewLoop,
-    annotations: allAnnotations,
-    here: reviewHere,
-    person: getIdentity(),
-    readOnly: documentReadOnly,
-    addDraft: (annotation, paint) => {
-      handleAddAnnotation(annotation);
-      if (paint) viewerRef.current?.applySharedAnnotations([annotation]);
-    },
-    sendNow: sendReviewDraftsNow,
-    select: handleSelectAnnotation,
-    reply: handleReplyToAnnotation,
-    notify: (message) => toast.error(message),
-  });
-
   const renderAnnotationPanel = (presentation: 'panel' | 'embedded', isOpen = true) => (
     <AnnotationPanel
       isOpen={isOpen}
@@ -7645,7 +7691,7 @@ const App: React.FC = () => {
         : undefined}
       onClose={presentation === 'panel' ? () => setIsPanelOpen(false) : closeCompactPlanSurface}
       onQuickCopy={async () => {
-        const output = getCurrentFeedbackPayload();
+        const output = getCurrentFeedbackPayload(undefined, { withSent: true });
         return copyTextToClipboard(wrapCopiedFeedback(output));
       }}
       onShare={canShareCurrentSession ? () => {
@@ -8465,7 +8511,7 @@ const App: React.FC = () => {
             // Computed only while the modal is open: composeFeedback runs a
             // unified diff when edits exist — not per-render work.
             showExport
-              ? getCurrentFeedbackPayload()
+              ? getCurrentFeedbackPayload(undefined, { withSent: true })
               : ''
           }
           annotationCount={allAnnotations.length + codeAnnotations.length}

@@ -100,7 +100,8 @@ export function isPassageAnnotation(annotation: Pick<Annotation, 'id'>): boolean
  * The thread an answer on a card goes under: the card's own thread when the
  * card is an element of the review (a reply's or an agent's reply's thread),
  * or, for the page's reply draft, the thread its card is under. Null when
- * the card is a draft that is not under a sent thread.
+ * the card is a draft that is not under a sent thread, or a sub-thread not
+ * sent yet (a thread of its own, without an id the agent knows).
  */
 export function reviewLoopThreadOf(id: string, index: ReviewLoopIndex, byId: ReadonlyMap<string, Pick<Annotation, 'id' | 'inReplyTo'>>): string | null {
   const seen = new Set<string>();
@@ -108,6 +109,7 @@ export function reviewLoopThreadOf(id: string, index: ReviewLoopIndex, byId: Rea
     seen.add(at);
     const element = index.elements.get(at);
     if (element && !element.node.draft) return element.thread.id;
+    if (isPassageAnnotation({ id: at })) return null;
     at = byId.get(at)?.inReplyTo;
   }
   return null;
@@ -229,6 +231,30 @@ export function reviewLoopImageNotes(annotation: Pick<Annotation, 'images'>): st
   return ['Attached images:', ...images.map((image) => `- [${image.name}] \`${image.path}\``)];
 }
 
+/** An annotation whose entry in today's feedback says more than its words and quote (an answer, a label's tip, an element, an image region, a diagram part, the plan diff). */
+function carriesContext(annotation: Annotation): boolean {
+  return annotation.questionAnswer != null
+    || (annotation.isQuickLabel === true && !!annotation.quickLabelTip)
+    || annotation.imageRegion != null
+    || annotation.elementContext != null
+    || (annotation.htmlAdditionalTargets?.length ?? 0) > 0
+    || annotation.diagramAnchor != null
+    || annotation.diffContext != null;
+}
+
+/** The most of a quote and of a comment's words a record holds (packages/shared/review-journal.ts): longer ones are cut here, never refused for the whole round. */
+const QUOTE_MAX = 20_000;
+const TEXT_MAX = 10_000;
+const clip = (value: string, max: number) => (value.length > max ? `${value.slice(0, max - 1)}…` : value);
+
+/** The document lines a block spans, as the journal's anchor names them (`lines`), when the block is known. */
+function blockLines(blocks: readonly { id: string; startLine?: number; content?: string }[] | undefined, blockId: string): [number, number] | null {
+  const block = blocks?.find((entry) => entry.id === blockId);
+  if (!block || typeof block.startLine !== 'number' || block.startLine < 1) return null;
+  const span = (block.content ?? '').replace(/\n+$/, '').split('\n').length;
+  return [block.startLine, block.startLine + Math.max(0, span - 1)];
+}
+
 /**
  * The person's drafts as a send carries them, in order: a reply under a sent
  * thread (`re`), a sub-thread on a passage of a sent message (`parent`), and
@@ -237,25 +263,33 @@ export function reviewLoopImageNotes(annotation: Pick<Annotation, 'images'>): st
  * lines under the entry.
  */
 export function reviewLoopCommentInputs(
-  groups: readonly { on: ReviewAnchor; annotations: readonly Annotation[] }[],
+  groups: readonly { on: ReviewAnchor; annotations: readonly Annotation[]; blocks?: readonly { id: string; startLine?: number; content?: string }[] }[],
   context: {
     index: ReviewLoopIndex;
     /** The page's annotations and the panel's cards, by id (to walk a reply draft up to its thread). */
     byId: ReadonlyMap<string, Pick<Annotation, 'id' | 'inReplyTo'>>;
     offsets: ReadonlyMap<string, number>;
+    /** Today's feedback entry of an annotation (`exportAnnotationEntry`): its lines go under the entry when it says more than the words. */
+    entry?: (annotation: Annotation) => string;
   },
 ): ReviewLoopCommentInput[] {
   const out: ReviewLoopCommentInput[] = [];
   for (const group of groups) {
     for (const annotation of group.annotations) {
-      const notes = reviewLoopImageNotes(annotation);
-      const words = annotation.text?.trim() ? annotation.text : notes.length > 0 ? 'See the attached images.' : '(no words)';
-      const base = { id: annotation.id, ...(notes.length > 0 ? { notes } : {}) };
+      const images = reviewLoopImageNotes(annotation);
+      const entryLines = context.entry && carriesContext(annotation)
+        ? context.entry(annotation).split('\n').filter((line) => line.trim() !== '' && !line.startsWith('**Attached images:**') && !/^- \[[^\]]*\] `/.test(line))
+        : [];
+      const words = clip(annotation.text?.trim() ? annotation.text : images.length > 0 ? 'See the attached images.' : '(no words)', TEXT_MAX);
       const thread = annotation.inReplyTo ? reviewLoopThreadOf(annotation.inReplyTo, context.index, context.byId) : null;
       const parentSent = annotation.inReplyTo ? context.index.sent.has(annotation.inReplyTo) : false;
+      // A reply to a comment the same round carries, which has no id the agent knows yet: a comment of its own, said so.
+      const replyTo = annotation.inReplyTo && thread === null && !(isPassageAnnotation(annotation) && parentSent) ? [`In reply to comment ${annotation.inReplyTo}.`] : [];
+      const notes = [...replyTo, ...entryLines, ...images];
+      const base = { id: annotation.id, ...(notes.length > 0 ? { notes } : {}) };
       if (annotation.inReplyTo && isPassageAnnotation(annotation) && parentSent) {
         const offset = context.offsets.get(annotation.id);
-        out.push({ ...base, parent: annotation.inReplyTo, quote: annotation.originalText, text: words, ...(offset !== undefined ? { quote_offset: offset } : {}) });
+        out.push({ ...base, parent: annotation.inReplyTo, quote: clip(annotation.originalText, QUOTE_MAX), text: words, ...(offset !== undefined ? { quote_offset: offset } : {}) });
         continue;
       }
       if (thread !== null) {
@@ -263,11 +297,13 @@ export function reviewLoopCommentInputs(
         continue;
       }
       const deletion = annotation.type === AnnotationType.DELETION;
+      const on = group.on;
+      const lines = on.kind !== 'message' && !on.lines && annotation.type !== AnnotationType.GLOBAL_COMMENT ? blockLines(group.blocks, annotation.blockId) : null;
       out.push({
         ...base,
-        on: group.on,
-        quote: annotation.type === AnnotationType.GLOBAL_COMMENT ? '' : (annotation.originalText ?? ''),
-        text: deletion ? (annotation.text ?? '') : words,
+        on: lines && on.kind !== 'message' ? { ...on, lines } : on,
+        quote: annotation.type === AnnotationType.GLOBAL_COMMENT ? '' : clip(annotation.originalText ?? '', QUOTE_MAX),
+        text: deletion ? clip(annotation.text ?? '', TEXT_MAX) : words,
         ...(deletion ? { type: 'deletion' as const } : {}),
         annotation: annotation as unknown as Record<string, unknown>,
       });

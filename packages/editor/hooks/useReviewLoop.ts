@@ -26,6 +26,8 @@ export interface ReviewLoopSendResult {
   ok: boolean;
   /** What went (when `ok`). */
   send?: { id: string; round: number; mode: 'now' | 'round' };
+  /** The server answered an earlier press of the same key: nothing new went. */
+  replayed?: boolean;
   /** Why it did not (when not `ok`). */
   error?: string;
 }
@@ -87,7 +89,7 @@ async function errorOf(response: Response): Promise<string> {
 export interface ReviewLoop {
   /** The loop was available in this tab: rounds here, and its view (the last one the page read). */
   available: boolean;
-  /** The host carries sends now; false while it is away (a send is refused, said so). */
+  /** The host carries sends now; false while it is away (the page then decides as today; the last view stays drawn). */
   connected: boolean;
   state: ReviewLoopState | null;
   index: ReviewLoopIndex;
@@ -114,8 +116,8 @@ export function useReviewLoop(options: { enabled: boolean }): ReviewLoop {
   reviewRef.current = review;
 
   // Once the loop was available here, its last view stays: a host that went
-  // away for a moment (or for good) leaves the sent comments sent, and a write
-  // meanwhile is refused by the server, said so, the drafts kept.
+  // away leaves the sent comments sent (never feedback again), while the
+  // page's decisions are today's until it comes back (`connected`).
   const [connected, setConnected] = useState(false);
   const receive = useCallback((value: unknown) => {
     if (!value || typeof value !== 'object' || typeof (value as { available?: unknown }).available !== 'boolean') return;
@@ -135,8 +137,23 @@ export function useReviewLoop(options: { enabled: boolean }): ReviewLoop {
       .catch(() => {
         // No loop route (a static page, an older server): today's page.
       });
+    // The stream carries every change; a page that fell back to polling it (a
+    // proxy) reads the loop again when the tab comes back into view.
+    const reread = () => {
+      if (document.visibilityState !== 'visible') return;
+      fetch(REVIEW_THREADS_URL)
+        .then((response) => (response.ok ? response.json() : null))
+        .then((body: unknown) => {
+          if (!cancelled) receive(body);
+        })
+        .catch(() => {});
+    };
+    document.addEventListener('visibilitychange', reread);
+    window.addEventListener('focus', reread);
     return () => {
       cancelled = true;
+      document.removeEventListener('visibilitychange', reread);
+      window.removeEventListener('focus', reread);
     };
   }, [enabled, receive]);
 
@@ -174,13 +191,13 @@ export function useReviewLoop(options: { enabled: boolean }): ReviewLoop {
       return { ok: false, error: 'Plannotator could not reach its server.' };
     }
     if (!response.ok) return { ok: false, error: await errorOf(response) };
-    const body = (await response.json().catch(() => null)) as { send?: { id?: unknown; round?: unknown; mode?: unknown } } | null;
+    const body = (await response.json().catch(() => null)) as { send?: { id?: unknown; round?: unknown; mode?: unknown }; replayed?: unknown } | null;
     receive(body);
     const send = body?.send;
     if (!send || typeof send.id !== 'string') return { ok: false, error: 'The server did not say what it sent.' };
     const sendId = send.id;
     update((current) => ({ ...current, keys: { ...current.keys, [sendId]: input.key } }));
-    return { ok: true, send: { id: sendId, round: typeof send.round === 'number' ? send.round : 0, mode: send.mode === 'now' ? 'now' : 'round' } };
+    return { ok: true, send: { id: sendId, round: typeof send.round === 'number' ? send.round : 0, mode: send.mode === 'now' ? 'now' : 'round' }, ...(body?.replayed === true ? { replayed: true } : {}) };
   }, [receive, update]);
 
   const send = useCallback((input: ReviewLoopSendInput) => post({ ...input, key: input.key ?? pressKey() }), [post]);
@@ -191,7 +208,7 @@ export function useReviewLoop(options: { enabled: boolean }): ReviewLoop {
   const retry = useCallback(async (sendId: string) => {
     const key = keysRef.current[sendId];
     if (typeof key !== 'string') return null;
-    // The server finds the press by its key and hands its send over again; the body's comments are not read.
+    // The server finds the press by its key and hands its send over again; the body's mode and comments are not read.
     return post({ mode: 'round', comments: [], key });
   }, [post]);
 
