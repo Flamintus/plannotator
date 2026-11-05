@@ -57,6 +57,23 @@ test("a session is handed its replies and its sends in the order they came; toge
   expect(store.pendingWakeItems("ses_a", { together: true }).map((item) => [item.id, item.sends.length])).toEqual([[reply.id, 0]]);
 });
 
+test("together, a send that waited and rides a later message's words never brings them ahead of words written before them", () => {
+  const { store, clock, asked, draft, send } = setup();
+  draft("c-1");
+  draft("c-2");
+  // A comment sent now while the session is busy; then words alone; then the Finish with words.
+  const now = send(["c-1"], "k-1");
+  clock.now += 1000;
+  const first = store.sendReply(asked.id, { words: "Looks good so far.", idempotency_key: "r-1" }).reply!;
+  clock.now += 1000;
+  const last = store.sendReply(asked.id, { words: "That is all for this round.", idempotency_key: "r-2" }).reply!;
+  const finish = send(["c-2"], "k-2", "round", last.id);
+  expect(store.pendingWakeItems("ses_a", { together: true, sends: true }).map((item) => [item.id, item.sends.map((s) => s.id)])).toEqual([
+    [first.id, []],
+    [last.id, [now.id, finish.id]],
+  ]);
+});
+
 test("a send with words rides their message; the message's delivery settles it, a send for another session is never settled by it", () => {
   const { store, asked, draft, send } = setup();
   draft("c-1");

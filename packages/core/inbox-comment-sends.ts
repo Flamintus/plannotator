@@ -34,6 +34,9 @@
 import type { InboxAnnotationRecord, InboxCommentReplyRecord } from "./inbox-attachments";
 import {
   INBOX_COMMENT_READING,
+  inboxCommentRoundNow,
+  inboxCommentRounds,
+  inboxCommentThreads,
   inboxCommentWrites,
   isInboxCommentAskedAgain,
   type InboxCommentAnchor,
@@ -253,6 +256,37 @@ export function inboxCommentSendStatus(send: Pick<InboxCommentSend, "to" | "deli
   return reviewSendStatus(send, lastAgentReplyAt, busy);
 }
 
+/** What a thread's header counts of its comment threads (`inboxCommentRoundCount`). */
+export interface InboxCommentRoundCount {
+  /** The round under way (`inboxCommentRoundNow`). */
+  round: number;
+  /** A send went in the round under way: the person's Finish ends it, drafts or none. */
+  started: boolean;
+  /** The sent threads, comments and sub-threads, still open (never a guided review's). */
+  open: number;
+}
+
+/**
+ * The thread's comment rounds as any client counts them for its header
+ * ("Round 2 · 3 open") and to offer the Finish: the round under way, whether
+ * a send already went in it, and the sent threads still open. Informative
+ * only: nothing of it reaches the agent.
+ */
+export function inboxCommentRoundCount(input: {
+  messages: readonly InboxCommentThreadMessage[];
+  /** The thread's comment records (the sent ones count; drafts are left out). */
+  records: readonly InboxAnnotationRecord[];
+  agentReplies?: readonly InboxCommentReplyRecord[];
+  sends?: readonly InboxCommentSend[];
+}): InboxCommentRoundCount {
+  const sends = input.sends ?? [];
+  const agentReplies = input.agentReplies ?? [];
+  const rounds = inboxCommentRounds(input.messages, input.records, sends, agentReplies);
+  const round = inboxCommentRoundNow(input.messages, input.records, sends, agentReplies);
+  const open = inboxCommentThreads(input.messages, input.records, agentReplies, sends).filter(isInboxCommentAskedAgain).length;
+  return { round, started: sends.some((send) => rounds.get(send.id) === round), open };
+}
+
 /** The title of the text a comment send gives the agent. */
 export const INBOX_COMMENT_SEND_TITLE = REVIEW_SEND_TITLE;
 
@@ -388,7 +422,8 @@ export function inboxWakeItems(
     if (joined) joined.sends.push(send);
     else items.push({ id: send.id, thread_id: send.thread_id, message: null, sends: [send] });
   }
-  const first = (item: InboxWakeItem) => Math.min(item.message ? seqOf(item.message.id) : Infinity, ...item.sends.map((send) => seqOf(send.id)));
+  // A message's item keeps its message's place: a send that waited and rides it never brings its words ahead of words written before them.
+  const first = (item: InboxWakeItem) => (item.message ? seqOf(item.message.id) : Math.min(...item.sends.map((send) => seqOf(send.id))));
   for (const item of items) item.sends.sort((a, b) => seqOf(a.id) - seqOf(b.id));
   return items.sort((a, b) => first(a) - first(b));
 }

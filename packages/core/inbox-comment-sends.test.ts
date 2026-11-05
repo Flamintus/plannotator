@@ -8,6 +8,7 @@ import {
   inboxCommentSendRoutes,
   inboxCommentSendStatus,
   inboxCommentEntryNotes,
+  inboxCommentRoundCount,
   inboxCommentSendText,
   inboxCommentsWake,
   inboxCommentThreadView,
@@ -162,6 +163,27 @@ describe('rounds of comment sends', () => {
     const round = (second: number | null) => inboxCommentThreads([agent('msg_a1', 0)], records, [agentReply('rep_b', 'c1', 7, 'ses_b')], sends(second))[0]!.replies[0]!.round;
     expect(round(6)).toBe(2);
     expect(round(null)).toBe(1);
+  });
+});
+
+describe("the header's count", () => {
+  test('the round under way, whether a send went in it (a Finish then ends it), and the sent threads still open', () => {
+    const messages = [agent('msg_a1', 0)];
+    const c1 = record('c1', { sent_reply_id: 'snd_1' });
+    const c2 = record('c2', { sent_reply_id: 'snd_1', resolved_at: at(4) });
+    const guide = record('g1', { sent_reply_id: 'snd_1', message: undefined, guide: { title: 'Review', file: 'src/a.ts', side: 'new', line_start: 3, line_end: 3 }, version: 'a'.repeat(64) });
+    const sub = record('s1', { sent_reply_id: 'snd_2', parent: 'c1' });
+    const draft = record('c3');
+    // Nothing sent yet: round 1, no send in it, none open (a draft is not counted).
+    expect(inboxCommentRoundCount({ messages, records: [draft] })).toEqual({ round: 1, started: false, open: 0 });
+    // A `now` send went: round 1 started; c1 and its sub-thread open, c2 resolved, a guided review's never counted.
+    const now = [send('snd_1', 2), send('snd_2', 3)];
+    expect(inboxCommentRoundCount({ messages, records: [c1, c2, guide, sub, draft], sends: now })).toEqual({ round: 1, started: true, open: 2 });
+    // The Finish ends it: round 2 under way, nothing sent in it yet; what is open stays open.
+    const finished = [...now, send('snd_3', 5, { mode: 'round' })];
+    expect(inboxCommentRoundCount({ messages, records: [c1, c2, guide, sub], sends: finished })).toEqual({ round: 2, started: false, open: 2 });
+    // An agent's reply newer than the resolution opens c2 again.
+    expect(inboxCommentRoundCount({ messages, records: [c1, c2, sub], sends: finished, agentReplies: [agentReply('rep_1', 'c2', 6)] }).open).toBe(3);
   });
 });
 

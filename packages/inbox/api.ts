@@ -252,6 +252,9 @@ export interface ReplyResult {
   reply: unknown;
   questions: InboxQuestion[];
   replayed: boolean;
+  /** The Finish round that rode this reply (`finish_round`): the comment sends it wrote, or why it did not go (the reply went). */
+  comment_sends?: InboxCommentSend[];
+  finish_refused?: { code: string; message: string };
   /** To another machine: held in this Inbox's outbox until that machine's Inbox answers (the thread shows it waiting). */
   held?: OutboxView;
 }
@@ -1245,6 +1248,8 @@ export const inboxApi = {
       clear_draft?: string;
       /** The person's verdict on the review this message carries (Approve / Send feedback in the review's header; Code review on). */
       review_verdict?: 'approved' | 'changes_requested';
+      /** Finish round riding this reply (comment sends, experimental): written with it, under the Finish's own key. */
+      finish_round?: { idempotency_key: string };
     },
   ) =>
     // To another machine: the newest seq the person saw there rides along (rule 11), and a reply its Inbox has not
@@ -1354,9 +1359,23 @@ export const inboxApi = {
   /** The person resolves a sent comment, or opens it again (experimental "persistent-comments"). */
   resolveComment: (id: string, resolved: boolean) =>
     post<{ annotation: InboxAnnotationRecord }>(inboxUrl(`/annotations/${encodeURIComponent(id)}/resolve`, undefined, machineOf(id)), { resolved }),
-  /** The person's reply under a sent comment, new or edited: a draft the next Send carries (experimental "persistent-comments"). */
+  /**
+   * The person's reply under a sent comment, new or edited: a draft (experimental "persistent-comments"). Under a
+   * live thread (a comment send went to it at once) it goes on its own: `sends` names what carried it, and
+   * `send_refused` says why it stayed a draft.
+   */
   saveCommentReply: (commentId: string, reply: { id: string; text: string; mentions?: readonly string[] }) =>
-    post<{ annotation: InboxAnnotationRecord }>(inboxUrl(`/annotations/${encodeURIComponent(commentId)}/replies`, undefined, machineOf(commentId)), { annotation: reply }),
+    post<{ annotation: InboxAnnotationRecord; sends?: InboxCommentSend[]; send_refused?: { code: string; message: string } }>(
+      inboxUrl(`/annotations/${encodeURIComponent(commentId)}/replies`, undefined, machineOf(commentId)),
+      { annotation: reply },
+    ),
+  /**
+   * The person's comments sent to the agent as records of their own (experimental "persistent-comments", this
+   * Inbox's threads only): `now`, the drafts named, the round stays open; `round`, the Finish, every draft left
+   * (with words, the Finish rides the reply instead: `reply`'s `finish_round`).
+   */
+  sendComments: (threadId: string, body: { mode: 'now' | 'round'; comment_ids?: readonly string[]; idempotency_key: string }) =>
+    post<{ sends: InboxCommentSend[]; message: InboxMessageWire | null; replayed: boolean }>(inboxUrl(`/threads/${encodeURIComponent(threadId)}/comment-sends`), body),
   /** The person's sub-thread on a passage of a message of a comment thread (`parentId`): a draft the next Send carries (experimental "persistent-comments"). */
   saveSubThread: (parentId: string, sub: { id: string; text: string; quote: string; quote_offset: number; mentions?: readonly string[] }) =>
     post<{ annotation: InboxAnnotationRecord }>(inboxUrl(`/annotations/${encodeURIComponent(parentId)}/subthreads`, undefined, machineOf(parentId)), { annotation: sub }),
@@ -1671,8 +1690,8 @@ export interface AttachmentsModel {
   annotations: InboxAnnotationRecord[];
   /** The comments a Send carried, kept in view (experimental "persistent-comments"; absent while off or from an older Inbox). */
   sent_comments?: InboxAnnotationRecord[];
-  /** The agents' replies under them (the same switch; absent while off or from an older Inbox). */
-  comment_replies?: InboxCommentReplyRecord[];
+  /** The agents' replies under them, each with its seq on the event log (the same switch; absent while off or from an older Inbox; `seq` absent from an older one). */
+  comment_replies?: (InboxCommentReplyRecord & { seq?: number })[];
   /** The person's comment sends, which carried some of them (the same switch; absent while off or from an older Inbox). */
   comment_sends?: InboxCommentSend[];
 }

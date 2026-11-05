@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import type { InboxCommentSend } from "@plannotator/core/inbox-comment-sends";
 import type { InboxAnnotationRecord, InboxMessage } from "@plannotator/core/inbox-types";
+import { parseInboxBridgeCommands } from "@plannotator/shared/inbox/connection";
 import { startInboxServer, type InboxServer } from "./inbox";
 
 const roots: string[] = [];
@@ -118,6 +119,10 @@ test("off: the route is refused and writes nothing", async () => {
   const sent = await opening(client, project);
   await comment(server, sent.message_id, "c-1", "all stores at once", "One store first.");
   expect(await refusal(server, sent.thread_id, { mode: "now", comment_ids: ["c-1"], idempotency_key: "k-1" })).toEqual([409, "persistent_comments_off"]);
+  // A Send's finish_round too, before its words are written.
+  const finish = await post(server, `/api/inbox/messages/${sent.message_id}/reply`, { idempotency_key: "w-1", words: "Done.", finish_round: { idempotency_key: "f-1" } });
+  expect([finish.status, ((await finish.json()) as { code: string }).code]).toEqual([409, "persistent_comments_off"]);
+  expect(server.store.thread(sent.thread_id)!.messages.filter((m) => m.author.kind === "person")).toHaveLength(0);
   expect(existsSync(join(projectFolder(dataDir), "comment-sends.jsonl"))).toBe(false);
   expect((await files(server, sent.thread_id)).annotations.map((r) => r.id)).toEqual(["c-1"]);
 });
@@ -256,6 +261,76 @@ test("words go as the person's reply to the message they answer, and the send to
   const replay = await press(server, sent.thread_id, { mode: "round", words: "Looks close; see my comment.", idempotency_key: "f-1" });
   expect([replay.replayed, replay.message?.id]).toEqual([true, finish.message!.id]);
   expect(server.store.thread(sent.thread_id)!.messages.filter((m) => m.author.kind === "person")).toHaveLength(1);
+});
+
+test("finish_round: a Finish rides the reply the Send writes, to that reply's session; a pending wake hands both at once; refused before any write", async () => {
+  const { project, dataDir } = world();
+  const server = await start(dataDir);
+  const alpha = await agent(server);
+  const beta = await agent(server);
+  const sent = await opening(alpha, project);
+  await comment(server, sent.message_id, "c-alpha", "all stores at once", "One store first.");
+  const onFile = await post(server, "/api/inbox/annotations", { attachment_id: sent.attachments[0]!.id, version: "current", annotation: words("c-file", "Ship on Friday.", "Not on a Friday.") });
+  expect(onFile.status).toBe(200);
+  await call(beta, "send_message", { project_path: project, body: "I can take the press release.", reply_to: sent.message_id, ...B });
+  const replies = () => server.store.thread(sent.thread_id)!.messages.filter((m) => m.author.kind === "person").length;
+
+  // A malformed Finish is refused before the words are written.
+  const bad = await post(server, `/api/inbox/messages/${sent.message_id}/reply`, { idempotency_key: "w-0", words: "Over to you.", finish_round: {} });
+  expect([bad.status, ((await bad.json()) as { code: string }).code]).toEqual([422, "validation_error"]);
+  expect(replies()).toBe(0);
+
+  // alpha's connection waits on the bridge (idle, long poll) when the Finish with words goes.
+  const poll = fetch(`http://127.0.0.1:${server.port}/api/inbox/bridge/poll`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${server.token}` },
+    body: JSON.stringify({ session: A.agent_session, host: "claude-code", waitMs: 5000, comments: true }),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  // The window's Send aimed the words at alpha's message (not the newest agent message, beta's).
+  const replied = await post(server, `/api/inbox/messages/${sent.message_id}/reply`, { idempotency_key: "w-1", words: "Over to you, alpha.", finish_round: { idempotency_key: "f-1" } });
+  expect(replied.status).toBe(200);
+  const answer = (await replied.json()) as { reply: InboxMessage; comment_sends: InboxCommentSend[] };
+  // The file comment goes where the words went (alpha), and the send names the reply.
+  expect(answer.comment_sends.map((s) => [s.to.session, s.mode, [...s.comments].sort(), s.with_message])).toEqual([["ses_alpha", "round", ["c-alpha", "c-file"], answer.reply.id]]);
+  // The wake that was waiting hands the words and the Finish as one command (the comments with the words).
+  const handed = parseInboxBridgeCommands(await (await poll).text()) as { id: string; comments?: { sends: string[] } }[];
+  expect(handed.map((c) => [c.id, c.comments?.sends])).toEqual([[answer.reply.id, [answer.comment_sends[0]!.id]]]);
+
+  // A retry of the Send answers what it wrote; nothing new.
+  const again = (await (await post(server, `/api/inbox/messages/${sent.message_id}/reply`, { idempotency_key: "w-1", words: "Over to you, alpha.", finish_round: { idempotency_key: "f-1" } })).json()) as { replayed: boolean; comment_sends: InboxCommentSend[] };
+  expect([again.replayed, again.comment_sends.map((s) => s.id)]).toEqual([true, answer.comment_sends.map((s) => s.id)]);
+  expect(replies()).toBe(1);
+});
+
+test("a Finish never names again a comment sent before the thread's archive, once the agent brings the thread back", async () => {
+  const { project, dataDir } = world();
+  const server = await start(dataDir);
+  const client = await agent(server);
+  const sent = await opening(client, project);
+  await comment(server, sent.message_id, "c-old", "all stores at once", "One store first.");
+  await press(server, sent.thread_id, { mode: "now", comment_ids: ["c-old"], idempotency_key: "k-1" });
+  expect((await post(server, `/api/inbox/messages/${sent.thread_id}/resolve`, { resolved: true })).status).toBe(200);
+  const back = (await call(client, "send_message", { project_path: project, body: "One more thing about the rollout.", reply_to: sent.message_id, ...A })).structured as { message_id: string };
+  await comment(server, back.message_id, "c-new", "One more thing", "Which thing?");
+  await press(server, sent.thread_id, { mode: "now", comment_ids: ["c-new"], idempotency_key: "k-2" });
+  // Both still open; the Finish names the one sent since the thread came back, never the one the archive closed.
+  const finish = await press(server, sent.thread_id, { mode: "round", idempotency_key: "f-1" });
+  expect(finish.sends.flatMap((s) => s.comments)).toEqual(["c-new"]);
+});
+
+test("the window's read gives each agent's reply its seq on the event log", async () => {
+  const { project, dataDir } = world();
+  const server = await start(dataDir);
+  const client = await agent(server);
+  const sent = await opening(client, project);
+  await comment(server, sent.message_id, "c-1", "all stores at once", "One store first.");
+  await press(server, sent.thread_id, { mode: "now", comment_ids: ["c-1"], idempotency_key: "k-1" });
+  const before = server.store.cursor();
+  await call(client, "send_message", { project_path: project, comment_replies: [{ comment_id: "c-1", text: "Lyon first, then." }], ...A });
+  const replies = ((await files(server, sent.thread_id)) as { comment_replies?: { id: string; seq?: number }[] }).comment_replies!;
+  expect(replies).toHaveLength(1);
+  expect(replies[0]!.seq).toBeGreaterThan(before);
 });
 
 test("live: once a `now` send reached a thread, the person's reply under it goes on its own; under any other it stays a draft", async () => {

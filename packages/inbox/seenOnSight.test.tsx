@@ -90,6 +90,8 @@ let focused = true;
 let root: Root | null = null;
 let host: HTMLElement | null = null;
 let savedFetch: typeof fetch;
+/** The thread's files as the Inbox serves them (comment sends: its sent comments, sends and the agent's replies). */
+let threadFiles: Record<string, unknown> = { serverSession: 's', attachments: [], annotations: [] };
 const restore: (() => void)[] = [];
 
 function stub<T extends object>(target: T, key: string, descriptor: PropertyDescriptor) {
@@ -111,17 +113,22 @@ beforeEach(() => {
   visibility = 'visible';
   focused = true;
   observers.length = 0;
+  threadFiles = { serverSession: 's', attachments: [], annotations: [] };
   savedFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     if (init?.method === 'POST') return Response.json({ questions: [] });
-    if (path.includes('/attachments')) return Response.json({ serverSession: 's', attachments: [], annotations: [] });
+    if (path.includes('/attachments')) return Response.json(threadFiles);
     if (path.includes('/sessions')) return Response.json({ home: null, project: PROJECT, sessions: [] });
     return Response.json({});
   }) as typeof fetch;
   stub(HTMLElement.prototype, 'getBoundingClientRect', {
     value(this: HTMLElement) {
       if (this.classList.contains('ib-pbody')) return rect(0, 800);
+      // An agent's reply in a comment's box has a box of its own when the test gives it one.
+      const row = this.closest<HTMLElement>('[data-sent-reply]');
+      const rowBox = row ? boxes[row.getAttribute('data-sent-reply')!] : undefined;
+      if (row && rowBox) return this === row ? rect(rowBox.top, rowBox.height) : rect(rowBox.top, 0);
       const article = this.closest<HTMLElement>('[data-message-article]');
       const box = article ? (boxes[article.getAttribute('data-message-article')!] ?? { top: 5000, height: 300 }) : null;
       if (!box) return rect(0, 0);
@@ -134,6 +141,10 @@ beforeEach(() => {
   stub(document, 'elementFromPoint', {
     value: (_x: number, y: number) => {
       if (covers.some((c) => y >= c.top && y < c.bottom)) return coverElement;
+      for (const row of document.querySelectorAll<HTMLElement>('[data-sent-reply]')) {
+        const box = boxes[row.getAttribute('data-sent-reply')!];
+        if (box && y >= box.top && y < box.top + box.height) return row;
+      }
       for (const article of document.querySelectorAll<HTMLElement>('[data-message-article]')) {
         const box = boxes[article.getAttribute('data-message-article')!];
         if (box && y >= box.top && y < box.top + box.height) return article.querySelector('.ib-fline') ?? article;
@@ -202,6 +213,8 @@ async function wait(ms: number) {
 interface PaneProps {
   thread: InboxThread;
   onSeen: (through: number) => void;
+  /** Raised to read the thread's files again (the event stream's comment events). */
+  filesChanged?: number;
   file?: { id: string; version: 'current' | 'sent'; focus: string | null } | null;
   phone?: boolean;
   covered?: boolean;
@@ -211,7 +224,7 @@ interface PaneProps {
   seenThrough?: number;
 }
 
-function pane({ thread, onSeen, file = null, phone = false, covered = false, lookSeq = 2, seenThrough = 2 }: PaneProps) {
+function pane({ thread, onSeen, filesChanged = 0, file = null, phone = false, covered = false, lookSeq = 2, seenThrough = 2 }: PaneProps) {
   return (
     <div className="pn-inbox">
       <ThreadPane
@@ -223,6 +236,7 @@ function pane({ thread, onSeen, file = null, phone = false, covered = false, loo
         file={file}
         onOpenFile={() => {}}
         onOpenGuide={() => {}}
+        filesChanged={filesChanged}
         lookSeq={lookSeq}
         seenThrough={seenThrough}
         onSeen={onSeen}
@@ -456,6 +470,61 @@ describe.skipIf(!hasDom)('seen on sight in the thread pane', () => {
     boxes = { msg_A2: { top: 100, height: 300 }, msg_A3: { top: 600, height: 200 } };
     fireObservers();
     await wait(SEEN_DWELL_MS + 150);
+    expect(seen).toEqual([8]);
+  });
+
+  test("comment sends: an agent's reply sent alone, arriving under a comment, is New and seen on sight in its box, in the same look as the messages", async () => {
+    const at = '2026-10-12T17:40:00.000Z';
+    const comment = {
+      id: 'c1', project_id: PROJECT.id, thread_id: ROOT, message_id: ROOT, attachment_id: '', path: ROOT, version: 'current', message: { at: '2026-10-12T17:32:00.000Z' },
+      annotation: { id: 'c1', blockId: 'block-0', type: 'COMMENT', text: 'Which events?', originalText: 'refund webhook', startOffset: 4, endOffset: 18, createdA: 1 },
+      created_at: at, updated_at: at, removed_at: null, sent_reply_id: 'snd_1',
+    };
+    const send = { id: 'snd_1', project_id: PROJECT.id, thread_id: ROOT, batch: 'b1', to: { host: 'claude-code', session: 'ses_a' }, round: 1, mode: 'now', comments: ['c1'], with_message: null, idempotency_key: 'k', created_at: at, delivery: { at, host: 'claude-code', session: 'ses_a' } };
+    const reply = { id: 'rep_1', project_id: PROJECT.id, thread_id: ROOT, re: 'c1', from: AGENT, call: 'call_1', text: 'Refunds and disputes.', created_at: '2026-10-12T17:41:00.000Z', seq: 7 };
+    threadFiles = { serverSession: 's', attachments: [], annotations: [], sent_comments: [comment], comment_replies: [], comment_sends: [send] };
+    // The message the comment is on, its reply's row on screen; A2 (an agent message that lands first) below the view.
+    boxes = { [ROOT]: { top: 40, height: 400 }, rep_1: { top: 300, height: 80 } };
+    const seen: number[] = [];
+    const props = { onSeen: (through: number) => seen.push(through) };
+    const el = await openThenArrive(props);
+    threadFiles = { ...threadFiles, comment_replies: [reply] };
+    act(() => root!.render(pane({ ...props, thread: thread(A2), filesChanged: 1 })));
+    await wait(60);
+    const row = () => el.querySelector<HTMLElement>('[data-sent-comment="c1"] [data-sent-reply="rep_1"]');
+    expect(row()).not.toBeNull();
+    expect(row()!.hasAttribute('data-sent-new')).toBe(true);
+    // A2 (seq 6) is not on screen: the reply (seq 7) seen alone records nothing.
+    await wait(SEEN_DWELL_MS + 200);
+    expect(seen).toEqual([]);
+    // A2 comes into view: both are seen, and the look goes up to the reply.
+    boxes = { ...boxes, msg_A2: { top: 500, height: 200 } };
+    fireObservers();
+    await wait(SEEN_DWELL_MS + 150);
+    expect(seen).toEqual([7]);
+  });
+
+  test("comment sends: a reply sent alone the person was not shown never holds back the look of a message seen after it", async () => {
+    const at = '2026-10-12T17:40:00.000Z';
+    const comment = {
+      id: 'c1', project_id: PROJECT.id, thread_id: ROOT, message_id: ROOT, attachment_id: '', path: ROOT, version: 'current', message: { at: '2026-10-12T17:32:00.000Z' },
+      annotation: { id: 'c1', blockId: 'block-0', type: 'COMMENT', text: 'Which events?', originalText: 'refund webhook', startOffset: 4, endOffset: 18, createdA: 1 },
+      created_at: at, updated_at: at, removed_at: null, sent_reply_id: 'snd_1',
+    };
+    const send = { id: 'snd_1', project_id: PROJECT.id, thread_id: ROOT, batch: 'b1', to: { host: 'claude-code', session: 'ses_a' }, round: 1, mode: 'now', comments: ['c1'], with_message: null, idempotency_key: 'k', created_at: at, delivery: { at, host: 'claude-code', session: 'ses_a' } };
+    const reply = { id: 'rep_1', project_id: PROJECT.id, thread_id: ROOT, re: 'c1', from: AGENT, call: 'call_1', text: 'Refunds and disputes.', created_at: '2026-10-12T17:41:00.000Z', seq: 7 };
+    threadFiles = { serverSession: 's', attachments: [], annotations: [], sent_comments: [comment], comment_replies: [], comment_sends: [send] };
+    // The reply's row scrolled out of view above; A3 (seq 8) lands on screen after it.
+    boxes = { [ROOT]: { top: -600, height: 400 }, rep_1: { top: -400, height: 80 }, msg_A3: { top: 300, height: 200 } };
+    const seen: number[] = [];
+    const props = { onSeen: (through: number) => seen.push(through) };
+    await openThenArrive(props);
+    threadFiles = { ...threadFiles, comment_replies: [reply] };
+    act(() => root!.render(pane({ ...props, thread: thread(A3), filesChanged: 1 })));
+    await wait(60);
+    expect(document.querySelector('[data-sent-comment="c1"] [data-sent-reply="rep_1"]')?.hasAttribute('data-sent-new')).toBe(true);
+    await wait(SEEN_DWELL_MS + 200);
+    // A3 seen: the look goes to it, over the reply nobody was shown (a later look covers it, as before comment sends).
     expect(seen).toEqual([8]);
   });
 

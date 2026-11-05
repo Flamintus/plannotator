@@ -18,7 +18,12 @@
  * words selected in a sent message of a thread (the agent's reply, a card's
  * words) open a comment on that passage, a sub-thread drawn as a box under
  * that message, its passage marked, and a resolved comment stays unfolded
- * while a sub-thread under it is open, then folds with it.
+ * while a sub-thread under it is open, then folds with it; and comment
+ * sends: a draft (a comment drawn as a box, a sub-thread) has Send, which
+ * sends it alone at once and shows what became of it, the words' Send
+ * carries no draft, and Finish round sends the rest with the words, the
+ * header counting the round; a reply under a live thread goes on its own,
+ * and Finish round with nothing else to send ends the round alone.
  * The server side is proved in packages/server/inbox-persistent-comments.test.ts,
  * inbox-comment-replies.test.ts and inbox-comment-subthreads.test.ts.
  *
@@ -97,7 +102,7 @@ beforeAll(async () => {
   mkdirSync(join(dir, 'bin'));
   writeFileSync(join(dir, 'bin', 'tailscale'), '#!/bin/sh\nexit 1\n');
   chmodSync(join(dir, 'bin', 'tailscale'), 0o755);
-  child = Bun.spawn(['bun', SERVER_SCRIPT, join(dir, 'data'), join(dir, 'projects'), '10'], {
+  child = Bun.spawn(['bun', SERVER_SCRIPT, join(dir, 'data'), join(dir, 'projects'), '14'], {
     env: { ...process.env, DOM_TESTS: '0', PLANNOTATOR_DATA_DIR: join(dir, 'data'), PLANNOTATOR_EXPERIMENTAL: 'persistent-comments', HOME: dir, PATH: `${join(dir, 'bin')}:${process.env.PATH}` },
     stdin: 'pipe',
     stdout: 'pipe',
@@ -471,17 +476,130 @@ test.skipIf(!hasDom)("under the message, words selected in the agent's reply ope
   // Its place is its thread's: nothing new painted on the message.
   expect(el.querySelectorAll(`[data-message-id="${sent}"] [data-bind-id="${model.annotations[0]!.id}"], [data-message-id="${sent}"] [data-highlight-id="${model.annotations[0]!.id}"]`)).toHaveLength(0);
 
-  // The window's Send carries it with the words its passage is in, under its own id.
-  const send = () => [...el.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.replace(/\s+/g, ' ').trim() === 'Send');
-  if (!send()) act(() => el.querySelector<HTMLButtonElement>('[data-reply-button]')!.click());
-  await until(() => send() !== undefined, 'the Send button');
-  act(() => send()!.click());
-  await until(() => posted.some((p) => p.path.endsWith('/reply')), 'the Send');
-  const feedback = String(posted.find((p) => p.path.endsWith('/reply'))!.body.feedback);
-  expect(feedback).toContain(`Comment on a passage of reply ${replied} under comment sub-msg-1`);
-  expect(feedback).toContain(`In: "${STEPS}"`);
-  expect(feedback).toContain(`(id ${model.annotations[0]!.id})`);
+  // Its own Send sends it alone, at once, as a comment send (the server words it for the agent, with the words its
+  // passage is in); no reply of the person's is written.
+  const id = model.annotations[0]!.id;
+  await act(async () => {
+    draft()!.querySelector<HTMLButtonElement>(`[data-sent-send="${id}"]`)!.click();
+  });
+  await until(() => posted.some((p) => p.path.endsWith('/comment-sends')), 'the send');
+  expect(posted.find((p) => p.path.endsWith('/comment-sends'))!.body).toMatchObject({ mode: 'now', comment_ids: [id] });
+  await until(() => draft()?.hasAttribute('data-sent-draft') === false, 'the sub-thread sent');
+  expect(draft()!.querySelector('[data-sent-status="pending"]')).not.toBeNull();
+  expect(posted.some((p) => p.path.endsWith('/reply'))).toBe(false);
+  const [carried] = (JSON.parse((await loopback(`/api/inbox/threads/${sent}/attachments`)).text) as { comment_sends: { comments: string[]; mode: string }[] }).comment_sends;
+  expect([carried!.mode, carried!.comments]).toEqual(['now', [id]]);
 }, 30_000);
+
+test.skipIf(!hasDom)('with comment sends, a reply under a live thread goes on its own and shows sent; Finish round with nothing else to send ends the round alone', async () => {
+  const { sent } = await command<{ sent: string }>({ send: { project: world.project, session: 'ses_live_msg', body: 'Deploys roll out to every store.' } });
+  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('live-1', 'every store', 'Lyon first.', 'block-0') });
+
+  const el = await renderApp(`#thread=${sent}`);
+  const box = () => el.querySelector<HTMLElement>('[data-sent-comments] [data-sent-comment="live-1"]');
+  await until(() => box()?.querySelector('[data-sent-send="live-1"]') != null, "the draft's Send");
+  await act(async () => {
+    box()!.querySelector<HTMLButtonElement>('[data-sent-send="live-1"]')!.click();
+  });
+  await until(() => box()?.querySelector('[data-sent-live]') != null, 'the thread live');
+  // No draft left, but a send went in the round under way: Finish round is still offered.
+  expect(el.querySelector('[data-finish-round]')).not.toBeNull();
+
+  // The person's reply under it goes on its own: sent (Queued), never "Not sent".
+  act(() => box()!.querySelector<HTMLButtonElement>('[data-sent-reply-to="live-1"]')!.click());
+  await type(box()!.querySelector<HTMLTextAreaElement>('[data-sent-replies="live-1"] textarea')!, 'And Nantes.');
+  await act(async () => {
+    box()!.querySelector<HTMLButtonElement>('[data-sent-reply-save]')!.click();
+  });
+  const reply = () => [...(box()?.querySelectorAll<HTMLElement>('[data-sent-reply]') ?? [])].find((row) => row.textContent?.includes('And Nantes.'));
+  await until(() => reply()?.querySelector('[data-sent-status="pending"]') != null, 'the reply sent on its own');
+  expect(reply()!.hasAttribute('data-sent-reply-draft')).toBe(false);
+  expect(posted.filter((p) => p.path.endsWith('/comment-sends'))).toHaveLength(1);
+
+  // Finish round alone (no words, no draft): one round send, no reply of the person's.
+  act(() => el.querySelector<HTMLButtonElement>('[data-finish-round]')!.click());
+  await until(() => posted.filter((p) => p.path.endsWith('/comment-sends')).length === 2, 'the Finish');
+  expect(posted.filter((p) => p.path.endsWith('/comment-sends')).at(-1)!.body).toMatchObject({ mode: 'round' });
+  expect(posted.some((p) => p.path.endsWith('/reply'))).toBe(false);
+  await until(() => el.querySelector('[data-comment-rounds]')?.textContent === 'Round 2 · 1 open', 'round 2 under way');
+  expect(el.querySelector('[data-finish-round]')).toBeNull();
+}, 30_000);
+
+test.skipIf(!hasDom)("with comment sends, a draft comment on a file has Send on its card's foot: it goes alone, and the card says what became of it", async () => {
+  await postJson('/api/inbox/annotations', { attachment_id: world.attachment, version: 'current', annotation: words('snd-file-1', 'The plan, in short.', 'Shorter, please.') });
+
+  await renderApp(`#thread=${world.filed}&file=${world.attachment}`);
+  const card = () => document.querySelector<HTMLElement>('[data-annotation-id="snd-file-1"]');
+  await until(() => card()?.querySelector('[data-sent-send="snd-file-1"]') != null, "the draft card's Send");
+  await act(async () => {
+    card()!.querySelector<HTMLButtonElement>('[data-sent-send="snd-file-1"]')!.click();
+  });
+  await until(() => posted.some((p) => p.path.endsWith('/comment-sends')), 'the send');
+  expect(posted.find((p) => p.path.endsWith('/comment-sends'))!.body).toMatchObject({ mode: 'now', comment_ids: ['snd-file-1'] });
+  await until(() => card()?.querySelector('[data-sent-status="pending"]') != null, 'the sent card, Queued');
+  expect(card()!.querySelector('[data-sent-send]')).toBeNull();
+  expect(card()!.querySelector('[data-sent-round="1"]')).not.toBeNull();
+}, 30_000);
+
+test.skipIf(!hasDom)("with comment sends, a draft comment is a box with Send that goes alone; the words' Send carries no draft; Finish round sends the rest with the words, and the header counts the round", async () => {
+  const { sent } = await command<{ sent: string }>({ send: { project: world.project, session: 'ses_sends_msg', body: 'Deploys roll out to every store, then we watch sales.' } });
+  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('snd-d1', 'every store', 'Lyon first.', 'block-0') });
+  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('snd-d2', 'watch sales', 'Who watches?', 'block-0') });
+
+  const el = await renderApp(`#thread=${sent}`);
+  const box = (id: string) => el.querySelector<HTMLElement>(`[data-sent-comments] [data-sent-comment="${id}"]`);
+  await until(() => box('snd-d1') !== null && box('snd-d2') !== null, 'the drafts drawn as boxes under their passage');
+  expect(box('snd-d1')!.hasAttribute('data-sent-draft')).toBe(true);
+  expect(box('snd-d1')!.closest('[data-viewer-below-block]')!.getAttribute('data-below-block')).toBe('block-0');
+  // Nothing sent yet: no count; Finish round is offered (drafts wait), the closed foot has no Send for them alone.
+  expect(el.querySelector('[data-comment-rounds]')).toBeNull();
+  expect(el.querySelector('[data-finish-round]')).not.toBeNull();
+  const messages = async () => (JSON.parse((await loopback(`/api/inbox/threads/${sent}`)).text) as { thread: { messages: { id: string; author: { kind: string }; body: string }[] } }).thread.messages;
+  const before = (await messages()).length;
+
+  // Send on one draft: it goes alone, at once; the other waits; no message in the thread; the header counts round 1.
+  await act(async () => {
+    box('snd-d1')!.querySelector<HTMLButtonElement>('[data-sent-send="snd-d1"]')!.click();
+  });
+  await until(() => box('snd-d1')?.hasAttribute('data-sent-draft') === false, 'the first draft sent');
+  expect(posted.filter((p) => p.path.endsWith('/comment-sends')).map((p) => [p.body.mode, p.body.comment_ids])).toEqual([['now', ['snd-d1']]]);
+  expect(box('snd-d1')!.querySelector('[data-sent-status="pending"]')).not.toBeNull();
+  expect(box('snd-d2')!.hasAttribute('data-sent-draft')).toBe(true);
+  expect((await messages()).length).toBe(before);
+  await until(() => el.querySelector('[data-comment-rounds]')?.textContent === 'Round 1 · 1 open', 'the count');
+
+  // The words' Send carries the words only: no draft, no feedback text; the draft still waits.
+  act(() => el.querySelector<HTMLButtonElement>('[data-reply-button]')!.click());
+  const field = () => el.querySelector<HTMLTextAreaElement>('textarea[aria-label^="Reply to"]');
+  await until(() => field() !== null, 'the reply box');
+  await type(field()!, 'Ship it after the second store.');
+  const sendButton = () => [...el.querySelectorAll<HTMLButtonElement>('[data-reply-row] button')].find((b) => b.textContent?.replace(/\s+/g, ' ').trim() === 'Send');
+  act(() => sendButton()!.click());
+  await until(() => posted.some((p) => p.path.endsWith('/reply')), 'the Send');
+  const words1 = posted.find((p) => p.path.endsWith('/reply'))!.body;
+  expect([words1.words, words1.annotation_ids, words1.feedback]).toEqual(['Ship it after the second store.', undefined, undefined]);
+  await until(() => field() === null, 'the box closed');
+  expect(box('snd-d2')!.hasAttribute('data-sent-draft')).toBe(true);
+
+  // Finish round with words: they go as the person's reply, the round's end written with it (one request) with the draft left.
+  act(() => el.querySelector<HTMLButtonElement>('[data-reply-button]')!.click());
+  await until(() => field() !== null, 'the reply box again');
+  await type(field()!, 'That is all for this round.');
+  act(() => el.querySelector<HTMLButtonElement>('[data-reply-row] [data-finish-round]')!.click());
+  await until(() => posted.filter((p) => p.path.endsWith('/reply')).length === 2, 'the Finish with the words');
+  const finishing = posted.filter((p) => p.path.endsWith('/reply')).at(-1)!.body;
+  expect([finishing.words, typeof (finishing.finish_round as { idempotency_key?: unknown })?.idempotency_key]).toEqual(['That is all for this round.', 'string']);
+  expect(posted.filter((p) => p.path.endsWith('/comment-sends'))).toHaveLength(1);
+  const last = (await messages()).at(-1)!;
+  const sendsNow = (JSON.parse((await loopback(`/api/inbox/threads/${sent}/attachments`)).text) as { comment_sends: { mode: string; comments: string[]; with_message: string | null }[] }).comment_sends;
+  expect([last.author.kind, last.body]).toEqual(['person', 'That is all for this round.']);
+  // It carries the draft left and names the thread still open.
+  expect(sendsNow.at(-1)).toMatchObject({ mode: 'round', comments: ['snd-d2', 'snd-d1'], with_message: last.id });
+  await until(() => box('snd-d2')?.hasAttribute('data-sent-draft') === false, 'the last draft sent by the Finish');
+  await until(() => el.querySelector('[data-comment-rounds]')?.textContent === 'Round 2 · 2 open', 'round 2 under way');
+  // Nothing left and nothing sent in round 2: no Finish round to offer.
+  expect(el.querySelector('[data-finish-round]')).toBeNull();
+}, 40_000);
 
 test.skipIf(!hasDom)('a resolved comment stays unfolded, marked Resolved, while a sub-thread under it is open; resolving that one too folds both', async () => {
   const { sent } = await command<{ sent: string }>({ send: { project: world.project, session: 'ses_sub_res', body: 'Deploys roll out to every store.' } });

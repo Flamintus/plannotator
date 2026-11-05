@@ -17,6 +17,11 @@
  *   the words answer (`inboxWordsMessage`), and the send to that session
  *   names it (`with_message`); with no send to that session (a `now` whose
  *   drafts go elsewhere) they go as a plain reply.
+ * - A Finish can also ride a reply the reply route writes (its `finish_round`,
+ *   `finishRoundWith`): the window's Finish round with words, picks or files
+ *   sends them as its Send always does, and the round's end is written in the
+ *   same turn as that reply, so the wake that hands the words out hands the
+ *   Finish with them, and their delivery settles only what went.
  *
  * One send per agent session, linked by `batch`, routed as the window routes
  * a Send's comments (`inboxCommentSendRoutes`); the `@` tags of the comments
@@ -71,21 +76,27 @@ function mentionsOf(record: InboxAnnotationRecord): string[] {
   return Array.isArray(mentions) ? mentions.filter((id): id is string => typeof id === "string" && id !== "") : [];
 }
 
-/** One press of the person's (see the header): checked, planned, then written; a retry under the same key answers what it wrote. */
-export function sendComments(context: InboxCommentSendsContext, threadId: string, body: Record<string, unknown>): InboxCommentSendResult {
+/**
+ * One press of the person's (see the header): checked, planned, then written; a retry under the same key answers
+ * what it wrote. `given`: the person's reply this press rides, just written by the reply route (`finishRoundWith`),
+ * in place of `words`: the send to its session names it, and a Finish reaches that session.
+ */
+export function sendComments(context: InboxCommentSendsContext, threadId: string, body: Record<string, unknown>, given: InboxMessage | null = null): InboxCommentSendResult {
   const { store } = context;
   const mode = body.mode;
   if (mode !== "now" && mode !== "round") throw new InboxError("validation_error", 'mode: "now" (the drafts named, the round stays open) or "round" (Finish).', { field: "mode" });
   const key = typeof body.idempotency_key === "string" ? body.idempotency_key.trim() : "";
   if (!key) throw new InboxError("validation_error", "idempotency_key: required, one per press.", { field: "idempotency_key" });
   if (body.words !== undefined && body.words !== null && typeof body.words !== "string") throw new InboxError("validation_error", "words: a string.", { field: "words" });
-  const words = typeof body.words === "string" ? body.words : "";
+  const words = given ? "" : typeof body.words === "string" ? body.words : "";
   const listed = body.comment_ids ?? [];
   if (!Array.isArray(listed) || listed.some((id) => typeof id !== "string")) throw new InboxError("validation_error", "comment_ids: a list of comment ids.", { field: "comment_ids" });
   const ids = listed as string[];
   if (mode === "now" && ids.length === 0) throw new InboxError("validation_error", "comment_ids: the drafts a `now` send sends.", { field: "comment_ids" });
   const root = store.message(threadId);
   if (!root || root.thread_id !== threadId) throw new InboxError("thread_not_found", `No thread ${threadId}.`);
+  // The person's reply the press rides: theirs, in this thread, to a session.
+  const givenTo = given && given.thread_id === threadId && !given.reask ? store.recipientOf(given) : null;
 
   // The person's reply this press wrote its words in, if it did (found by the key, whichever message it answered).
   const wordsWritten = () => store.thread(threadId)?.messages.map((m) => store.message(m.id)).find((m) => m?.author.kind === "person" && m.idempotency_key === key) ?? null;
@@ -94,7 +105,7 @@ export function sendComments(context: InboxCommentSendsContext, threadId: string
     if (done[0]!.mode !== mode || ids.some((id) => !done.some((send) => send.comments.includes(id)))) {
       throw new InboxError("idempotency_key_reused", "This idempotency_key was already used for another press.");
     }
-    return { sends: done, message: wordsWritten(), replayed: true };
+    return { sends: done, message: given ?? wordsWritten(), replayed: true };
   }
 
   const drafts = mode === "now" ? namedDrafts(store, threadId, ids) : store.pendingAnnotations(threadId).filter(isInboxCommentSendable);
@@ -104,7 +115,8 @@ export function sendComments(context: InboxCommentSendsContext, threadId: string
   const messages = store.thread(threadId)?.messages ?? [];
   const byId = new Map(messages.map((message) => [message.id, message]));
   const wordsAt = inboxWordsMessage(messages);
-  const wordsTo = wordsAt ? inboxCommentSendAddress(wordsAt) : null;
+  // Where the words go: the reply the press goes with, else the message the words answer.
+  const wordsTo = givenTo ?? (wordsAt ? inboxCommentSendAddress(wordsAt) : null);
   if (mode === "round" && wordsAt && !store.messageAnswerable(wordsAt.id)) throw new InboxError("thread_resolved", "This thread is resolved; reopen it to send.");
   const groups = inboxCommentSendRoutes(drafts, (id) => byId.get(id), wordsTo);
   const sent = store.sentAnnotations(threadId);
@@ -147,7 +159,7 @@ export function sendComments(context: InboxCommentSendsContext, threadId: string
   const planned = addressed.map((group) => ({ to: group.to, tags: tagsOf(group), drafts: group.drafts.map((draft) => draft.id), named: mode === "round" ? named(group.to.session) : [] }));
 
   // The words, as the person's reply to the message they answer (a retry finds the one it wrote).
-  let message: InboxMessage | null = null;
+  let message: InboxMessage | null = given;
   if (words.trim() !== "") {
     if (!wordsAt || !store.messageAnswerable(wordsAt.id)) throw new InboxError("thread_resolved", "This thread is resolved; reopen it to send.");
     message = wordsWritten() ?? store.sendReply(wordsAt.id, { words, idempotency_key: key }).reply;
@@ -160,6 +172,37 @@ export function sendComments(context: InboxCommentSendsContext, threadId: string
     sends: planned.map((send) => ({ ...send, with_message: message && send.to.session === carrier ? message.id : null })),
   });
   return { sends: written, message, replayed: false };
+}
+
+/** The reply route's `finish_round`: `{ idempotency_key }`, the Finish's own key (one per press, kept for a retry). */
+export function finishRoundRequest(value: unknown, persistentCommentsOn: boolean): { idempotency_key: string } | null {
+  if (value === undefined || value === null) return null;
+  if (!persistentCommentsOn) throw new InboxError("persistent_comments_off", "Sent comments are not kept in view; nothing was sent.");
+  const key = value && typeof value === "object" && typeof (value as Record<string, unknown>).idempotency_key === "string" ? ((value as Record<string, unknown>).idempotency_key as string).trim() : "";
+  if (!key) throw new InboxError("validation_error", "finish_round: { idempotency_key }, one per press.", { field: "finish_round" });
+  return { idempotency_key: key };
+}
+
+/**
+ * The person's Finish round riding the reply the reply route just wrote (its
+ * `finish_round`, checked by `finishRoundRequest` before the reply was
+ * written): every draft left, and the threads still open named, the send to
+ * the reply's session naming it (`with_message`). Called in the same turn as
+ * the reply's write, so the wake that hands the words out hands the Finish
+ * with them. A refusal leaves the reply sent and says why (`finish_refused`).
+ */
+export function finishRoundWith(
+  context: InboxCommentSendsContext,
+  reply: InboxMessage | null,
+  finish: { idempotency_key: string } | null,
+): { comment_sends: InboxCommentSend[] } | { finish_refused: { code: string; message: string } } | null {
+  if (!finish || !reply) return null;
+  try {
+    return { comment_sends: sendComments(context, reply.thread_id, { mode: "round", idempotency_key: finish.idempotency_key }, reply).sends };
+  } catch (error) {
+    if (!(error instanceof InboxError)) throw error;
+    return { finish_refused: { code: error.code, message: error.message } };
+  }
 }
 
 /** The drafts a `now` send names: each this thread's, waiting, never a guided review's, named once. */
@@ -234,6 +277,10 @@ export function createInboxCommentSendRoutes(options: InboxCommentSendsContext &
   };
   return {
     route,
+    /** The reply route's `finish_round`, checked before the reply is written (off: refused). */
+    finishRequest: (value: unknown) => finishRoundRequest(value, persistentCommentsOn()),
+    /** The Finish riding the reply just written, in the same turn (see `finishRoundWith`). */
+    finishWith: (reply: InboxMessage | null, finish: { idempotency_key: string } | null) => finishRoundWith(options, reply, finish),
     liveReply: (record: InboxAnnotationRecord) => liveCommentReply(options, record),
     liveReplyAgain: (commentId: string, annotation: Record<string, unknown>) => liveCommentReplyAgain(options, commentId, annotation),
   };
