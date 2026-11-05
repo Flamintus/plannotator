@@ -38,12 +38,58 @@
  *   own, whatever its parent's), sub-threads. The agent reads the words the
  *   passage is in with it (`parent`), so it never has to look them up.
  *
+ * The rules are the review loop's, shared with every other client
+ * (review-threads.ts): this module reads the Inbox's records through
+ * `INBOX_COMMENT_READING` and keeps the Inbox's names.
+ *
  * Browser-safe and zero-dep.
  */
 
 import { INBOX_MESSAGE_COMMENT_TEXT_MAX, readInboxVideoTime, type InboxAnnotationRecord, type InboxCommentReplyRecord } from "./inbox-attachments";
 import { formatInboxVideoTime } from "./inbox-types";
-import { passageWindow } from "./passage";
+import {
+  REVIEW_OPEN_THREADS_NAMED,
+  REVIEW_SUB_THREAD_WORDS_SENT,
+  isReviewCommentReply,
+  isReviewCommentSent,
+  isReviewCommentUnderAnother,
+  isReviewReplyId,
+  isReviewSubThread,
+  isReviewThreadFolded,
+  reviewCommentEntry,
+  reviewCommentLastReplies,
+  reviewCommentMessages,
+  reviewCommentSitsUnder,
+  reviewCommentState,
+  reviewCommentsHiddenUnderFolded,
+  reviewCommentsInOrder,
+  reviewFeedbackEntry,
+  reviewOpenSubThreadPaths,
+  reviewQuoteOffset,
+  reviewQuoted,
+  reviewReplyId,
+  reviewReplyRound,
+  reviewRoundNow,
+  reviewRounds,
+  reviewSendReceivedAt,
+  reviewShownPath,
+  reviewSubThreadWindow,
+  reviewSubThreadWords,
+  reviewText,
+  reviewThreadPlace,
+  reviewThreads,
+  type ReviewAuthor,
+  type ReviewCommentMessage,
+  type ReviewCommentState,
+  type ReviewEntryDetail,
+  type ReviewRecordReading,
+  type ReviewReply,
+  type ReviewRoundMessage,
+  type ReviewRoundSend,
+  type ReviewSubThreadParent,
+  type ReviewThread,
+  type ReviewThreadMessage,
+} from "./review-threads";
 import { ulid } from "./ulid";
 
 /** Where a sent comment is. */
@@ -62,76 +108,36 @@ export type InboxCommentAnchor =
     }
   | { kind: "guide"; message_id: string; file: string; side: "old" | "new"; lines: [number, number] };
 
-/** One comment of a thread once sent (or, when asked, a draft of the person's). */
-export interface InboxCommentThread {
-  /** The comment's id: the one its feedback heading names (` (id …)`). */
-  id: string;
-  /** What carried it to the agent: the person's reply, or a comment send (`snd_…`, inbox-comment-sends.ts); '' for a draft. */
-  reply_id: string;
-  /** The round it was sent in, from 1; a draft's, the round under way, which its Send goes in. */
-  round: number;
-  /** A draft of the person's, listed only when asked (`inboxCommentThreads`' `drafts`): not sent yet. */
-  draft?: true;
-  state: InboxCommentState;
-  on: InboxCommentAnchor;
-  /** The words, lines or part it is on, as the person selected them. */
-  quote: string;
-  /** The comment. */
-  text: string;
-  /** Its words were not found in the file the last time the window showed it. */
-  unanchored: boolean;
-  /** The replies under it, oldest first: the agent's, and the person's that a Send carried. */
-  replies: InboxCommentReply[];
-  /** A sub-thread: the message whose passage it is on (`quote` is the passage); absent on a comment on a file, a message or a guided review. */
-  parent?: InboxSubThreadParent;
-}
+/**
+ * One comment of a thread once sent (or, when asked, a draft of the
+ * person's): the review loop's thread (review-threads.ts) on the Inbox's
+ * anchors. `reply_id` names what carried it: the person's reply, or a comment
+ * send (`snd_…`, inbox-comment-sends.ts).
+ */
+export type InboxCommentThread = ReviewThread<InboxCommentAnchor>;
 
 /** One message of a comment thread, as a sub-thread on a passage of it reads it. */
-export interface InboxCommentMessage {
-  /** `comment`: a comment or a sub-thread (a thread of its own); `reply`: a reply under one (`under`). */
-  kind: "comment" | "reply";
-  under?: string;
-  author: InboxCommentAuthor;
-  /** Its words, whole. */
-  text: string;
-}
+export type InboxCommentMessage = ReviewCommentMessage;
 
 /** The message a sub-thread is on: its id, where the passage starts in its words, and the message (absent when it is not found). */
-export interface InboxSubThreadParent extends Partial<InboxCommentMessage> {
-  id: string;
-  quote_offset: number;
-}
+export type InboxSubThreadParent = ReviewSubThreadParent;
 
 /** Who wrote a reply under a comment. */
-export type InboxCommentAuthor = { kind: "person" } | InboxCommentReplyRecord["from"];
+export type InboxCommentAuthor = ReviewAuthor;
 
-/** One reply under a sent comment. */
-export interface InboxCommentReply {
-  /** `rep_…` for the agent's; the person's is a comment record's id, as its feedback heading names it. */
-  id: string;
-  author: InboxCommentAuthor;
-  /** The round it was written in: the person's, the round of the Send that carried it; the agent's, the round under way then (`inboxCommentReplyRound`). */
-  round: number;
-  /** What it came with: the person's Send (their reply, or a comment send), or the agent's message; '' for a draft and for the agent's replies sent alone. */
-  message_id: string;
-  text: string;
-  at: string;
-  /** The person's draft, listed only when asked (`drafts`): its round is the one under way. */
-  draft?: true;
-}
+/** One reply under a sent comment: `message_id` is '' for a draft and for the agent's replies sent alone. */
+export type InboxCommentReply = ReviewReply;
 
 /** The longest reply under a comment, in characters (a message comment's limit). */
 export const INBOX_COMMENT_REPLY_TEXT_MAX = INBOX_MESSAGE_COMMENT_TEXT_MAX;
 
-const REPLY_ID_RE = /^rep_[0-9A-HJKMNP-TV-Z]{26}$/;
-
 /** A new id for an agent's reply under a comment. */
 export function inboxCommentReplyId(now?: number): string {
-  return `rep_${ulid(now)}`;
+  return reviewReplyId(now);
 }
 
 export function isInboxCommentReplyId(value: unknown): value is string {
-  return typeof value === "string" && REPLY_ID_RE.test(value);
+  return isReviewReplyId(value);
 }
 
 /** A new id for one send_message's replies sent alone, which they share (`InboxCommentReplyRecord.call`). */
@@ -141,8 +147,7 @@ export function inboxCommentReplyCallId(now?: number): string {
 
 /** A reply's words as kept: trimmed, or null when there are none or more than INBOX_COMMENT_REPLY_TEXT_MAX. */
 export function inboxCommentReplyText(value: unknown): string | null {
-  const text = typeof value === "string" ? value.trim() : "";
-  return text === "" || text.length > INBOX_COMMENT_REPLY_TEXT_MAX ? null : text;
+  return reviewText(value, INBOX_COMMENT_REPLY_TEXT_MAX);
 }
 
 /** Whether a stored line's record reads as an agent's reply (a reader skips one that does not). */
@@ -169,12 +174,12 @@ export function isInboxCommentReplyRecord(value: unknown): value is InboxComment
 
 /** Whether a comment record is the person's reply under another comment (`re`). */
 export function isInboxCommentReply(record: Pick<InboxAnnotationRecord, "re">): boolean {
-  return typeof record.re === "string" && record.re !== "";
+  return isReviewCommentReply(record);
 }
 
 /** Whether a comment record is a sub-thread: the person's comment on a passage of a message of a thread (`parent`). */
 export function isInboxSubThread(record: Pick<InboxAnnotationRecord, "parent">): boolean {
-  return typeof record.parent === "string" && record.parent !== "";
+  return isReviewSubThread(record);
 }
 
 /**
@@ -183,7 +188,7 @@ export function isInboxSubThread(record: Pick<InboxAnnotationRecord, "parent">):
  * there is its thread's first comment's, and sent in its own section.
  */
 export function isInboxCommentUnderAnother(record: Pick<InboxAnnotationRecord, "re" | "parent">): boolean {
-  return isInboxCommentReply(record) || isInboxSubThread(record);
+  return isReviewCommentUnderAnother(record);
 }
 
 /**
@@ -193,14 +198,7 @@ export function isInboxCommentUnderAnother(record: Pick<InboxAnnotationRecord, "
  * agents' replies.
  */
 export function inboxCommentMessages(records: readonly InboxAnnotationRecord[], agentReplies: readonly InboxCommentReplyRecord[] = []): Map<string, InboxCommentMessage> {
-  const out = new Map<string, InboxCommentMessage>();
-  for (const record of records) {
-    if (!isInboxCommentSent(record)) continue;
-    const words = text(record.annotation.text);
-    out.set(record.id, isInboxCommentReply(record) ? { kind: "reply", under: record.re!, author: { kind: "person" }, text: words } : { kind: "comment", author: { kind: "person" }, text: words });
-  }
-  for (const reply of agentReplies) out.set(reply.id, { kind: "reply", under: reply.re, author: reply.from, text: reply.text });
-  return out;
+  return reviewCommentMessages(INBOX_COMMENT_READING, records, agentReplies);
 }
 
 /**
@@ -214,18 +212,7 @@ export function inboxOpenSubThreadPaths(
   agentReplies: readonly Pick<InboxCommentReplyRecord, "id" | "re">[],
   isOpen: (id: string) => boolean,
 ): Set<string> {
-  const up = new Map<string, string>();
-  for (const record of records) {
-    const above = isInboxCommentReply(record) ? record.re : isInboxSubThread(record) ? record.parent : undefined;
-    if (above) up.set(record.id, above);
-  }
-  for (const reply of agentReplies) up.set(reply.id, reply.re);
-  const out = new Set<string>();
-  for (const record of records) {
-    if (!isInboxSubThread(record) || !isOpen(record.id)) continue;
-    for (let id: string | undefined = record.parent; id !== undefined && !out.has(id); id = up.get(id)) out.add(id);
-  }
-  return out;
+  return reviewOpenSubThreadPaths(records, agentReplies, isOpen);
 }
 
 /**
@@ -234,7 +221,7 @@ export function inboxOpenSubThreadPaths(
  * open sub-thread under it stays unfolded, marked resolved, as in crit.
  */
 export function isInboxCommentThreadFolded(id: string, resolved: ReadonlySet<string>, openBelow: ReadonlySet<string>): boolean {
-  return resolved.has(id) && !openBelow.has(id);
+  return isReviewThreadFolded(id, resolved, openBelow);
 }
 
 /** What each reply or sub-thread sits under, by its id: a reply's comment (the person's or an agent's), a sub-thread's parent. */
@@ -242,13 +229,7 @@ export function inboxCommentSitsUnder(
   records: readonly Pick<InboxAnnotationRecord, "id" | "re" | "parent">[],
   agentReplies: readonly Pick<InboxCommentReplyRecord, "id" | "re">[],
 ): Map<string, string> {
-  const out = new Map<string, string>();
-  for (const record of records) {
-    if (isInboxCommentReply(record)) out.set(record.id, record.re!);
-    else if (isInboxSubThread(record)) out.set(record.id, record.parent!);
-  }
-  for (const reply of agentReplies) out.set(reply.id, reply.re);
-  return out;
+  return reviewCommentSitsUnder(records, agentReplies);
 }
 
 /**
@@ -258,19 +239,7 @@ export function inboxCommentSitsUnder(
  * nothing open below it, so an open sub-thread is never hidden.
  */
 export function inboxCommentsHiddenUnderFolded(ids: Iterable<string>, up: ReadonlyMap<string, string>, folded: ReadonlySet<string>): Set<string> {
-  const out = new Set<string>();
-  if (folded.size === 0) return out;
-  for (const id of ids) {
-    const seen = new Set<string>();
-    for (let above = up.get(id); above !== undefined && !seen.has(above); above = up.get(above)) {
-      seen.add(above);
-      if (folded.has(above)) {
-        out.add(id);
-        break;
-      }
-    }
-  }
-  return out;
+  return reviewCommentsHiddenUnderFolded(ids, up, folded);
 }
 
 /** The agents' messages that hold a comment thread still open, it or one under it (not folded): a client opens them unfolded. */
@@ -285,7 +254,7 @@ export function inboxMessagesWithOpenThreads(
 }
 
 /** A sent comment is open until the person resolves it. */
-export type InboxCommentState = "open" | "resolved";
+export type InboxCommentState = ReviewCommentState;
 
 /**
  * A sent comment's state: resolved from when the person resolved it
@@ -298,9 +267,7 @@ export type InboxCommentState = "open" | "resolved";
  * window's `isResolved` (packages/inbox/components/SentComments.tsx).
  */
 export function inboxCommentState(record: Pick<InboxAnnotationRecord, "resolved_at">, lastReplyAt: string | null = null): InboxCommentState {
-  const resolved = record.resolved_at;
-  if (typeof resolved !== "string") return "open";
-  return lastReplyAt !== null && lastReplyAt > resolved ? "open" : "resolved";
+  return reviewCommentState(record, lastReplyAt);
 }
 
 /**
@@ -313,26 +280,14 @@ export function inboxCommentLastReplies(
   records: readonly Pick<InboxAnnotationRecord, "re" | "removed_at" | "created_at">[],
   agentReplies: readonly Pick<InboxCommentReplyRecord, "re" | "created_at">[] = [],
 ): Map<string, string> {
-  const out = new Map<string, string>();
-  const note = (id: string, at: string) => {
-    const known = out.get(id);
-    if (known === undefined || at > known) out.set(id, at);
-  };
-  for (const record of records) if (isInboxCommentReply(record) && record.removed_at === null) note(record.re!, record.created_at);
-  for (const reply of agentReplies) note(reply.re, reply.created_at);
-  return out;
+  return reviewCommentLastReplies(records, agentReplies);
 }
 
 /** What a round needs of a message: its id and who wrote it. */
-export interface InboxCommentRoundMessage {
-  id: string;
-  author: { kind: string };
-}
+export type InboxCommentRoundMessage = ReviewRoundMessage;
 
 /** What a thread of comments needs of a message: its round's part, and when it was written (the agent's replies' round). */
-export interface InboxCommentThreadMessage extends InboxCommentRoundMessage {
-  created_at: string;
-}
+export type InboxCommentThreadMessage = ReviewThreadMessage;
 
 /**
  * What a round needs of a comment send (`InboxCommentSend`,
@@ -340,16 +295,7 @@ export interface InboxCommentThreadMessage extends InboxCommentRoundMessage {
  * by the sends one press writes, one per session); and, for an agent's
  * reply's round, when it reached its session or a session it tags.
  */
-export interface InboxCommentRoundSend {
-  id: string;
-  batch: string;
-  mode: "now" | "round";
-  created_at: string;
-  to?: { session: string };
-  delivery?: { at: string } | null;
-  read_at?: string | null;
-  tags?: readonly { session: string; delivery?: { at: string } | null; read_at?: string | null }[];
-}
+export type InboxCommentRoundSend = ReviewRoundSend;
 
 /**
  * When a comment send reached `session`: the earliest of its delivery and its
@@ -357,10 +303,7 @@ export interface InboxCommentRoundSend {
  * session's own; null while it has not.
  */
 export function inboxCommentSendReceivedAt(send: Pick<InboxCommentRoundSend, "to" | "delivery" | "read_at" | "tags">, session: string | null = null): string | null {
-  const own = session === null || send.to?.session === session;
-  const tag = own ? undefined : send.tags?.find((tagged) => tagged.session === session);
-  const times = own ? [send.delivery?.at, send.read_at] : tag ? [tag.delivery?.at, tag.read_at] : [];
-  return times.filter((time): time is string => typeof time === "string").sort()[0] ?? null;
+  return reviewSendReceivedAt(send, session);
 }
 
 /**
@@ -377,17 +320,7 @@ export function inboxCommentReplyRound(
   sends: readonly InboxCommentRoundSend[] = [],
   session: string | null = null,
 ): number {
-  let round = 1;
-  for (const message of messages) {
-    const of = rounds.get(message.id);
-    if (of !== undefined && message.created_at <= at && of > round) round = of;
-  }
-  for (const send of sends) {
-    const of = rounds.get(send.id);
-    const received = inboxCommentSendReceivedAt(send, session);
-    if (of !== undefined && received !== null && received <= at && of > round) round = of;
-  }
-  return round;
+  return reviewReplyRound(messages, rounds, at, sends, session);
 }
 
 /** One call of an agent's replies sent alone (`call`, no message), as `inboxCommentWrites` lists it. */
@@ -428,77 +361,18 @@ export function inboxCommentWrites<M extends { created_at: string }>(
 
 /** Whether a record is a comment the person sent (not a draft, not removed). */
 export function isInboxCommentSent(record: Pick<InboxAnnotationRecord, "sent_reply_id" | "removed_at">): boolean {
-  return record.sent_reply_id !== null && record.removed_at === null;
-}
-
-/**
- * The rounds of a thread, one numbering in the thread's order (messages and
- * comment sends by time; a send after a message of the same instant):
- *
- * - a reply of the person's that carried comments (written before comment
- *   sends, or by a client without them): a round ends when an agent writes in
- *   the thread, so the person's replies before that answer (one Send to two
- *   sessions writes two) share their round;
- * - a comment send (inbox-comment-sends.ts): a `now` send leaves its round
- *   open, whoever writes after it, and a `round` send (the person's Finish)
- *   ends it, so the round is the count of Finishes before it, plus one; the
- *   sends of one press (`batch`, one per session) are one step.
- *
- * `now`: the round a new send is in.
- */
-function walkRounds(
-  thread: readonly InboxCommentThreadMessage[],
-  records: readonly Pick<InboxAnnotationRecord, "sent_reply_id" | "removed_at">[],
-  sends: readonly InboxCommentRoundSend[],
-  agentReplies: readonly Pick<InboxCommentReplyRecord, "call" | "from" | "created_at">[] = [],
-): { rounds: Map<string, number>; now: number } {
-  // The agent's replies sent alone answer as its messages do.
-  const messages = inboxCommentWrites(thread, agentReplies);
-  const carriers = new Set<string>();
-  for (const record of records) if (isInboxCommentSent(record)) carriers.add(record.sent_reply_id!);
-  const rounds = new Map<string, number>();
-  let round = 0;
-  // closed: the next carrier opens a round; replies: a reply that carried comments opened it, and an agent's message ends it; sends: only a Finish ends it.
-  let state: "closed" | "replies" | "sends" = "closed";
-  const ordered = [...sends].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
-  const presses = new Map<string, number>();
-  let next = 0;
-  const sendsBefore = (at: string | null) => {
-    for (; next < ordered.length && (at === null || ordered[next]!.created_at < at); next++) {
-      const send = ordered[next]!;
-      const pressed = presses.get(send.batch);
-      if (pressed !== undefined) {
-        rounds.set(send.id, pressed);
-        continue;
-      }
-      if (state === "closed") round += 1;
-      rounds.set(send.id, round);
-      presses.set(send.batch, round);
-      state = send.mode === "round" ? "closed" : "sends";
-    }
-  };
-  for (const message of messages) {
-    sendsBefore(message.created_at);
-    if (message.author.kind !== "person") {
-      if (state === "replies") state = "closed";
-      continue;
-    }
-    if (!carriers.has(message.id)) continue;
-    if (state === "closed") round += 1;
-    // A reply that carried comments waits for the agent's answer, as such replies always did, even inside a round sends opened.
-    state = "replies";
-    rounds.set(message.id, round);
-  }
-  sendsBefore(null);
-  return { rounds, now: state === "closed" ? round + 1 : round };
+  return isReviewCommentSent(record);
 }
 
 /**
  * Each reply that carried comments, and each comment send (`sends`), by id,
- * with its round (from 1), in the thread's order (`walkRounds`). With no
- * sends, a round ends when an agent writes in the thread (a message, or
- * replies sent alone: `agentReplies`): the person's replies before that
- * answer (one Send to two sessions writes two) share their round.
+ * with its round (from 1), in the thread's order (messages and comment sends
+ * by time), as the review loop counts them (review-threads.ts
+ * `reviewRounds`): a `now` send leaves its round open and only the person's
+ * Finish ends it; with no sends, a round ends when an agent writes in the
+ * thread (a message, or replies sent alone: `agentReplies`), so the person's
+ * replies before that answer (one Send to two sessions writes two) share
+ * their round.
  */
 export function inboxCommentRounds(
   messages: readonly InboxCommentThreadMessage[],
@@ -506,7 +380,7 @@ export function inboxCommentRounds(
   sends: readonly InboxCommentRoundSend[] = [],
   agentReplies: readonly Pick<InboxCommentReplyRecord, "call" | "from" | "created_at">[] = [],
 ): Map<string, number> {
-  return walkRounds(messages, records, sends, agentReplies).rounds;
+  return reviewRounds(records, sends, inboxCommentWrites(messages, agentReplies));
 }
 
 /** The round under way: the one a new comment send is in, and the counter a thread shows (1 before anything was sent). */
@@ -516,7 +390,7 @@ export function inboxCommentRoundNow(
   sends: readonly InboxCommentRoundSend[] = [],
   agentReplies: readonly Pick<InboxCommentReplyRecord, "call" | "from" | "created_at">[] = [],
 ): number {
-  return walkRounds(messages, records, sends, agentReplies).now;
+  return reviewRoundNow(records, sends, inboxCommentWrites(messages, agentReplies));
 }
 
 function text(value: unknown): string {
@@ -570,60 +444,12 @@ export function inboxCommentThreads(
   sends: readonly InboxCommentRoundSend[] = [],
   options: { drafts?: boolean } = {},
 ): InboxCommentThread[] {
-  const { rounds, now } = walkRounds(messages, records, sends, agentReplies);
-  const replies = new Map<string, InboxCommentReply[]>();
-  const add = (id: string, reply: InboxCommentReply) => replies.set(id, [...(replies.get(id) ?? []), reply]);
-  const listed: { record: InboxAnnotationRecord; carrier: string; round: number; draft: boolean }[] = [];
-  for (const record of records) {
-    // A guided review's draft is the review app's to show, with the person's verdict.
-    const draft = options.drafts === true && record.sent_reply_id === null && record.removed_at === null && !record.guide;
-    // The person's view (`drafts`) also lists a comment whose carrier it has not read yet (a Send just made): in the round under way.
-    const round = draft ? now : isInboxCommentSent(record) ? (rounds.get(record.sent_reply_id!) ?? (options.drafts === true ? now : undefined)) : undefined;
-    if (round === undefined) continue;
-    const carrier = draft ? "" : record.sent_reply_id!;
-    const mark = draft ? { draft: true as const } : {};
-    if (isInboxCommentReply(record)) add(record.re!, { id: record.id, author: { kind: "person" }, round, message_id: carrier, text: text(record.annotation.text), at: record.created_at, ...mark });
-    listed.push({ record, carrier, round, draft });
-  }
-  for (const reply of agentReplies) {
-    const round = inboxCommentReplyRound(messages, rounds, reply.created_at, sends, reply.from.session);
-    add(reply.re, { id: reply.id, author: reply.from, round, message_id: reply.message_id ?? "", text: reply.text, at: reply.created_at });
-  }
-  const last = inboxCommentLastReplies(
-    records.filter((record) => isInboxCommentSent(record) || (options.drafts === true && record.sent_reply_id === null)),
-    agentReplies,
-  );
-  const messagesById = inboxCommentMessages(records, agentReplies);
-  const out: (InboxCommentThread & { created_at: string })[] = listed
-    .filter(({ record }) => !isInboxCommentReply(record))
-    .map(({ record, carrier, round, draft }) => {
-      const annotation = record.annotation;
-      const parent = isInboxSubThread(record) ? { id: record.parent!, quote_offset: inboxQuoteOffset(record), ...messagesById.get(record.parent!) } : null;
-      return {
-        id: record.id,
-        reply_id: carrier,
-        round,
-        ...(draft ? { draft: true as const } : {}),
-        state: inboxCommentState(record, last.get(record.id) ?? null),
-        on: inboxCommentAnchor(record),
-        quote: text(annotation.originalText) || text(annotation.selectedText) || text(annotation.originalCode),
-        text: text(annotation.text),
-        unanchored: typeof record.unanchored_at === "string",
-        // By time; replies written in the same millisecond keep the order they were written in (a stable sort).
-        replies: (replies.get(record.id) ?? []).sort((a, b) => a.at.localeCompare(b.at)),
-        ...(parent ? { parent } : {}),
-        created_at: record.created_at,
-      };
-    });
-  // Oldest round first; in the round under way, what was sent before the drafts.
-  out.sort((a, b) => a.round - b.round || Number(a.draft === true) - Number(b.draft === true) || a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
-  return out.map(({ created_at: _created, ...thread }) => thread);
+  return reviewThreads(INBOX_COMMENT_READING, records, agentReplies, sends, { ...options, messages: inboxCommentWrites(messages, agentReplies) });
 }
 
 /** A sub-thread's `quote_offset`, 0 when it has none that reads as one. */
 export function inboxQuoteOffset(record: Pick<InboxAnnotationRecord, "quote_offset">): number {
-  const offset = record.quote_offset;
-  return Number.isInteger(offset) && (offset as number) >= 0 ? (offset as number) : 0;
+  return reviewQuoteOffset(record);
 }
 
 /**
@@ -666,11 +492,6 @@ export function inboxSubThreadAnnotation(
   return { ...inboxCommentReplyAnnotation(comment, sub), originalText: sub.quote, inReplyTo: sub.parent };
 }
 
-function shownPath(path: string, root: string): string {
-  const base = root.replace(/[\\/]+$/, "");
-  return base !== "" && (path.startsWith(`${base}/`) || path.startsWith(`${base}\\`)) ? path.slice(base.length + 1) : path;
-}
-
 /**
  * Where a sent comment is, in words an agent reads (`read_thread`, and the
  * comments a reply sends again): "on message msg_…", "on notes.md lines
@@ -681,16 +502,10 @@ export function inboxCommentPlace(on: InboxCommentAnchor, root: string): string 
   if (on.kind === "message") return `on message ${on.message_id}`;
   const lines = (range: [number, number]) => (range[0] === range[1] ? `line ${range[0]}` : `lines ${range[0]}-${range[1]}`);
   if (on.kind === "guide") return `on the guided review in ${on.message_id}, ${on.file} (${on.side}) ${lines(on.lines)}`;
-  const parts = [`on ${shownPath(on.path, root)}${on.version === "sent" ? " (the version you sent)" : ""}`];
+  const parts = [`on ${reviewShownPath(on.path, root)}${on.version === "sent" ? " (the version you sent)" : ""}`];
   if (on.lines) parts.push(`${lines(on.lines)} when commented`);
   if (on.at !== undefined) parts.push(`at ${formatInboxVideoTime(on.at)}`);
   return parts.join(" ");
-}
-
-/** How a message a passage is on is named: "comment <id>", or "reply <id> under comment <id>". */
-function messageName(parent: InboxSubThreadParent): string {
-  if (parent.kind === "reply") return `reply ${parent.id}${parent.under ? ` under comment ${parent.under}` : ""}`;
-  return parent.kind === "comment" ? `comment ${parent.id}` : parent.id;
 }
 
 /**
@@ -699,8 +514,7 @@ function messageName(parent: InboxSubThreadParent): string {
  * reply rep_… under comment c1 (on notes.md lines 3-4 when commented)".
  */
 export function inboxCommentThreadPlace(thread: Pick<InboxCommentThread, "on" | "parent">, root: string): string {
-  const place = inboxCommentPlace(thread.on, root);
-  return thread.parent ? `on a passage of ${messageName(thread.parent)} (${place})` : place;
+  return reviewThreadPlace(inboxCommentPlace, thread, root);
 }
 
 /**
@@ -708,18 +522,16 @@ export function inboxCommentThreadPlace(thread: Pick<InboxCommentThread, "on" | 
  * `max` characters, `…` where cut, and where the passage starts in them.
  */
 export function inboxSubThreadWindow(thread: Pick<InboxCommentThread, "parent" | "quote">, max: number): { text: string; offset: number } | null {
-  const parent = thread.parent;
-  if (!parent || parent.text === undefined) return null;
-  return passageWindow(parent.text, { quote: thread.quote, offset: parent.quote_offset }, max);
+  return reviewSubThreadWindow(thread, max);
 }
 
 /** `inboxSubThreadWindow`'s words alone. */
 export function inboxSubThreadWords(thread: Pick<InboxCommentThread, "parent" | "quote">, max: number): string | null {
-  return inboxSubThreadWindow(thread, max)?.text ?? null;
+  return reviewSubThreadWords(thread, max);
 }
 
 /** The most of a passage's surrounding words a feedback entry carries, in characters. */
-export const INBOX_SUB_THREAD_WORDS_SENT = 600;
+export const INBOX_SUB_THREAD_WORDS_SENT = REVIEW_SUB_THREAD_WORDS_SENT;
 
 /** What sending comments again needs of a message: who wrote it, and an agent's session. */
 export interface InboxCommentCarryMessage extends InboxCommentRoundMessage {
@@ -772,7 +584,7 @@ export function isInboxCommentAskedAgain(thread: Pick<InboxCommentThread, "state
 export const INBOX_OPEN_COMMENTS_TITLE = "Feedback on comments still open";
 
 /** A reply sends at most this many open comments again, the newest; the rest are counted. */
-export const INBOX_OPEN_COMMENTS_SENT = 20;
+export const INBOX_OPEN_COMMENTS_SENT = REVIEW_OPEN_THREADS_NAMED;
 
 /**
  * The open comments a reply sends again, as a section of its feedback: one
@@ -787,33 +599,16 @@ export function inboxOpenCommentsFeedback(threads: readonly InboxCommentThread[]
   const older = threads.length - shown.length;
   const entries = shown.map((thread, index) => {
     const place = `${inboxCommentThreadPlace(thread, root)}${thread.unanchored ? ", unanchored (its words were not in the file when the person last opened it)" : ""}`;
-    return feedbackEntry(index + 1, `Round ${thread.round}, ${place}${quoted(thread.quote)}`, thread.id, inboxSubThreadWords(thread, INBOX_SUB_THREAD_WORDS_SENT), thread.text);
+    return reviewFeedbackEntry(index + 1, `Round ${thread.round}, ${place}${reviewQuoted(thread.quote)}`, thread.id, inboxSubThreadWords(thread, INBOX_SUB_THREAD_WORDS_SENT), thread.text);
   });
   const intro = "The person has not resolved these comments from earlier rounds yet.";
   const rest = older > 0 ? [`${older} older open comment${older === 1 ? " is" : "s are"} not repeated here: read_thread lists every comment.`] : [];
   return [`# ${INBOX_OPEN_COMMENTS_TITLE}`, intro, ...entries, ...rest].join("\n\n");
 }
 
-/** A quote as an entry's heading ends: `: "…"` on one line, or nothing when there is none. */
-function quoted(quote: string): string {
-  const line = quote.replace(/\s+/g, " ").trim();
-  return line ? `: "${line}"` : "";
-}
-
-/**
- * One entry of a feedback section an agent reads: its heading, ending with
- * the entry's id as every entry of a Send does; the words a sub-thread's
- * passage is in (`In: "…"`); then the person's words, every line quoted, so
- * the next heading starts a new entry.
- */
-function feedbackEntry(number: number, heading: string, id: string, around: string | null, words: string, notes: readonly string[] = []): string {
-  const lines = (words.trim() || "(no words)").split(/\r\n?|\n/).map((line) => `> ${line}`.trimEnd());
-  return [`### ${number}. ${heading} (id ${id})`, ...(around ? [`In: "${around}"`] : []), ...notes, ...lines].join("\n");
-}
-
 /** Comment records in the order the person wrote them (by time, then id): the order a Send lists them in. */
 export function inboxCommentsInOrder<R extends Pick<InboxAnnotationRecord, "id" | "created_at">>(records: readonly R[]): R[] {
-  return [...records].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+  return reviewCommentsInOrder(records);
 }
 
 /**
@@ -834,28 +629,27 @@ export function inboxCommentEntry(
   /** What a caller knows beyond the record: a document comment's lines in the version commented, and lines under the heading. */
   detail: InboxCommentEntryDetail = {},
 ): string {
-  const quote = text(record.annotation.originalText) || text(record.annotation.selectedText) || text(record.annotation.originalCode);
-  const words = text(record.annotation.text);
-  const notes = detail.notes ?? [];
-  const anchor = inboxCommentAnchor(record);
-  const on = anchor.kind === "file" && !anchor.lines && detail.lines ? { ...anchor, lines: detail.lines } : anchor;
-  if (isInboxCommentReply(record)) return feedbackEntry(number, `Reply under comment ${record.re}, ${inboxCommentPlace(on, root)}${quoted(quote)}`, record.id, null, words, notes);
-  if (isInboxSubThread(record)) {
-    const sub = { on, quote: quote.replace(/\s+/g, " ").trim(), parent: { id: record.parent!, quote_offset: inboxQuoteOffset(record), ...messages.get(record.parent!) } };
-    return feedbackEntry(number, `Comment ${inboxCommentThreadPlace(sub, root)}${quoted(quote)}`, record.id, inboxSubThreadWords(sub, INBOX_SUB_THREAD_WORDS_SENT), words, notes);
-  }
-  const place = inboxCommentPlace(on, root);
-  if (record.annotation.type === "DELETION") return feedbackEntry(number, `Remove this, ${place}${quoted(quote)}`, record.id, null, words, notes);
-  return feedbackEntry(number, `Comment ${place}${quoted(quote)}`, record.id, null, words, notes);
+  return reviewCommentEntry(INBOX_COMMENT_READING, record, number, root, messages, detail);
 }
 
 /** What `inboxCommentEntry` may add to a record's entry (a comment send's text); nothing by default, so the Send's sections keep their words. */
-export interface InboxCommentEntryDetail {
-  /** A file comment's lines in the version it was made on, when the record names none (a document's). */
-  lines?: [number, number];
-  /** Lines under the heading, before the person's words (attached images, an element, a diagram part, tags). */
-  notes?: readonly string[];
-}
+export type InboxCommentEntryDetail = ReviewEntryDetail;
+
+/**
+ * How the review loop's rules (review-threads.ts) read the Inbox's comment
+ * records: the anchor from the record (`inboxCommentAnchor`), the words from
+ * Plannotator's annotation, a guided review's draft held back (it goes with
+ * the person's verdict), and places as `read_thread` words them.
+ */
+export const INBOX_COMMENT_READING: ReviewRecordReading<InboxAnnotationRecord, InboxCommentAnchor> = {
+  on: inboxCommentAnchor,
+  quote: (record) => text(record.annotation.originalText) || text(record.annotation.selectedText) || text(record.annotation.originalCode),
+  text: (record) => text(record.annotation.text),
+  isDeletion: (record) => record.annotation.type === "DELETION",
+  heldBack: (record) => !!record.guide,
+  place: inboxCommentPlace,
+  withLines: (on, lines) => (on.kind === "file" && !on.lines ? { ...on, lines } : on),
+};
 
 /**
  * The title of the section that sends the person's replies under their

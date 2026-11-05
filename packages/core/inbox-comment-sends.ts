@@ -24,24 +24,19 @@
  *   (drafts, statuses, folds and live threads included), for any client to
  *   draw.
  *
+ * The rules are the review loop's, shared with every other client
+ * (review-threads.ts); the Inbox keeps its names and reads its records
+ * through `INBOX_COMMENT_READING`.
+ *
  * Browser-safe and zero-dep.
  */
 
 import type { InboxAnnotationRecord, InboxCommentReplyRecord } from "./inbox-attachments";
 import {
-  INBOX_OPEN_COMMENTS_SENT,
-  inboxCommentEntry,
-  inboxCommentLastReplies,
-  inboxCommentMessages,
-  inboxCommentRoundNow,
-  inboxCommentSendReceivedAt,
-  inboxCommentsInOrder,
-  inboxCommentThreads,
-  inboxOpenSubThreadPaths,
+  INBOX_COMMENT_READING,
+  inboxCommentWrites,
   isInboxCommentAskedAgain,
-  isInboxCommentReply,
-  isInboxCommentThreadFolded,
-  type InboxCommentReply,
+  type InboxCommentAnchor,
   type InboxCommentRoundSend,
   type InboxCommentEntryDetail,
   type InboxCommentThread,
@@ -50,7 +45,21 @@ import {
 import { diagramAnchorLocationLine, parseDiagramAnchor } from "./diagram-anchor";
 import type { InboxDeliverNowBy } from "./inbox-delivery";
 import { inboxAgentName, type InboxDelivery, type InboxMessage, type InboxTag } from "./inbox-types";
-import { ulid } from "./ulid";
+import {
+  REVIEW_SEND_TITLE,
+  REVIEW_THREAD_VIEW_VERSION,
+  isReviewSendId,
+  reviewDraftIsLive,
+  reviewLiveThreads,
+  reviewSendId,
+  reviewSendStatus,
+  reviewSendText,
+  reviewThreadView,
+  type ReviewReplyNode,
+  type ReviewSendStatus,
+  type ReviewThreadNode,
+  type ReviewThreadView,
+} from "./review-threads";
 
 /** `now`: one draft at once, the round stays open; `round`: the person's Finish, every draft left, and the round ends. */
 export type InboxCommentSendMode = InboxCommentRoundSend["mode"];
@@ -91,15 +100,13 @@ export interface InboxCommentSend {
   read_at?: string | null;
 }
 
-const SEND_ID_RE = /^snd_[0-9A-HJKMNP-TV-Z]{26}$/;
-
 /** A new comment send's id. */
 export function inboxCommentSendId(now?: number): string {
-  return `snd_${ulid(now)}`;
+  return reviewSendId(now);
 }
 
 export function isInboxCommentSendId(value: unknown): value is string {
-  return typeof value === "string" && SEND_ID_RE.test(value);
+  return isReviewSendId(value);
 }
 
 /** Whether a stored line's record reads as a comment send (a reader skips one that does not). */
@@ -155,22 +162,12 @@ export function inboxLiveCommentThreads(
   sends: readonly Pick<InboxCommentSend, "id" | "mode" | "comments">[],
   records: readonly Pick<InboxAnnotationRecord, "id" | "re" | "sent_reply_id">[],
 ): Set<string> {
-  const byId = new Map(records.map((record) => [record.id, record]));
-  const live = new Set<string>();
-  for (const send of sends) {
-    if (send.mode !== "now") continue;
-    for (const id of send.comments) {
-      const record = byId.get(id);
-      if (record?.sent_reply_id !== send.id) continue;
-      live.add(isInboxCommentReply(record) ? record.re! : record.id);
-    }
-  }
-  return live;
+  return reviewLiveThreads(sends, records);
 }
 
 /** Whether a draft goes on its own, as a `now` send: a reply of the person's under a live thread. */
 export function inboxCommentDraftIsLive(draft: Pick<InboxAnnotationRecord, "re" | "sent_reply_id" | "removed_at">, live: ReadonlySet<string>): boolean {
-  return draft.sent_reply_id === null && draft.removed_at === null && isInboxCommentReply(draft) && live.has(draft.re!);
+  return reviewDraftIsLive(draft, live);
 }
 
 /** The agent session a comment send goes to. */
@@ -242,7 +239,7 @@ export function inboxCommentSendRoutes<R extends Pick<InboxAnnotationRecord, "me
 }
 
 /** What became of an element a send carried, as the person sees it: never words for the agent. */
-export type InboxCommentSendStatus = "pending" | "delivered" | "read" | "working" | "replied";
+export type InboxCommentSendStatus = ReviewSendStatus;
 
 /**
  * The status a send gives an element it carried, for its session: `replied`
@@ -253,15 +250,11 @@ export type InboxCommentSendStatus = "pending" | "delivered" | "read" | "working
  * `read` (read_thread showed it), `delivered`, or `pending`.
  */
 export function inboxCommentSendStatus(send: Pick<InboxCommentSend, "to" | "delivery" | "read_at">, lastAgentReplyAt: string | null, busy: boolean): InboxCommentSendStatus {
-  const received = inboxCommentSendReceivedAt(send);
-  if (received === null) return "pending";
-  if (lastAgentReplyAt !== null && lastAgentReplyAt > received) return "replied";
-  if (busy) return "working";
-  return typeof send.read_at === "string" ? "read" : "delivered";
+  return reviewSendStatus(send, lastAgentReplyAt, busy);
 }
 
 /** The title of the text a comment send gives the agent. */
-export const INBOX_COMMENT_SEND_TITLE = "Comments on your work";
+export const INBOX_COMMENT_SEND_TITLE = REVIEW_SEND_TITLE;
 
 /**
  * What one session reads of its sends, oldest first (one, or the ones not yet
@@ -284,77 +277,26 @@ export function inboxCommentSendText(input: {
   /** What the caller knows of each entry beyond its record (`inboxCommentEntry`'s `detail`): its lines in the file, its notes. */
   detail?: (record: InboxAnnotationRecord) => InboxCommentEntryDetail;
 }): string {
-  const words = input.words?.trim() ?? "";
-  const sends = [...input.sends].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
-  if (sends.length === 0) return words;
-  const ids = new Set(sends.map((send) => send.id));
-  const carried = inboxCommentsInOrder(input.records.filter((record) => record.sent_reply_id !== null && ids.has(record.sent_reply_id) && record.removed_at === null));
-  const carriedIds = new Set(carried.map((record) => record.id));
-  const named = [...new Set(sends.filter((send) => send.mode === "round").flatMap((send) => send.comments))].filter((id) => !carriedIds.has(id));
-  const messages = inboxCommentMessages(input.records, input.agentReplies ?? []);
-  const entries = carried.map((record, index) => inboxCommentEntry(record, index + 1, input.root, messages, input.detail?.(record)));
-  const last = sends.at(-1)!;
-  const finished = sends.filter((send) => send.mode === "round").reduce<number | null>((round, send) => (round === null || send.round > round ? send.round : round), null);
-  const done = finished !== null ? `The person finished round ${finished}.` : "";
-  const intro =
-    last.mode === "now"
-      ? `${done ? `${done} ` : ""}Round ${last.round} is still open: the person may send more. Answer under each id now; do not wait for the round to end.`
-      : entries.length === 0 && named.length === 0
-        ? `${done} No comment is open.`
-        : `${done} Answer under each id.`;
-  const shown = named.slice(-INBOX_OPEN_COMMENTS_SENT);
-  const older = named.length - shown.length;
-  const open = named.length > 0 ? [`Still open, already sent to you (${named.length}): ${shown.join(", ")}${older > 0 ? ` and ${older} older` : ""}. read_thread has their words and replies.`] : [];
-  const section = [`# ${INBOX_COMMENT_SEND_TITLE}`, intro, ...entries, ...open].join("\n\n");
-  return words ? `${words}\n\n${section}` : section;
+  return reviewSendText(INBOX_COMMENT_READING, { ...input, how: { read: "read_thread has their words and replies." } });
 }
 
 /** The thread view's shape: a client checks it before it reads the rest. */
-export const INBOX_COMMENT_THREAD_VIEW_VERSION = 1;
+export const INBOX_COMMENT_THREAD_VIEW_VERSION = REVIEW_THREAD_VIEW_VERSION;
 
-/** One reply under a thread in the view, with the sub-threads on its words. */
-export interface InboxCommentReplyNode extends Omit<InboxCommentReply, "draft"> {
-  /** The agent's name as people read it ("Claude Code"); null for the person's, whom a client names itself ("You"). */
-  author_name: string | null;
-  /** The person's reply not sent yet: its round is the one under way. */
-  draft: boolean;
-  /** The person's reply a comment send carried: what became of it. */
-  status?: InboxCommentSendStatus;
-  sub_threads: InboxCommentThreadNode[];
-  /**
-   * Replies to this reply, for a source whose replies nest (the document
-   * editor's `inReplyTo` chains). The Inbox never fills it: its replies are
-   * one flat list under their thread, as crit's, and depth comes from
-   * sub-threads, each on a passage.
-   */
-  replies?: InboxCommentReplyNode[];
-}
+/**
+ * One reply under a thread in the view, with the sub-threads on its words
+ * (review-threads.ts `ReviewReplyNode`): `author_name` names an agent as
+ * people read it, null for the person's; `replies` is for a source whose
+ * replies nest (the document editor's `inReplyTo` chains), which the Inbox
+ * never fills.
+ */
+export type InboxCommentReplyNode = ReviewReplyNode<InboxCommentAnchor>;
 
 /** One thread in the view: a comment, or a sub-thread under the message whose passage it is on. */
-export interface InboxCommentThreadNode extends Omit<InboxCommentThread, "replies" | "parent" | "draft"> {
-  /** A sub-thread: the message it is on (its parent node in the tree, or a message no longer found), and where the passage starts in its words. */
-  parent?: { id: string; quote_offset: number };
-  /** The person's draft, not sent yet (`reply_id` is ''; its round is the one under way). */
-  draft: boolean;
-  /** Drawn folded: resolved, with nothing open under it at any depth (`isInboxCommentThreadFolded`). */
-  folded: boolean;
-  /** A thread a comment send carried: what became of it. */
-  status?: InboxCommentSendStatus;
-  /** A `now` send reached it: the person's next replies in it go on their own. */
-  live: boolean;
-  replies: InboxCommentReplyNode[];
-  /** The sub-threads on its own words. */
-  sub_threads: InboxCommentThreadNode[];
-}
+export type InboxCommentThreadNode = ReviewThreadNode<InboxCommentAnchor>;
 
 /** The comment threads of an Inbox thread, as any client draws them. */
-export interface InboxCommentThreadView {
-  v: typeof INBOX_COMMENT_THREAD_VIEW_VERSION;
-  /** The round under way (`inboxCommentRoundNow`). */
-  round: number;
-  /** The threads on the thread's messages and files, oldest round first (the drafts after what was sent in the round under way), each sub-thread under the message it is on. */
-  threads: InboxCommentThreadNode[];
-}
+export type InboxCommentThreadView = ReviewThreadView<InboxCommentAnchor>;
 
 /**
  * The comment threads as a tree, from the thread model
@@ -375,70 +317,14 @@ export function inboxCommentThreadView(input: {
   busy?: (session: string) => boolean;
 }): InboxCommentThreadView {
   const agentReplies = input.agentReplies ?? [];
-  const sends = input.sends ?? [];
-  const threads = inboxCommentThreads(input.messages, input.records, agentReplies, sends, { drafts: true });
-  const sendsById = new Map(sends.map((send) => [send.id, send]));
-  const live = inboxLiveCommentThreads(sends, input.records);
-  const answered = inboxCommentLastReplies([], agentReplies);
-  const statusOf = (carrier: string, thread: string): { status?: InboxCommentSendStatus } => {
-    const send = sendsById.get(carrier);
-    return send ? { status: inboxCommentSendStatus(send, answered.get(thread) ?? null, input.busy?.(send.to.session) ?? false) } : {};
-  };
-  // What folds: the window's rule, over what is listed (a draft sub-thread is open, and keeps what it is under unfolded).
-  const shown = new Set(threads.flatMap((thread) => [thread.id, ...thread.replies.map((reply) => reply.id)]));
-  const resolved = new Set(threads.filter((thread) => thread.state === "resolved").map((thread) => thread.id));
-  const openBelow = inboxOpenSubThreadPaths(
-    input.records.filter((record) => shown.has(record.id)),
+  return reviewThreadView(INBOX_COMMENT_READING, {
+    records: input.records,
     agentReplies,
-    (id) => !resolved.has(id),
-  );
-  const nodes = new Map<string, InboxCommentThreadNode>();
-  const replyNodes = new Map<string, InboxCommentReplyNode>();
-  /** The thread each message of a thread belongs to: a thread to itself, a reply to the thread it is under. */
-  const owner = new Map<string, string>();
-  for (const { replies, parent, draft, ...thread } of threads) {
-    const node: InboxCommentThreadNode = {
-      ...thread,
-      ...(parent ? { parent: { id: parent.id, quote_offset: parent.quote_offset } } : {}),
-      draft: draft === true,
-      folded: isInboxCommentThreadFolded(thread.id, resolved, openBelow),
-      ...statusOf(thread.reply_id, thread.id),
-      live: live.has(thread.id),
-      replies: replies.map(({ draft: unsent, ...reply }) => {
-        const replyNode: InboxCommentReplyNode = {
-          ...reply,
-          author_name: reply.author.kind === "agent" ? inboxAgentName(reply.author) : null,
-          draft: unsent === true,
-          ...(reply.author.kind === "person" ? statusOf(reply.message_id, thread.id) : {}),
-          sub_threads: [],
-        };
-        replyNodes.set(reply.id, replyNode);
-        owner.set(reply.id, thread.id);
-        return replyNode;
-      }),
-      sub_threads: [],
-    };
-    nodes.set(thread.id, node);
-    owner.set(thread.id, thread.id);
-  }
-  /** Whether a sub-thread's way up reaches a thread at the top, never itself. */
-  const reachesTop = (node: InboxCommentThreadNode): boolean => {
-    const seen = new Set([node.id]);
-    for (let at = node.parent ? owner.get(node.parent.id) : undefined; at !== undefined; ) {
-      if (seen.has(at)) return false;
-      seen.add(at);
-      const up = nodes.get(at)!.parent;
-      at = up ? owner.get(up.id) : undefined;
-    }
-    return true;
-  };
-  const top: InboxCommentThreadNode[] = [];
-  for (const node of nodes.values()) {
-    const host = node.parent ? (replyNodes.get(node.parent.id) ?? nodes.get(node.parent.id)) : undefined;
-    if (host && reachesTop(node)) host.sub_threads.push(node);
-    else top.push(node);
-  }
-  return { v: INBOX_COMMENT_THREAD_VIEW_VERSION, round: inboxCommentRoundNow(input.messages, input.records, sends, agentReplies), threads: top };
+    sends: input.sends,
+    messages: inboxCommentWrites(input.messages, agentReplies),
+    busy: input.busy,
+    agentName: inboxAgentName,
+  });
 }
 
 // ──────────── Delivery (the wake): what a session's connection hands over ────────────

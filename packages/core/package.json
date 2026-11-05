@@ -61,6 +61,7 @@
     "./inbox-review": "./inbox-review.ts",
     "./inbox-comment-threads": "./inbox-comment-threads.ts",
     "./inbox-comment-sends": "./inbox-comment-sends.ts",
+    "./review-threads": "./review-threads.ts",
     "./passage": "./passage.ts",
     "./diagram-anchor": "./diagram-anchor.ts",
     "./image-region": "./image-region.ts",
