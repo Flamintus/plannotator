@@ -4,7 +4,7 @@
  * (packages/core/inbox-comment-sends.ts), never as a message of the thread.
  *
  *   POST /api/inbox/threads/:id/comment-sends
- *     { serverSession?, mode: "now" | "round", comment_ids?, words?, idempotency_key }
+ *     { serverSession?, mode: "now" | "round", comment_ids?, words?, with_message?, idempotency_key }
  *     → { sends: InboxCommentSend[], message: InboxMessage | null, replayed }
  *
  * - `now`: the drafts named go at once (the window names one: a comment, a
@@ -17,6 +17,11 @@
  *   the words answer (`inboxWordsMessage`), and the send to that session
  *   names it (`with_message`); with no send to that session (a `now` whose
  *   drafts go elsewhere) they go as a plain reply.
+ * - `with_message`: instead of `words`, the person's reply already written in
+ *   this thread that the press goes with (a client whose Send wrote the
+ *   words, picks and files through the reply route first, as the window's
+ *   Finish does): the send to that reply's session names it, and a Finish
+ *   reaches that session, drafts or none.
  *
  * One send per agent session, linked by `batch`, routed as the window routes
  * a Send's comments (`inboxCommentSendRoutes`); the `@` tags of the comments
@@ -80,12 +85,19 @@ export function sendComments(context: InboxCommentSendsContext, threadId: string
   if (!key) throw new InboxError("validation_error", "idempotency_key: required, one per press.", { field: "idempotency_key" });
   if (body.words !== undefined && body.words !== null && typeof body.words !== "string") throw new InboxError("validation_error", "words: a string.", { field: "words" });
   const words = typeof body.words === "string" ? body.words : "";
+  const linked = body.with_message;
+  if (linked !== undefined && linked !== null && typeof linked !== "string") throw new InboxError("validation_error", "with_message: a message id.", { field: "with_message" });
+  if (typeof linked === "string" && words.trim() !== "") throw new InboxError("validation_error", "with_message: the words are in that message already; send words or with_message, not both.", { field: "with_message" });
   const listed = body.comment_ids ?? [];
   if (!Array.isArray(listed) || listed.some((id) => typeof id !== "string")) throw new InboxError("validation_error", "comment_ids: a list of comment ids.", { field: "comment_ids" });
   const ids = listed as string[];
   if (mode === "now" && ids.length === 0) throw new InboxError("validation_error", "comment_ids: the drafts a `now` send sends.", { field: "comment_ids" });
   const root = store.message(threadId);
   if (!root || root.thread_id !== threadId) throw new InboxError("thread_not_found", `No thread ${threadId}.`);
+  // The person's reply the press goes with (`with_message`): theirs, in this thread, to a session.
+  const given = typeof linked === "string" ? store.message(linked) : null;
+  const givenTo = given && given.thread_id === threadId && !given.reask ? store.recipientOf(given) : null;
+  if (typeof linked === "string" && !givenTo) throw new InboxError("message_not_found", `with_message: no reply ${linked} of yours to a session in this thread.`, { field: "with_message" });
 
   // The person's reply this press wrote its words in, if it did (found by the key, whichever message it answered).
   const wordsWritten = () => store.thread(threadId)?.messages.map((m) => store.message(m.id)).find((m) => m?.author.kind === "person" && m.idempotency_key === key) ?? null;
@@ -94,7 +106,7 @@ export function sendComments(context: InboxCommentSendsContext, threadId: string
     if (done[0]!.mode !== mode || ids.some((id) => !done.some((send) => send.comments.includes(id)))) {
       throw new InboxError("idempotency_key_reused", "This idempotency_key was already used for another press.");
     }
-    return { sends: done, message: wordsWritten(), replayed: true };
+    return { sends: done, message: given ?? wordsWritten(), replayed: true };
   }
 
   const drafts = mode === "now" ? namedDrafts(store, threadId, ids) : store.pendingAnnotations(threadId).filter(isInboxCommentSendable);
@@ -104,7 +116,8 @@ export function sendComments(context: InboxCommentSendsContext, threadId: string
   const messages = store.thread(threadId)?.messages ?? [];
   const byId = new Map(messages.map((message) => [message.id, message]));
   const wordsAt = inboxWordsMessage(messages);
-  const wordsTo = wordsAt ? inboxCommentSendAddress(wordsAt) : null;
+  // Where the words go: the reply the press goes with, else the message the words answer.
+  const wordsTo = givenTo ?? (wordsAt ? inboxCommentSendAddress(wordsAt) : null);
   if (mode === "round" && wordsAt && !store.messageAnswerable(wordsAt.id)) throw new InboxError("thread_resolved", "This thread is resolved; reopen it to send.");
   const groups = inboxCommentSendRoutes(drafts, (id) => byId.get(id), wordsTo);
   const sent = store.sentAnnotations(threadId);
@@ -147,7 +160,7 @@ export function sendComments(context: InboxCommentSendsContext, threadId: string
   const planned = addressed.map((group) => ({ to: group.to, tags: tagsOf(group), drafts: group.drafts.map((draft) => draft.id), named: mode === "round" ? named(group.to.session) : [] }));
 
   // The words, as the person's reply to the message they answer (a retry finds the one it wrote).
-  let message: InboxMessage | null = null;
+  let message: InboxMessage | null = given;
   if (words.trim() !== "") {
     if (!wordsAt || !store.messageAnswerable(wordsAt.id)) throw new InboxError("thread_resolved", "This thread is resolved; reopen it to send.");
     message = wordsWritten() ?? store.sendReply(wordsAt.id, { words, idempotency_key: key }).reply;

@@ -144,6 +144,7 @@ import { useThreadSteps, type StepsSubscribe } from '../steps/useThreadSteps';
 import { replyKeysToRenew, routeSendAnnotations, sendTargetAnswerIds, sendTargetsOf, wordsMessage, type SendTarget, type SentContents } from '../sendTargets';
 import { useSentComments } from './SentComments';
 import { unfoldOpenThreads } from '../sentComments';
+import { isInboxCommentSendable } from '@plannotator/core/inbox-comment-sends';
 
 export { routeSendAnnotations, sendTargetsOf, type SendTarget };
 
@@ -1992,8 +1993,24 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
   /** Every file the viewer opens: the attached files and the images in the text. */
   const allFiles: InboxAttachmentState[] = useMemo(() => [...attachments, ...inlineImages], [attachments, inlineImages]);
   const records = files?.annotations ?? [];
+  // Comment sends (experimental "persistent-comments", this Inbox's thread: the machine door takes none): the person's
+  // comments go as records of their own, by their block's Send or the Finish round, never with the words of a Send.
+  const sendsOn = !machine && files?.comment_sends !== undefined;
+  /** What the words' Send carries: every draft, or, with comment sends, a guided review's only (it goes with the verdict). */
+  const wordsRecords = useMemo(() => (sendsOn ? records.filter((record) => !isInboxCommentSendable(record)) : records), [sendsOn, records]);
   // Comments that stay after Send (experimental "persistent-comments"; SentComments.tsx): only while the person has it on.
-  const sentComments = useSentComments({ messages: thread.messages, files, drafts: records, patchDrafts: patchRecords, onError: setError, canResolve: !machine });
+  const sentComments = useSentComments({
+    threadId: thread.thread_id,
+    messages: thread.messages,
+    files,
+    drafts: records,
+    patchDrafts: patchRecords,
+    onError: setError,
+    canResolve: !machine,
+    sendsOn,
+    newSince: boundary,
+    reload: () => void reloadFiles(),
+  });
   // A message holding a comment thread still open opens unfolded, once the thread's comments are read (and when one opens again later).
   if (sentComments.openMessages && fold.threadId === thread.thread_id) {
     const kept = unfoldOpenThreads(fold, sentComments.openMessages);
@@ -2032,14 +2049,14 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
   const keepOpen = skipIds.size === 0;
   const toggleKeepOpen = () => setSkipArmed(keepOpen ? new Set(unanswered.map((u) => u.id)) : null);
   const skipping = !keepOpen;
-  const sendCarries = hasWords || records.length > 0 || replyUploads.length > 0 || draftPastes > 0;
+  const sendCarries = hasWords || wordsRecords.length > 0 || replyUploads.length > 0 || draftPastes > 0;
   const wordsAsking = askingSessionOf(thread, { skip: skipIds, carries: sendCarries });
   const askerToWatch = wordsAsking && askerCanEnd(wordsAsking) ? wordsAsking.session : null;
   // New message (record 5.x): the project's live sessions, and what the button opened.
   const { model: live, load: loadLive } = useLiveSessions(thread.thread_id, askerToWatch);
   // Every other session this Send reaches is checked too (handoff "multi-agent-thread-model", failure 2): a pick
   // on an ended session's question, while the words go to a live one, opens the choice for that answer.
-  const otherSessions = otherSendSessions(thread, { skip: skipIds, carries: sendCarries, records }, wordsAsking);
+  const otherSessions = otherSendSessions(thread, { skip: skipIds, carries: sendCarries, records: wordsRecords }, wordsAsking);
   const otherEnded = useEndedSessions(thread.thread_id, otherSessions.map((s) => s.session));
   const endedOthers = otherEnded.ended;
   const wordsEnded = !resolved && askerHasEnded(wordsAsking, live);
@@ -2606,10 +2623,29 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
   /** The arrivals still to be seen (and those seen whose look is not recorded yet): the pill counts these first. */
   const arrivalIds = useMemo(() => new Set(arrivals.map((m) => m.id)), [arrivals]);
   const candidates = arrivals.filter((m) => !sightedIds.has(m.id) && !fold.folded.has(m.id) && !hiddenNow.has(m.id)).map((m) => m.id);
+  /**
+   * Comment sends: an agent's replies sent alone that arrived after the looks this visit covered, under a comment on
+   * a message drawn open (in its box): seen on sight too, in the same look as the messages. Others (a file's, a folded
+   * message's) wait for the next look, as before.
+   */
+  const replyArrivals = useMemo(() => {
+    if (!onSeen || !sendsOn || seenThrough === null) return [];
+    const onMessage = new Map(sentComments.records.map((record) => [record.id, record.message ? record.message_id : null]));
+    return sentComments.agentReplies
+      .filter((reply) => reply.call && typeof reply.seq === 'number' && reply.seq > seenThrough)
+      .filter((reply) => {
+        const message = onMessage.get(reply.re);
+        return !!message && !fold.folded.has(message) && !hiddenNow.has(message);
+      })
+      .map((reply) => ({ id: reply.id, seq: reply.seq! }));
+  }, [onSeen, sendsOn, seenThrough, sentComments.records, sentComments.agentReplies, fold.folded, hiddenNow]);
+  const replyCandidates = replyArrivals.filter((reply) => !sightedIds.has(reply.id)).map((reply) => reply.id);
+  /** Every arrival the look waits for, oldest first: it never passes one the person was not shown. */
+  const lookArrivals = useMemo(() => (replyArrivals.length === 0 ? arrivals : [...arrivals, ...replyArrivals].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))), [arrivals, replyArrivals]);
   /** A file over the thread: full screen, or where it cannot sit beside it (a phone, a stacked window). */
   const fileCovers = file !== null && shownFull;
-  const arrivalsRef = useRef(arrivals);
-  arrivalsRef.current = arrivals;
+  const arrivalsRef = useRef<readonly Pick<InboxMessageWire, 'id' | 'seq'>[]>(lookArrivals);
+  arrivalsRef.current = lookArrivals;
   const sightedRef = useRef(sightedIds);
   sightedRef.current = sightedIds;
   const sawOne = useCallback(
@@ -2626,6 +2662,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
   );
   // On a phone the pill sits in the foot and covers none of the thread.
   useSeenOnSight({ bodyRef, candidates, covered: covered || fileCovers || artifactsOn, pill: chrome.pill > 0 && !phone, onSeen: sawOne });
+  useSeenOnSight({ bodyRef, candidates: replyCandidates, covered: covered || fileCovers || artifactsOn, pill: chrome.pill > 0 && !phone, onSeen: sawOne, attribute: 'data-sent-reply' });
   // The thread on screen, for notifications: a question in it raises nothing while it is visible.
   const screenRef = useRef(onScreenChange);
   screenRef.current = onScreenChange;
@@ -3477,7 +3514,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
   );
   const draftCant = draftActions.filter((a) => a.outcome === 'cant' && !a.seen).length;
   /** Picks, annotations or action items wait for a Send. */
-  const waiting = picksCount > 0 || records.length > 0 || draftActions.length > 0;
+  const waiting = picksCount > 0 || wordsRecords.length > 0 || draftActions.length > 0;
   /** The box is closed and its words are kept as a draft (Cancel or Escape kept them): Edit draft brings them back. */
   const draftKept = !box.open && (replyDraft.draft !== null || replyDraft.conflict !== null);
 
@@ -3654,7 +3691,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
    * carry): said plainly, since they are still to send. Null when nothing was added.
    */
   const leftoverText = (earlier: UnconfirmedSend): string | null => {
-    const comments = records.filter((r) => !earlier.comments.includes(r.id)).length;
+    const comments = wordsRecords.filter((r) => !earlier.comments.includes(r.id)).length;
     const picks = picked.filter((q) => !earlier.picks.includes(`${q.message_id}/${q.key}`)).length;
     const files = replyUploads.filter((id) => !earlier.uploads.includes(id)).length;
     const parts = [
@@ -3760,7 +3797,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
    * the person must read in the thread first (a replaced pick's guard, where an ended session's reply goes)
    * takes them there, on the device's route.
    */
-  const send = async (options: { despiteReplaced?: boolean; routed?: boolean; stayFull?: boolean; endedChecked?: ReadonlySet<string> } = {}): Promise<void> => {
+  const send = async (options: { despiteReplaced?: boolean; routed?: boolean; stayFull?: boolean; endedChecked?: ReadonlySet<string>; finish?: boolean } = {}): Promise<void> => {
     // Whether this Send came from the ⌘Enter key (it draws no focus ring on the head it focuses): read at once.
     const byChord = sentByChord.current;
     sentByChord.current = false;
@@ -3820,7 +3857,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
       const reaches = sendCarries || rcptChosen.some((r) => sendEnded.has(r.session));
       // A live agent to pick: one the reply's `to` reaches, an older Plannotator's session too (it can't be tagged, but it takes a reply).
       if (gone && reaches && rcptAgents.some((r) => r.state === 'live' || r.state === 'old') && !rcptAsked.current) {
-        const empty = picksCount === 0 && records.length === 0 && boxWords() === '' && replyUploads.length === 0 && draftPastes === 0 && !skipping;
+        const empty = picksCount === 0 && wordsRecords.length === 0 && boxWords() === '' && replyUploads.length === 0 && draftPastes === 0 && !skipping;
         if (empty) {
           setError('Write a reply or pick an answer first.');
           return;
@@ -3845,7 +3882,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
     // The session that asked has ended and another is live: Send asks where
     // the reply goes first (the choice), and sends nothing yet.
     if (!pillActive && gateEnded && gateOtherLive && gateAsking && !options.routed) {
-      const empty = picksCount === 0 && records.length === 0 && boxWords() === '' && replyUploads.length === 0 && draftPastes === 0 && !skipping;
+      const empty = picksCount === 0 && wordsRecords.length === 0 && boxWords() === '' && replyUploads.length === 0 && draftPastes === 0 && !skipping;
       if (empty) {
         setError('Write a reply or pick an answer first.');
         return;
@@ -3974,7 +4011,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
       // Only the questions the person chose to skip, and only while still open (sendTargetsOf reads the
       // thread as it is now): a pick saved meanwhile is sent instead, a question that landed is left open.
       const skip = skipArmed ?? new Set<string>();
-      const pendingAnnotations = records;
+      const pendingAnnotations = wordsRecords;
       const uploads = box.open ? replyUploads : draftUploads;
       const carries = words !== '' || pendingAnnotations.length > 0 || uploads.length > 0;
       // One reply per session, its picks, skips and action items in the draft. The latest agent message rides
@@ -4089,15 +4126,20 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
       total = requests.length;
       /** The reply that handed the thread over (approval "inbox-tag-handoff"), for the toast's Undo. */
       let handedReply: InboxMessageWire | null = null;
+      /** The reply that carries the words (else the last one): a Finish round rides it. */
+      let wordsReply: string | null = null;
       for (const request of requests) {
         if (request.input.words) wordsKey = request.input.idempotency_key;
         postingTo = request.input.to;
         const answer = await inboxApi.reply(request.messageId, request.input);
         const written = answer.reply as InboxMessageWire | null;
         if (written?.handoff && !answer.replayed) handedReply = written;
+        if (written && (request.input.words || wordsReply === null || !requests.some((r) => r.input.words))) wordsReply = written.id;
         went += 1;
       }
       done = true;
+      // Finish round with words (comment sends): the words went as Send sends them; the round's end rides their reply.
+      if (options.finish) await finishTheRound(wordsReply);
       // Focus goes to the reply once it is in the thread (not to Reply: the box-close effect leaves it be).
       // From full screen's composer it stays in the card, which says the reply went.
       focusSent.current = !options.stayFull;
@@ -4235,6 +4277,46 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
     }
   };
   latestSend.current = send;
+
+  // ── Finish round (comment sends, experimental "persistent-comments") ──
+  // Offered beside Send while a draft comment waits or a send went in the round under way: it sends every draft
+  // left and tells each session the round reached that it is finished (the threads still open named by id), with
+  // the words when there are some. One key per press, kept until it goes, so a retry answers what it wrote.
+  const finishOffered = sendsOn && !resolved && (sentComments.sendable.length > 0 || sentComments.count?.started === true);
+  /** The header's count of the comment rounds, informative only ("Round 2 · 3 open"): once something was sent. */
+  const roundWords = sentComments.count ? `Round ${sentComments.count.round} · ${sentComments.count.open} open` : null;
+  const finishKey = useRef<string | null>(null);
+  /** The round's end, riding the person's reply its words went in (`withMessage`), if any. True once it went. */
+  const finishTheRound = async (withMessage: string | null): Promise<boolean> => {
+    finishKey.current ??= newUuid();
+    try {
+      await inboxApi.sendComments(threadRef.current.thread_id, { mode: 'round', idempotency_key: finishKey.current, ...(withMessage ? { with_message: withMessage } : {}) });
+      finishKey.current = null;
+      announce('Round finished.');
+      return true;
+    } catch (cause) {
+      setError(cause instanceof InboxApiError ? cause.message : 'The round did not finish. Press Finish round again.');
+      return false;
+    }
+  };
+  const finishRound = async () => {
+    if (sending || voice.busy || checkingEnded.current) return;
+    // Words, picks, files or a guided review's comments too: they go first, as Send sends them, and the end rides them.
+    if (hasWords || waiting || draftKept || (box.open && replyUploads.length > 0) || draftPastes > 0 || skipping) return send({ finish: true });
+    setSending(true);
+    setError(null);
+    try {
+      await finishTheRound(null);
+      await reloadFiles();
+    } finally {
+      setSending(false);
+    }
+  };
+  const finishButton = finishOffered ? (
+    <button type="button" className="ib-btn" data-finish-round="" onClick={() => void finishRound()} disabled={sending || voice.busy}>
+      Finish round
+    </button>
+  ) : null;
 
   const resolve = async (next: boolean) => {
     setError(null);
@@ -4640,9 +4722,9 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
             onChange: (text) => changeReply(text, true),
             onSend: () => void send({ stayFull: true }),
             sending,
-            canSend: hasWords || picksCount > 0 || records.length > 0 || draftActions.length > 0 || (box.open && replyUploads.length > 0) || draftPastes > 0,
+            canSend: hasWords || picksCount > 0 || wordsRecords.length > 0 || draftActions.length > 0 || (box.open && replyUploads.length > 0) || draftPastes > 0,
             picks: picksCount,
-            annotations: records.length,
+            annotations: wordsRecords.length,
             comments: {
               ...commentsListProps,
               // A comment on a message's text shows in the thread: back to it first, and to the passage once it is drawn.
@@ -5351,7 +5433,19 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
                     <b>{fresh.size} new since you looked</b>
                   </>
                 )}
+                {roundWords && (
+                  <>
+                    <span className="ib-tdot" aria-hidden="true" />
+                    <span data-comment-rounds="">{roundWords}</span>
+                  </>
+                )}
               </span>
+          </div>
+        )}
+        {one && roundWords && (
+          // A one-message thread has no meta line: the comment rounds' count has one of its own.
+          <div className="ib-tmeta" data-comment-rounds-line="">
+            <span data-comment-rounds="">{roundWords}</span>
           </div>
         )}
         {thread.messages.flatMap((message, index) => {
@@ -5903,7 +5997,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
             thread={thread}
             words={boxWords()}
             otherPicks={picksCount}
-            annotations={records.length}
+            annotations={wordsRecords.length}
             onAnswerNew={(target) => {
               acknowledgeStale();
               requestAnimationFrame(() => jumpTo(target));
@@ -6101,6 +6195,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
                     <Icon name="send" size={15} />
                     Send
                   </button>
+                  {finishButton}
                   <button type="button" className="ib-btn ib-ghost" onClick={() => closeBox()}>
                     Cancel
                   </button>
@@ -6132,6 +6227,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
                   Send
                 </button>
               )}
+              {finishButton}
               <button
                 type="button"
                 className="ib-btn"
@@ -6316,7 +6412,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
         }}
         strip={{
           picks: picksCount,
-          annotations: records.length,
+          annotations: wordsRecords.length,
           onWriteReply: writeReplyFromFile,
         }}
         composer={composer}

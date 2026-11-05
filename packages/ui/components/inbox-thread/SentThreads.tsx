@@ -17,11 +17,20 @@
  * under the message whose passage it is on, its passage marked in that
  * message's words. A resolved thread folds to one "Resolved" line (a press
  * opens it to be read) only once nothing under it, at any depth, is open.
+ *
+ * With comment sends (the host passes `onSend` and the tree's `statuses`,
+ * `live` and `fresh`): a draft, the comment, a reply under one or a
+ * sub-thread, has Send, which sends it alone at once without ending the
+ * round; what a send carried says what became of it (Queued, Delivered,
+ * Read, Working, Replied); a thread a send reached at once is Live (the
+ * person's next replies in it go on their own); and an agent's reply the
+ * person has not seen yet is New.
  */
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { isInboxCommentThreadFolded, isInboxSubThread } from '@plannotator/core/inbox-comment-threads';
 import type { TextPassage } from '@plannotator/core/passage';
 import type { InboxAnnotationRecord } from '@plannotator/core/inbox-types';
+import type { InboxCommentSendStatus } from '@plannotator/core/inbox-comment-sends';
 import { useConfigValue } from '../../config';
 import type { Annotation } from '../../types';
 import { PassageToolbar } from '../PassageToolbar';
@@ -127,15 +136,58 @@ export function useSentThreadsView(offering: boolean, folded: ReadonlySet<string
   return useMemo(() => ({ surface, box, setBox, offer, closeOffer, shown, toggleShown }), [surface, box, offer, closeOffer, shown, toggleShown]);
 }
 
-/** What a group of threads does: bring a thread's passage into view (absent: its quote is words), and the person's Resolve, Reply and comment on a passage (each absent: none). */
+/**
+ * What a group of threads does: bring a thread's passage into view (absent: its quote is words), and the person's
+ * Resolve, Reply, comment on a passage and Send of one draft (each absent: none).
+ */
 interface SentThreadsActions {
   onOpen?: (record: InboxAnnotationRecord) => void;
   onResolve?: (record: InboxAnnotationRecord, resolved: boolean) => void;
   onReply?: (commentId: string, reply: ReplyInput) => Promise<boolean>;
   onSubThread?: SubThreadSave;
+  /** Send one draft (a comment, a reply under one, a sub-thread, by id) alone, at once, the round left open; true once it went. */
+  onSend?: (id: string) => Promise<boolean>;
 }
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
+
+/** What became of an element a comment send carried, as its chip says it. */
+export const SENT_STATUS_WORDS: Record<InboxCommentSendStatus, string> = {
+  pending: 'Queued',
+  delivered: 'Delivered',
+  read: 'Read',
+  working: 'Working',
+  replied: 'Replied',
+};
+
+/** An element's status chip (none without a status): the boxes' own, and a host's card (the file's panel). */
+export function SentStatusChip({ status }: { status: InboxCommentSendStatus | undefined }) {
+  if (!status) return null;
+  return (
+    <span className="ib-sentc-chip" data-sent-status={status}>
+      {SENT_STATUS_WORDS[status]}
+    </span>
+  );
+}
+
+/** A draft's Send: it goes alone, at once; disabled while it goes, and again only when it did not. The boxes' own, and a host's card. */
+export function SentSendButton({ id, onSend }: { id: string; onSend: (id: string) => Promise<boolean> }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <button
+      type="button"
+      className="ib-sentc-act ib-sentb-send"
+      data-sent-send={id}
+      disabled={busy}
+      onClick={async () => {
+        setBusy(true);
+        if (!(await onSend(id))) setBusy(false);
+      }}
+    >
+      Send
+    </button>
+  );
+}
 
 /**
  * The threads on one block of a document (or, `lost`, the ones whose
@@ -149,7 +201,7 @@ const plural = (count: number, word: string) => `${count} ${word}${count === 1 ?
  * its open sub-threads in view. Reply opens a box at the thread's foot;
  * words selected in a sent message offer ui's selection toolbar, whose
  * Comment opens a box under that message with the passage at its head. A
- * draft goes with the next Send.
+ * draft goes with the next Send, or alone by its own Send (`onSend`).
  */
 export function SentThreads({
   group,
@@ -193,8 +245,8 @@ export function SentThreads({
 
 /** One thread (a comment, or a sub-thread; `root`: its thread's first comment), as a box. */
 function SentThreadBox({ record, root, tree, view, actions }: { record: InboxAnnotationRecord; root: InboxAnnotationRecord; tree: SentCommentsTree; view: SentThreadsView; actions: SentThreadsActions }) {
-  const { rounds, resolved, replies, subThreads, openBelow, passages } = tree;
-  const { onOpen, onResolve, onReply, onSubThread } = actions;
+  const { rounds, resolved, replies, subThreads, openBelow, passages, statuses, live, fresh } = tree;
+  const { onOpen, onResolve, onReply, onSubThread, onSend } = actions;
   const { box, setBox } = view;
   const id = record.id;
   const annotation = record.annotation as unknown as Annotation;
@@ -282,6 +334,12 @@ function SentThreadBox({ record, root, tree, view, actions }: { record: InboxAnn
         )}
         <span className="ib-sentb-chips">
           {roundChip}
+          <SentStatusChip status={statuses?.get(id)} />
+          {live?.has(id) && !isResolved && (
+            <span className="ib-sentc-chip ib-sentb-live" data-sent-live="" title="Your replies here go to the agent as you save them">
+              Live
+            </span>
+          )}
           {isResolved && (
             <span className="ib-sentc-chip ib-sentb-resolved" data-sent-resolved-chip="">
               Resolved
@@ -293,6 +351,11 @@ function SentThreadBox({ record, root, tree, view, actions }: { record: InboxAnn
             </span>
           )}
         </span>
+        {draft && onSend && (
+          <span className="ib-sentb-acts">
+            <SentSendButton id={id} onSend={onSend} />
+          </span>
+        )}
         {!draft && (onReply || onResolve) && (
           <span className="ib-sentb-acts">
             {onReply && (
@@ -325,10 +388,19 @@ function SentThreadBox({ record, root, tree, view, actions }: { record: InboxAnn
       {(under.length > 0 || replyBox) && (
         <div className="ib-sentb-replies" data-sent-replies={id}>
           {under.map((reply) => (
-            <div key={reply.id} className="ib-sentb-msg" data-sent-reply={reply.id} data-sent-reply-draft={reply.draft ? '' : undefined}>
+            <div
+              key={reply.id}
+              className="ib-sentb-msg"
+              data-sent-reply={reply.id}
+              data-sent-reply-draft={reply.draft ? '' : undefined}
+              data-sent-new={fresh?.has(reply.id) ? '' : undefined}
+            >
               <div className="ib-sentb-meta">
                 <span className="ib-sentc-who">{reply.who}</span>
                 {reply.draft ? <span className="ib-sentc-chip">Not sent</span> : reply.round !== undefined && <span className="ib-sentc-chip">Round {reply.round}</span>}
+                <SentStatusChip status={statuses?.get(reply.id)} />
+                {fresh?.has(reply.id) && <span className="ib-sentc-chip ib-sentb-new">New</span>}
+                {reply.draft && onSend && <SentSendButton id={reply.id} onSend={onSend} />}
               </div>
               <Said text={reply.text} bodyOf={reply.draft || !onSubThread ? undefined : reply.id} passages={passages.get(reply.id)} />
               {subThreadsOf(reply.id)}

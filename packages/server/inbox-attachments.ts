@@ -292,7 +292,14 @@ export function createInboxAttachmentRoutes(context: InboxAttachmentRoutesContex
         annotations: store.pendingAnnotations(threadId),
         // The comments a Send carried, kept in view, and the agents' replies under them (experimental; additive:
         // absent while off or from an older Inbox). The person's replies are comments: drafts, or sent, as above.
-        ...(context.persistentCommentsOn?.() ? { sent_comments: store.sentAnnotations(threadId), comment_replies: store.commentReplies(threadId), comment_sends: store.commentSends(threadId) } : {}),
+        // Each agent's reply carries its seq, so the window marks the ones newer than the person's look.
+        ...(context.persistentCommentsOn?.()
+          ? {
+              sent_comments: store.sentAnnotations(threadId),
+              comment_replies: store.commentReplies(threadId).map((reply) => ({ ...reply, seq: store.commentReplyCursor(reply.id) ?? undefined })),
+              comment_sends: store.commentSends(threadId),
+            }
+          : {}),
       });
     }
 

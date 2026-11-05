@@ -258,6 +258,50 @@ test("words go as the person's reply to the message they answer, and the send to
   expect(server.store.thread(sent.thread_id)!.messages.filter((m) => m.author.kind === "person")).toHaveLength(1);
 });
 
+test("with_message: a Finish rides the person's reply a Send just wrote, to that reply's session, one wake item; refused with words or another's message", async () => {
+  const { project, dataDir } = world();
+  const server = await start(dataDir);
+  const alpha = await agent(server);
+  const beta = await agent(server);
+  const sent = await opening(alpha, project);
+  await comment(server, sent.message_id, "c-alpha", "all stores at once", "One store first.");
+  const onFile = await post(server, "/api/inbox/annotations", { attachment_id: sent.attachments[0]!.id, version: "current", annotation: words("c-file", "Ship on Friday.", "Not on a Friday.") });
+  expect(onFile.status).toBe(200);
+  const later = (await call(beta, "send_message", { project_path: project, body: "I can take the press release.", reply_to: sent.message_id, ...B })).structured as { message_id: string };
+  // The window's Send aimed the words at alpha's message (not the newest agent message, beta's): they go there.
+  const replied = await post(server, `/api/inbox/messages/${sent.message_id}/reply`, { idempotency_key: "w-1", words: "Over to you, alpha." });
+  const words1 = ((await replied.json()) as { reply: InboxMessage }).reply;
+
+  expect(await refusal(server, sent.thread_id, { mode: "round", words: "Again.", with_message: words1.id, idempotency_key: "f-0" })).toEqual([422, "validation_error"]);
+  expect(await refusal(server, sent.thread_id, { mode: "round", with_message: later.message_id, idempotency_key: "f-0" })).toEqual([404, "message_not_found"]);
+  expect(await refusal(server, sent.thread_id, { mode: "round", with_message: "msg_nope", idempotency_key: "f-0" })).toEqual([404, "message_not_found"]);
+  expect(existsSync(join(projectFolder(dataDir), "comment-sends.jsonl"))).toBe(false);
+
+  const finish = await press(server, sent.thread_id, { mode: "round", with_message: words1.id, idempotency_key: "f-1" });
+  expect(finish.message?.id).toBe(words1.id);
+  // The file comment goes where the words went (alpha), and the send to alpha names the reply; no new message.
+  expect(finish.sends.map((s) => [s.to.session, [...s.comments].sort(), s.with_message])).toEqual([["ses_alpha", ["c-alpha", "c-file"], words1.id]]);
+  expect(server.store.thread(sent.thread_id)!.messages.filter((m) => m.author.kind === "person")).toHaveLength(1);
+  // One wake for alpha: the words with the comments after them.
+  expect(server.store.pendingWakeItems("ses_alpha", { together: true, sends: true }).map((item) => [item.id, item.sends.map((s) => s.id)])).toEqual([[words1.id, [finish.sends[0]!.id]]]);
+  const replay = await press(server, sent.thread_id, { mode: "round", with_message: words1.id, idempotency_key: "f-1" });
+  expect([replay.replayed, replay.message?.id]).toEqual([true, words1.id]);
+});
+
+test("the window's read gives each agent's reply its seq on the event log", async () => {
+  const { project, dataDir } = world();
+  const server = await start(dataDir);
+  const client = await agent(server);
+  const sent = await opening(client, project);
+  await comment(server, sent.message_id, "c-1", "all stores at once", "One store first.");
+  await press(server, sent.thread_id, { mode: "now", comment_ids: ["c-1"], idempotency_key: "k-1" });
+  const before = server.store.cursor();
+  await call(client, "send_message", { project_path: project, comment_replies: [{ comment_id: "c-1", text: "Lyon first, then." }], ...A });
+  const replies = ((await files(server, sent.thread_id)) as { comment_replies?: { id: string; seq?: number }[] }).comment_replies!;
+  expect(replies).toHaveLength(1);
+  expect(replies[0]!.seq).toBeGreaterThan(before);
+});
+
 test("live: once a `now` send reached a thread, the person's reply under it goes on its own; under any other it stays a draft", async () => {
   const { project, dataDir } = world();
   const server = await start(dataDir);

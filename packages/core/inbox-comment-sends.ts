@@ -34,6 +34,7 @@ import {
   inboxCommentLastReplies,
   inboxCommentMessages,
   inboxCommentRoundNow,
+  inboxCommentRounds,
   inboxCommentSendReceivedAt,
   inboxCommentsInOrder,
   inboxCommentThreads,
@@ -258,6 +259,37 @@ export function inboxCommentSendStatus(send: Pick<InboxCommentSend, "to" | "deli
   if (lastAgentReplyAt !== null && lastAgentReplyAt > received) return "replied";
   if (busy) return "working";
   return typeof send.read_at === "string" ? "read" : "delivered";
+}
+
+/** What a thread's header counts of its comment threads (`inboxCommentRoundCount`). */
+export interface InboxCommentRoundCount {
+  /** The round under way (`inboxCommentRoundNow`). */
+  round: number;
+  /** A send went in the round under way: the person's Finish ends it, drafts or none. */
+  started: boolean;
+  /** The sent threads, comments and sub-threads, still open (never a guided review's). */
+  open: number;
+}
+
+/**
+ * The thread's comment rounds as any client counts them for its header
+ * ("Round 2 · 3 open") and to offer the Finish: the round under way, whether
+ * a send already went in it, and the sent threads still open. Informative
+ * only: nothing of it reaches the agent.
+ */
+export function inboxCommentRoundCount(input: {
+  messages: readonly InboxCommentThreadMessage[];
+  /** The thread's comment records (the sent ones count; drafts are left out). */
+  records: readonly InboxAnnotationRecord[];
+  agentReplies?: readonly InboxCommentReplyRecord[];
+  sends?: readonly InboxCommentSend[];
+}): InboxCommentRoundCount {
+  const sends = input.sends ?? [];
+  const agentReplies = input.agentReplies ?? [];
+  const rounds = inboxCommentRounds(input.messages, input.records, sends, agentReplies);
+  const round = inboxCommentRoundNow(input.messages, input.records, sends, agentReplies);
+  const open = inboxCommentThreads(input.messages, input.records, agentReplies, sends).filter(isInboxCommentAskedAgain).length;
+  return { round, started: sends.some((send) => rounds.get(send.id) === round), open };
 }
 
 /** The title of the text a comment send gives the agent. */

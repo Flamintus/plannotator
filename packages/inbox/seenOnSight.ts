@@ -119,7 +119,7 @@ export function unseenArrivals(messages: readonly InboxMessageWire[], through: n
  * the first one still waits (the look never passes a message the person was
  * not shown: the store keeps one high-water mark per thread).
  */
-export function lookThrough(arrivals: readonly InboxMessageWire[], seen: ReadonlySet<string>): number | null {
+export function lookThrough(arrivals: readonly Pick<InboxMessageWire, 'id' | 'seq'>[], seen: ReadonlySet<string>): number | null {
   let through: number | null = null;
   for (const message of arrivals) {
     if (!seen.has(message.id)) break;
@@ -195,6 +195,11 @@ export interface SeenOnSightOptions {
   pill: boolean;
   /** One message's first lines stayed on screen for the dwell. */
   onSeen: (messageId: string) => void;
+  /**
+   * The attribute naming each watched element by its id: a message's article (the default), or an agent's reply
+   * sent alone under a comment, in its box (`data-sent-reply`), which arrives as news of its own.
+   */
+  attribute?: string;
 }
 
 /**
@@ -203,7 +208,7 @@ export interface SeenOnSightOptions {
  * the thread uncovered. Any break (scrolled away, the tab hidden, the window
  * behind, a cover) restarts that message's dwell.
  */
-export function useSeenOnSight({ bodyRef, candidates, covered, pill, onSeen }: SeenOnSightOptions): void {
+export function useSeenOnSight({ bodyRef, candidates, covered, pill, onSeen, attribute = 'data-message-article' }: SeenOnSightOptions): void {
   const onSeenRef = useRef(onSeen);
   onSeenRef.current = onSeen;
   const state = useRef({ covered, pill });
@@ -234,7 +239,7 @@ export function useSeenOnSight({ bodyRef, candidates, covered, pill, onSeen }: S
     }
     const body = bodyRef.current;
     if (!body || candidates.length === 0) return;
-    const articleOf = (id: string) => body.querySelector<HTMLElement>(`[data-message-article="${CSS.escape(id)}"]`);
+    const articleOf = (id: string) => body.querySelector<HTMLElement>(`[${attribute}="${CSS.escape(id)}"]`);
     const showing = (id: string): boolean => {
       if (state.current.covered || dialogOpen() || !pageInFront()) return false;
       const article = articleOf(id);
@@ -296,5 +301,5 @@ export function useSeenOnSight({ bodyRef, candidates, covered, pill, onSeen }: S
     };
     // The candidates by their ids (a new list each render).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bodyRef, key]);
+  }, [bodyRef, key, attribute]);
 }
