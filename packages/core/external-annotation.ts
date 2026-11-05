@@ -27,6 +27,8 @@ import {
   parseHtmlElementContext,
 } from "./html-anchor";
 
+import type { ReviewThreadView } from "./review-threads";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -47,7 +49,31 @@ export type ExternalAnnotationEvent<T = unknown> =
    * "agent" when the agent asked to close it, "session" when plan mode or the
    * agent session itself ended (Pi's plan review).
    */
-  | { type: "session-closed"; by: "agent" | "session"; unsentAnnotations: number };
+  | { type: "session-closed"; by: "agent" | "session"; unsentAnnotations: number }
+  /**
+   * Not an annotation change: the review loop (experimental
+   * "persistent-comments", packages/shared/review-loop.ts) changed: the
+   * review's journal was written (a send, the agent's reply, a resolution),
+   * or the host that carries sends came, went, or started or ended a turn.
+   * The same body `GET /api/threads` answers.
+   */
+  | ({ type: "review-threads" } & ReviewThreadsState)
+  /**
+   * Not an annotation change: the agent's next messages reached an open
+   * `last` screen (`POST /api/host/messages`): the picker's whole list, newest
+   * first, the ones it showed kept.
+   */
+  | { type: "messages"; messages: { messageId: string; text: string; timestamp?: string }[] };
+
+/**
+ * The review loop as a screen's page reads it (`GET /api/threads`, the
+ * `review-threads` event): unavailable (the setting off, no target, no host
+ * that carries sends), or the review's key, its round, whether the agent's
+ * session is in a turn, and the thread view (`v: 1`).
+ */
+export type ReviewThreadsState =
+  | { available: false }
+  | { available: true; review: string; round: number; busy: boolean; view: ReviewThreadView };
 
 // ---------------------------------------------------------------------------
 // SSE helpers

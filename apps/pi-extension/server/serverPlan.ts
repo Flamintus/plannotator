@@ -12,6 +12,7 @@ import { getAllowedRootPaths, isDocServeAllowed } from "../generated/doc-resolve
 import { countUnsentDraftComments, hostSessionClosedEvent, type HostCloseOutcome } from "../generated/host-control.ts";
 import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody } from "../generated/server-session.ts";
 import { handleHostControl, resolveHostControlToken, type HostControl } from "./host-control.ts";
+import { createPiReviewLoop, handleReviewLoop } from "./review-loop.ts";
 import { createPiRefCards, handleRefCards, type RefRunner } from "./ref-cards.ts";
 import { createRequestHostGuard } from "./request-host-guard.ts";
 import { isSameOriginRequest, refuseCrossOriginWrite } from "./request-origin-guard.ts";
@@ -338,6 +339,16 @@ export async function startPlanReviewServer(options: {
 	const aiRuntime = options.mode !== "archive" && resolveAIEnabled()
 		? await createPiAIRuntime({ sessionBridge: options.sessionBridge, getServerPort: () => boundPort })
 		: null;
+	// The review loop (packages/shared/review-loop.ts): off in Pi, which tags no
+	// agent session for it; its paths answer as in the Bun server.
+	const reviewLoop = createPiReviewLoop({
+		target: options.mode !== "archive" && project && historySlug ? { kind: "plan", project, slug: historySlug } : null,
+		root: process.cwd(),
+		carrier: () => aiRuntime?.sends ?? null,
+		broadcast: (event) => externalAnnotations?.broadcast(event),
+		hostToken: hostControlToken,
+		getServerPort: () => boundPort,
+	});
 
 	/**
 	 * A decision body names the revision the tab was showing. A number that
@@ -371,6 +382,7 @@ export async function startPlanReviewServer(options: {
 		const url = requestUrl(req);
 
 		if (handleHostControl(req, res, url, { token: hostControlToken, getServerPort: () => boundPort, control: hostControl })) return;
+		if (await handleReviewLoop(req, res, url, reviewLoop)) return;
 		if (await handleRefCards(req, res, url, refCards, serverSession)) return;
 		if (refuseReferenceRead(req, res, url, getAllowedRootPaths)) return;
 
@@ -737,6 +749,8 @@ export async function startPlanReviewServer(options: {
 				agentSwitch,
 				permissionMode: effectivePermissionMode,
 			});
+			// Approving ends the review loop's review: its journal goes.
+			void reviewLoop.approved();
 			json(res, { ok: true, savedPath });
 		} else if (url.pathname === "/api/deny" && req.method === "POST") {
 			let body: Record<string, unknown> = {};
@@ -862,6 +876,7 @@ export async function startPlanReviewServer(options: {
 			// try/finally: a throwing dispose must never leave the listener bound.
 			try {
 				closeAllFileBrowserWatchers();
+				reviewLoop.dispose();
 				aiRuntime?.dispose();
 			} finally {
 				// Before closeAllConnections, or a session-closed just sent is lost.

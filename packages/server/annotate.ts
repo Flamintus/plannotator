@@ -74,6 +74,8 @@ import { isNotionAvailable } from "./integrations";
 import { handleOpenInApps, handleOpenIn } from "./open-in";
 import { agentToolHostForServer, createAIRuntime } from "./ai-runtime";
 import { handleHostControl, resolveHostControlToken, type HostControl } from "./host-control";
+import { createServerReviewLoop, handleReviewLoopRequest, type ReviewLoopLaunch } from "./review-loop";
+import { annotateReviewTarget } from "@plannotator/shared/review-loop";
 import { sessionTailnetAudience, sessionTailnetGate } from "./session-tailnet";
 import { countUnsentDraftComments, hostSessionClosedEvent } from "@plannotator/shared/host-control";
 import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody } from "@plannotator/shared/server-session";
@@ -176,6 +178,14 @@ export interface AnnotateServerOptions {
   gate?: boolean;
   /** Whether this transport can deliver feedback attached to an approval. */
   approvalNotesSupported?: boolean;
+  /**
+   * The review loop (experimental "persistent-comments",
+   * packages/shared/review-loop.ts): the agent session and review id the host
+   * that launched this review named. With the setting on, a target, and a
+   * host that carries sends, the review goes on for several rounds in the
+   * same tab. Absent: off, today's single decision.
+   */
+  reviewLoop?: ReviewLoopLaunch;
   /**
    * Whether this transport can safely resolve an abandoned gate automatically.
    * Only local direct structured annotate gates (`--gate --json`, not `--hook`,
@@ -894,6 +904,20 @@ export async function startAnnotateServer(
     },
   };
 
+  // The review loop (packages/shared/review-loop.ts): rounds in this tab, under
+  // the experimental setting, while the host that launched it carries sends.
+  const reviewLoop = createServerReviewLoop({
+    launch: options.reviewLoop,
+    target: annotateReviewTarget({ mode, filePath, folderPath, hostSession: options.reviewLoop?.hostSession }),
+    root: folderPath || process.cwd(),
+    carrier: () => aiRuntime?.sends ?? null,
+    broadcast: externalAnnotations.broadcast,
+    hostToken: hostControlToken,
+    getServerPort: () => boundPort,
+    tailnetPublished: options.tailnetPublished === true,
+    ...(mode === "annotate-last" ? { messages: recentMessages ?? [] } : {}),
+  });
+
   // Live app session state, populated after the annotate port is known (the
   // editor origins carry the port) and before onReady advertises the URL.
   let liveProxy: LiveAppProxy | null = null;
@@ -926,6 +950,9 @@ export async function startAnnotateServer(
             ...(options.tailnetPublished === true ? { fromThisMachine: (r: Request) => sessionTailnetAudience(r) === "local" } : {}),
           });
           if (hostControlResponse) return hostControlResponse;
+
+          const reviewLoopResponse = await handleReviewLoopRequest(req, url, reviewLoop);
+          if (reviewLoopResponse) return reviewLoopResponse;
 
           if (agentTerminal.matches(url.pathname)) {
             if (agentTerminal.capability.enabled && agentTerminal.upgrade(req, server)) {
@@ -1048,7 +1075,8 @@ export async function startAnnotateServer(
               ...getAutoUpdateAdvert(),
               ...getUpdateAdvert(origin, { exposed: isRemote || options.tailnetPublished === true }),
               agentTerminal: agentTerminal.capability,
-              ...(recentMessages ? { recentMessages } : {}),
+              // The agent's next messages join the picker under the review loop (review-loop.ts).
+              ...((reviewLoop.messages() ?? recentMessages) ? { recentMessages: reviewLoop.messages() ?? recentMessages } : {}),
               // Resolved copy-wrapper templates (config-aware, placeholders
               // intact) so clipboard Copy matches what Send Feedback produces
               // instead of the plan-deny wrap (#1107). Resolved per request so
@@ -1596,6 +1624,8 @@ export async function startAnnotateServer(
                     : undefined,
             });
             if (!approvalWon) return alreadyDecided();
+            // Approving ends the review loop's review: its journal goes.
+            void reviewLoop.approved();
             // Approve-with-notes carries user content — make it durable before
             // the draft (the reviewer's only other copy) is deleted (#678).
             const approvalDurable = persistSubmittedDecision(
@@ -1708,6 +1738,7 @@ export async function startAnnotateServer(
           clientLease.closeSessions();
         }],
         ["AI runtime", () => aiRuntime?.dispose()],
+        ["review loop", () => reviewLoop.dispose()],
         ["agent terminal", () => agentTerminal.dispose()],
         ["live proxy", () => liveProxy?.stop()],
       ],

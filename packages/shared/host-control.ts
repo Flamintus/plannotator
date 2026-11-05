@@ -117,26 +117,42 @@ export function isHostControlPath(pathname: string): boolean {
 }
 
 /**
- * Answer a host-control request, or null when the path is not one. Guards in
- * order: off (404), Host (403), Origin (403), token (401), then method (405).
+ * Why a request to a host-only path is refused, or null when it may pass:
+ * off (404), Host (403), Origin (403), token (401). Shared by every host-only
+ * path (these two, and the review loop's `/api/host/threads` and
+ * `/api/host/messages`, review-loop.ts).
  */
-export function handleHostControlRequest(request: HostControlRequest, route: HostControlRoute): HostControlAnswer | null {
-	if (!isHostControlPath(request.pathname)) return null;
+export function hostRequestRefusal(
+	request: Pick<HostControlRequest, "host" | "origin" | "authorization">,
+	token: string | undefined,
+	port: number | undefined,
+): HostControlAnswer | null {
 	// Off (remote mode, or launched without a token): a 404 like an unknown
 	// path, but with a code, so a host can tell "this Plannotator turned host
 	// control off" from "this Plannotator predates it" and not fall back to
 	// signalling its process.
-	if (!route.token) return { status: 404, body: { error: "Not found", code: HOST_CONTROL_DISABLED_CODE } };
-	if (!isLoopbackHostHeader(request.host, route.getServerPort())) {
+	if (!token) return { status: 404, body: { error: "Not found", code: HOST_CONTROL_DISABLED_CODE } };
+	if (!isLoopbackHostHeader(request.host, port)) {
 		return { status: 403, body: { error: "Host control answers only this machine.", code: "host_control_forbidden_host" } };
 	}
 	if (request.origin) {
 		return { status: 403, body: { error: "Browser requests are not accepted here.", code: "host_control_forbidden_origin" } };
 	}
 	const match = /^Bearer\s+(\S+)$/i.exec((request.authorization ?? "").trim());
-	if (!match || !tokensEqual(match[1] as string, route.token)) {
+	if (!match || !tokensEqual(match[1] as string, token)) {
 		return { status: 401, body: { error: "Missing or wrong host token.", code: "host_control_unauthorized" } };
 	}
+	return null;
+}
+
+/**
+ * Answer a host-control request, or null when the path is not one. Guards in
+ * order: off (404), Host (403), Origin (403), token (401), then method (405).
+ */
+export function handleHostControlRequest(request: HostControlRequest, route: HostControlRoute): HostControlAnswer | null {
+	if (!isHostControlPath(request.pathname)) return null;
+	const refused = hostRequestRefusal(request, route.token, route.getServerPort());
+	if (refused) return refused;
 
 	if (request.pathname === HOST_STATUS_PATH) {
 		if (request.method !== "GET") return { status: 405, body: { error: "Use GET." } };

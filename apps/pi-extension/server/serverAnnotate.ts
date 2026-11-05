@@ -25,6 +25,8 @@ import { isDocServeAllowed, isPathAllowed } from "../generated/doc-resolve.ts";
 import { countUnsentDraftComments, hostSessionClosedEvent } from "../generated/host-control.ts";
 import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody } from "../generated/server-session.ts";
 import { handleHostControl, resolveHostControlToken, type HostControl } from "./host-control.ts";
+import { createPiReviewLoop, handleReviewLoop } from "./review-loop.ts";
+import { annotateReviewTarget } from "../generated/review-loop.ts";
 import { createPiRefCards, handleRefCards, type RefRunner } from "./ref-cards.ts";
 import { createRequestHostGuard } from "./request-host-guard.ts";
 import { isSameOriginRequest, refuseCrossOriginWrite } from "./request-origin-guard.ts";
@@ -700,6 +702,17 @@ export async function startAnnotateServer(options: {
 	// Set once bound: "Ask this session" answers only a loopback Host with this port.
 	let boundPort: number | undefined;
 	const aiRuntime = resolveAIEnabled() ? await createPiAIRuntime({ sessionBridge: options.sessionBridge, getServerPort: () => boundPort, ...(options.liveApp ? { localHostname: null } : {}) }) : null;
+	// The review loop (packages/shared/review-loop.ts): off in Pi, which tags no
+	// agent session for it; its paths answer as in the Bun server.
+	const reviewLoop = createPiReviewLoop({
+		target: annotateReviewTarget({ mode: options.mode, filePath: options.filePath, folderPath: options.folderPath }),
+		root: options.folderPath || process.cwd(),
+		carrier: () => aiRuntime?.sends ?? null,
+		broadcast: externalAnnotations.broadcast,
+		hostToken: hostControlToken,
+		getServerPort: () => boundPort,
+		...(options.mode === "annotate-last" ? { messages: options.recentMessages ?? [] } : {}),
+	});
 	const htmlAssets = createHtmlAssetRegistry(
 		options.mode === "annotate-folder" ? options.folderPath : undefined,
 		(htmlFilePath) => isPathAllowed(htmlFilePath, getReferenceRootPaths()),
@@ -913,6 +926,7 @@ export async function startAnnotateServer(options: {
 		const url = requestUrl(req);
 
 		if (handleHostControl(req, res, url, { token: hostControlToken, getServerPort: () => boundPort, control: hostControl })) return;
+		if (await handleReviewLoop(req, res, url, reviewLoop)) return;
 		if (await handleRefCards(req, res, url, refCards, serverSession)) return;
 		if (refuseReferenceRead(req, res, url, getReferenceRootPaths)) return;
 		if (await externalAnnotations.handle(req, res, url)) return;
@@ -1061,7 +1075,7 @@ export async function startAnnotateServer(options: {
 				serverConfig: getServerConfig(gitUser, currentPiHost(), { cookieHost: !isRemoteSession() }),
 				...piUpdateAdvert(options.origin),
 				agentTerminal: agentTerminalCapability,
-				...(options.recentMessages ? { recentMessages: options.recentMessages } : {}),
+				...((reviewLoop.messages() ?? options.recentMessages) ? { recentMessages: reviewLoop.messages() ?? options.recentMessages } : {}),
 				// Resolved copy-wrapper templates (config-aware, placeholders
 				// intact) so clipboard Copy matches what Send Feedback produces
 				// instead of the plan-deny wrap (#1107). Resolved per request so
@@ -1453,6 +1467,8 @@ export async function startAnnotateServer(options: {
 					sendAlreadyDecided(res);
 					return;
 				}
+				// Approving ends the review loop's review: its journal goes.
+				void reviewLoop.approved();
 				// Approve-with-notes carries user content — make it durable before
 				// the draft (the reviewer's only other copy) is deleted (#678).
 				const approvalDurable = persistSubmittedDecision(
@@ -1529,6 +1545,7 @@ export async function startAnnotateServer(options: {
 				clientLease.closeSessions();
 			},
 			() => aiRuntime?.dispose(),
+			() => reviewLoop.dispose(),
 			...extra,
 		]) {
 			try {
@@ -1635,6 +1652,7 @@ export async function startAnnotateServer(options: {
 					clientLease.closeSessions();
 				}],
 				["AI runtime", () => aiRuntime?.dispose()],
+				["review loop", () => reviewLoop.dispose()],
 				["agent terminal", () => agentTerminal.dispose()],
 				// Live proxy last, mirroring the Bun server's guarded order: a
 				// throw in the historically fragile agent-terminal teardown

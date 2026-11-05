@@ -976,6 +976,18 @@ process.on("exit", () => {
   } catch {}
 });
 
+/**
+ * What the review loop of a screen needs from the host that launched it
+ * (packages/shared/review-loop.ts): the agent session the Claude Code mod
+ * tagged (`PLANNOTATOR_SESSION_TAG`) and the id it gave this review. The loop
+ * also needs the experimental setting and a host that carries sends; with no
+ * tag there is none.
+ */
+function cliReviewLoopLaunch(): { hostSession: string; reviewId?: string } | undefined {
+  const hostSession = process.env.PLANNOTATOR_SESSION_TAG;
+  return hostSession ? { hostSession, ...(hostReviewId ? { reviewId: hostReviewId } : {}) } : undefined;
+}
+
 function registerCliSession(info: SessionInfo): void {
   updateHintArmed = ["review", "annotate", "annotate-last", "last", "archive"].includes(args[0] ?? "");
   // The Claude Code mod tags its session (`claude-code:<session id>`) in the
@@ -1912,6 +1924,7 @@ if (args[0] === "sessions") {
     markdown,
     filePath: absolutePath,
     origin: detectedOrigin,
+    reviewLoop: cliReviewLoopLaunch(),
     mode: liveAppResolved ? "annotate-app" : annotateMode,
     liveApp: liveAppResolved
       ? {
@@ -2253,6 +2266,7 @@ if (args[0] === "sessions") {
     markdown: annotatedMessage.text,
     filePath: "last-message",
     origin: copilotDetected ? "copilot-cli" : detectedOrigin,
+    reviewLoop: cliReviewLoopLaunch(),
     mode: "annotate-last",
     title: sessionTitle,
     sharingEnabled,
@@ -3068,6 +3082,7 @@ if (args[0] === "sessions") {
     plan: input.plan,
     origin: "claude-code",
     planFilePath: input.planFilePath,
+    reviewLoop: cliReviewLoopLaunch(),
     permissionMode: input.permissionMode,
     // A chain under the session root's project is continued after a shell cd (#2197).
     historyRoot: input.projectRoot,

@@ -71,6 +71,7 @@ import { createExternalAnnotationHandler } from "./external-annotations";
 import { isWSL } from "./browser";
 import { agentToolHostForServer, createAIRuntime } from "./ai-runtime";
 import { handleHostControl, resolveHostControlToken, type HostControl } from "./host-control";
+import { createServerReviewLoop, handleReviewLoopRequest, type ReviewLoopLaunch } from "./review-loop";
 import { countUnsentDraftComments } from "@plannotator/shared/host-control";
 import { isAIEndpointPath, isLongLivedAIEndpointPath, type AIEndpoints, type SessionBridge } from "@plannotator/ai";
 import { isArchiveDocumentMutation } from "@plannotator/shared/archive-mode";
@@ -163,6 +164,15 @@ export interface ServerOptions {
    * Default false, so an unknown host is never offered a row that loses text.
    */
   approvalNotesSupported?: boolean;
+  /**
+   * The review loop (experimental "persistent-comments",
+   * packages/shared/review-loop.ts): the agent session and review id the host
+   * that launched this review named. With the setting on and a host that
+   * carries sends, a round of comments goes to the agent without a decision,
+   * and the revised plan comes back into the same tab (`updatePlan`). Absent:
+   * off, today's single decision.
+   */
+  reviewLoop?: ReviewLoopLaunch;
 }
 
 /** What `updatePlan` did with a revised plan pushed into the open review. */
@@ -377,6 +387,18 @@ export async function startPlannotatorServer(
     decisionPromise = new Promise(() => {});
   }
 
+  // The review loop (packages/shared/review-loop.ts): its journal is the plan's
+  // history chain, so a plan sent back for a round keeps its threads.
+  const reviewLoop = createServerReviewLoop({
+    launch: mode === "archive" ? undefined : options.reviewLoop,
+    target: mode !== "archive" && project && historySlug ? { kind: "plan", project, slug: historySlug } : null,
+    root: process.cwd(),
+    carrier: () => aiRuntime?.sends ?? null,
+    broadcast: (event) => externalAnnotations?.broadcast(event),
+    hostToken: hostControlToken,
+    getServerPort: () => boundPort,
+  });
+
   // Durable feedback archive: append the decision (and any notes the reviewer
   // attached) to feedback/{project}/index.jsonl at settlement time.
   //
@@ -464,6 +486,9 @@ export async function startPlannotatorServer(
             control: hostControl,
           });
           if (hostControlResponse) return hostControlResponse;
+
+          const reviewLoopResponse = await handleReviewLoopRequest(req, url, reviewLoop);
+          if (reviewLoopResponse) return reviewLoopResponse;
 
           // API: Get a specific plan version from history
           if (url.pathname === "/api/plan/version") {
@@ -897,6 +922,8 @@ export async function startPlannotatorServer(
             const effectivePermissionMode = requestedPermissionMode || permissionMode;
             decisionSettled = true;
             resolveDecision({ approved: true, feedback, savedPath, agentSwitch, permissionMode: effectivePermissionMode });
+            // Approving ends the review loop's review: its journal goes.
+            void reviewLoop.approved();
             return Response.json({ ok: true, savedPath });
           }
 
@@ -978,6 +1005,7 @@ export async function startPlannotatorServer(
     stopPromise ??= (async () => {
       try {
         closeAllFileBrowserWatchers();
+        reviewLoop.dispose();
         aiRuntime?.dispose();
       } finally {
         await server.stop(true);

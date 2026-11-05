@@ -111,6 +111,12 @@ export type ReviewJournalRef = { key: string } | { target: ReviewTarget };
 
 export interface ReviewJournalOptions {
   dataDir: string;
+  /**
+   * How long a write waits for the review's lock, blocking the thread
+   * (`LOCK_WAIT_MS` by default, for the CLI). A server passes 0 and retries
+   * with `retryReviewJournalWrite`, which waits on timers instead.
+   */
+  lockWaitMs?: number;
   /** Tests: the clock. */
   now?: () => number;
 }
@@ -376,8 +382,8 @@ function breakIfStale(lock: string): void {
   }
 }
 
-/** Runs `fn` holding the review folder's lock. */
-function withLock<T>(dir: string, fn: () => T): T {
+/** Runs `fn` holding the review folder's lock, waiting for it at most `waitMs`. */
+function withLock<T>(dir: string, waitMs: number, fn: () => T): T {
   const lock = join(dir, LOCK_FILE);
   const token = `${process.pid}.${randomUUID()}`;
   const start = Date.now();
@@ -390,7 +396,7 @@ function withLock<T>(dir: string, fn: () => T): T {
       if (code === "ENOENT") throw new ReviewJournalError("not_found", "This review has no journal (it was closed).");
       if (code !== "EEXIST") throw error;
       breakIfStale(lock);
-      if (Date.now() - start > LOCK_WAIT_MS) throw new ReviewJournalError("locked", `The review stayed locked for ${LOCK_WAIT_MS} ms; try again.`);
+      if (Date.now() - start >= waitMs) throw new ReviewJournalError("locked", `The review stayed locked for ${waitMs} ms; try again.`);
       sleep(15);
     }
   }
@@ -401,6 +407,24 @@ function withLock<T>(dir: string, fn: () => T): T {
       if (readFileSync(lock, "utf8") === token) rmSync(lock, { force: true });
     } catch {
       // Broken as stale while held, or the folder went with the review (close).
+    }
+  }
+}
+
+/**
+ * Runs a write that gives up at once on a held lock (`lockWaitMs: 0`) again
+ * until it gets the lock, waiting on timers between tries, so a server's
+ * event loop is never blocked by another process's write (the CLI's,
+ * a terminal client's). Gives up as the CLI does, after `LOCK_WAIT_MS`.
+ */
+export async function retryReviewJournalWrite<T>(write: () => T, waitMs: number = LOCK_WAIT_MS): Promise<T> {
+  const start = Date.now();
+  for (;;) {
+    try {
+      return write();
+    } catch (error) {
+      if (!(error instanceof ReviewJournalError) || error.code !== "locked" || Date.now() - start >= waitMs) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 15));
     }
   }
 }
@@ -455,7 +479,7 @@ function locked<T>(
   path: string,
   change: (state: ReviewJournalState | null, at: string) => { lines: Omit<JournalLine, "v" | "at">[]; result: T },
 ): T {
-  return withLock(dir, () => {
+  return withLock(dir, options.lockWaitMs ?? LOCK_WAIT_MS, () => {
     const lines = readLines(path);
     const at = new Date((options.now ?? Date.now)()).toISOString();
     const state = lines.length === 0 ? null : stateOf(key, lines);
@@ -734,10 +758,10 @@ export function markReviewSendsRead(options: ReviewJournalOptions, ref: ReviewJo
 }
 
 /** Approving the review ends it: its folder goes. True when there was one. */
-export function closeReviewJournal(options: Pick<ReviewJournalOptions, "dataDir">, ref: ReviewJournalRef): boolean {
+export function closeReviewJournal(options: Pick<ReviewJournalOptions, "dataDir" | "lockWaitMs">, ref: ReviewJournalRef): boolean {
   const dir = reviewJournalDir(options.dataDir, keyOf(ref));
   if (!existsSync(dir)) return false;
-  return withLock(dir, () => {
+  return withLock(dir, options.lockWaitMs ?? LOCK_WAIT_MS, () => {
     rmSync(dir, { recursive: true, force: true });
     return true;
   });
