@@ -272,6 +272,30 @@ by). Use it instead of inserting into the Viewer's DOM.
 
 See HANDOFF.md § "Viewer `belowTitle` (published in ui 0.54.0)".
 
+#### Content under a block (`Viewer.belowBlock`; Unreleased)
+
+`belowBlock?: (block) => ReactNode` draws a host's node right under one of
+the document's blocks, e.g. the comment threads on it (the Inbox's sent
+comments). The Viewer asks for each block in body order.
+
+- **Where.** A list item's node goes right after that item, inside its
+  list; any other block's right after the block (a table, a code block or a
+  diagram as a whole).
+- **Outside the document text, positions unchanged.** Each wrapper
+  `[data-viewer-below-block]` (its `data-below-block` the block's id) is
+  `annotation-exclude`, `data-pinpoint-ignore`, `data-print-hide`, with no
+  `data-block-id`, as `belowTitle`'s is, and the highlighter stores and
+  restores comment positions as if no slot were there. A selection inside a
+  slot makes no comment and opens no toolbar. Match the wrapper by presence,
+  not by value.
+- **A slot never remounts its block.** It is a sibling with a key of its
+  own, so one that appears later keeps the block and the highlight painted
+  on it.
+- **Absent is absent.** No prop, or a nullish or boolean result for a block,
+  draws no wrapper: the DOM is exactly the one without the prop.
+
+See HANDOFF.md § "Viewer `belowBlock` (Unreleased)".
+
 ### Diagram engine (`components/diagram`; 0.41.0)
 
 One renderer slot and one canvas render every Mermaid and Graphviz diagram — the fences in `Viewer` (`MermaidBlock`, `GraphvizBlock`), their popout, and whatever a host renders itself. `DiagramViewer` from `@plannotator/ui/components/diagram` takes `kind`, `source`, `theme` (`{ colorTheme, mode, shadowAmount? }`), `comments: DiagramComment[]` and `onCreateComment(anchor, text, additionalTargets)`; pass `onSave(source) => Promise<{ status: 'ok' } | { status: 'stale', currentSource }>` to get the Source pane (left of the canvas on desktop, under it on the phone; `readOnlySource` shows it without Save), and `sourceOpen` to toggle it. Zoom, pan and fit are the canvas's (wheel, drag, `+` `-` `0`, arrow keys); a click opens the composer at the part beneath while a drag pans (4 px threshold, 10 px for a finger), nothing highlights on a plain mouse-over (the ring under the pointer needs the platform modifier held), every edge carries an invisible 14 px hit path in one top layer and a click is resolved by priority over everything under the pointer (node, then edge, then cluster; an edge label is its edge), a click on no part comments on the whole diagram (kind `diagram`), sequence diagrams are addressable (actors, messages, notes, frames), a saved comment paints a ring and a numbered badge from the array order, and every comment re-resolves against each render through the engine's finder (id, then label, then unanchored — reported through `onUnanchoredChange`). The anchor is `DiagramAnchor` from `@plannotator/core/diagram-anchor` (`{ v: 1, family, kind, id | from + to, label, sourceLine }`, document lines), and Plannotator stores it as `Annotation.diagramAnchor`. Runtime slots: `utils/mermaid` (as before) and `utils/graphviz` (new, same shape, `@viz-js/viz` pinned `3.31.0`), each lazy on first use or filled by the host. `DiagramPopout` is the full-size viewer in the `PopoutDialog` chrome. See HANDOFF.md § "Diagram engine (0.41.0)" for every export, the adapter, the sanitizer and the migration notes.

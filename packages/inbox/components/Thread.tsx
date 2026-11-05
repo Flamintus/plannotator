@@ -1712,7 +1712,8 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
   const fresh = useMemo(() => newSinceLook(thread.messages, boundary), [thread.messages, boundary]);
   const showNew = !one && fresh.size > 0;
   // The fold is decided once, when the thread opens: opening a message never
-  // makes others appear or disappear.
+  // makes others appear or disappear. One exception, below: a message holding
+  // a comment thread still open opens once the thread's comments are read.
   const [foldState, setFoldState] = useState<FoldState | null>(null);
   let fold = foldState;
   if (!fold || fold.threadId !== thread.thread_id) {
