@@ -25,6 +25,7 @@ import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { InboxAnnotationRecord, InboxAttachmentState } from '@plannotator/core/inbox-types';
+import { configStore } from '@plannotator/ui/config';
 
 const hasDom = typeof document !== 'undefined';
 const { InboxApp } = (hasDom ? await import('./App') : {}) as typeof import('./App');
@@ -308,6 +309,23 @@ test.skipIf(!hasDom)("under the message, the agent's reply sits under its commen
   expect(thread()!.querySelector('textarea')).toBeNull();
   const model = JSON.parse((await loopback(`/api/inbox/threads/${sent}/attachments`)).text) as { annotations: InboxAnnotationRecord[] };
   expect(model.annotations.map((r) => [r.re, r.annotation.text, r.sent_reply_id])).toEqual([['rep-msg-1', 'Page me too.', null]]);
+
+  // The box saves on the comment composers' key: with "Enter saves a comment" on, a plain Enter. The key is taken
+  // (prevented), so the thread's Send, which skips a prevented key, never sends the draft waiting under the comment.
+  configStore.set('enterSavesComment', true);
+  try {
+    act(() => el.querySelector<HTMLButtonElement>('[data-sent-comment="rep-msg-1"] [data-sent-reply-to]')!.click());
+    const again = el.querySelector<HTMLTextAreaElement>('[data-sent-replies="rep-msg-1"] textarea')!;
+    await type(again, 'And the lead.');
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    await act(async () => {
+      again.dispatchEvent(enter);
+    });
+    await until(() => thread()?.querySelectorAll('[data-sent-reply-draft]').length === 2, 'the second draft, saved by the key');
+    expect(enter.defaultPrevented).toBe(true);
+  } finally {
+    configStore.set('enterSavesComment', false);
+  }
 }, 30_000);
 
 test.skipIf(!hasDom)("on a file, the agent's reply is a card under its comment's, never painted, and the person replies from the sent card", async () => {

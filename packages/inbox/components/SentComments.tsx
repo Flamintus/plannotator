@@ -23,7 +23,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { inboxCommentLastReplies, inboxCommentRounds, inboxCommentState, isInboxCommentReply, type InboxCommentThreadMessage } from '@plannotator/core/inbox-comment-threads';
 import type { InboxAnnotationRecord, InboxCommentReplyRecord } from '@plannotator/core/inbox-types';
+import { useConfigValue } from '@plannotator/ui/config';
 import type { Annotation } from '@plannotator/ui/types';
+import { isCommentSubmitKey } from '@plannotator/ui/utils/commentSubmitKey';
 import { InboxApiError, inboxApi, type AttachmentsModel } from '../api';
 import { annotationOf, annotationQuote, isFileComment, shortLabel } from '../attachments';
 import { agentReplyAnnotation, commentOfCard, followCodeLines, sentReplyRounds, sentReplyRows, sentUnanchoredChanges, withSentWrites, type SentReplyRow } from '../sentComments';
@@ -402,10 +404,12 @@ export function SentComments({
 
 /**
  * The box a reply is written in under a message's comment: Reply (or the
- * comment composers' key, ⌘/Ctrl+Enter) saves it as a draft; Escape or
- * Cancel closes it. ⌘/Ctrl+Enter here never reaches the thread's Send.
+ * comment composers' key, `isCommentSubmitKey`: ⌘/Ctrl+Enter, and Enter with
+ * "Enter saves a comment") saves it as a draft; Escape or Cancel closes it.
+ * That key here never reaches the thread's Send.
  */
 function SentReplyBox({ onSave, onCancel }: { onSave: (text: string) => Promise<void>; onCancel: () => void }) {
+  const enterSavesComment = useConfigValue('enterSavesComment');
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
@@ -432,7 +436,7 @@ function SentReplyBox({ onSave, onCancel }: { onSave: (text: string) => Promise<
             event.preventDefault();
             event.stopPropagation();
             onCancel();
-          } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) {
+          } else if (isCommentSubmitKey(event, enterSavesComment)) {
             event.preventDefault();
             event.stopPropagation();
             void save();
