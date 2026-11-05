@@ -260,8 +260,16 @@ export interface InboxCommentReplyRecord {
   re: string;
   /** The agent session that wrote it, as a message's author. */
   from: { kind: "agent"; host: string | null; session: string | null; name: string | null };
-  /** The agent's message it came with (send_message's `comment_replies`): a retry of that send answers with these. */
-  message_id: string;
+  /** The agent's message it came with (send_message's `comment_replies`): a retry of that send answers with these. Absent for replies sent alone (`call`). */
+  message_id?: string;
+  /**
+   * Replies sent alone, with no message (send_message's `comment_replies`
+   * without a body): the id the replies of that call share (`call_…`), so
+   * the person is told of them once, and the call's `idempotency_key` when
+   * it had one, so a retry answers with these.
+   */
+  call?: string;
+  idempotency_key?: string;
   text: string;
   created_at: string;
 }

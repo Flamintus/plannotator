@@ -112,7 +112,7 @@ export interface InboxCommentReply {
   author: InboxCommentAuthor;
   /** The round it was written in: the person's, the round of the Send that carried it; the agent's, the round under way then (`inboxCommentReplyRound`). */
   round: number;
-  /** What it came with: the person's Send (their reply, or a comment send), or the agent's message; '' for a draft. */
+  /** What it came with: the person's Send (their reply, or a comment send), or the agent's message; '' for a draft and for the agent's replies sent alone. */
   message_id: string;
   text: string;
   at: string;
@@ -134,6 +134,11 @@ export function isInboxCommentReplyId(value: unknown): value is string {
   return typeof value === "string" && REPLY_ID_RE.test(value);
 }
 
+/** A new id for one send_message's replies sent alone, which they share (`InboxCommentReplyRecord.call`). */
+export function inboxCommentReplyCallId(now?: number): string {
+  return `call_${ulid(now)}`;
+}
+
 /** A reply's words as kept: trimmed, or null when there are none or more than INBOX_COMMENT_REPLY_TEXT_MAX. */
 export function inboxCommentReplyText(value: unknown): string | null {
   const text = typeof value === "string" ? value.trim() : "";
@@ -146,9 +151,13 @@ export function isInboxCommentReplyRecord(value: unknown): value is InboxComment
   const record = value as Record<string, unknown>;
   const from = record.from as Record<string, unknown> | null | undefined;
   const nullableText = (field: unknown) => field === null || typeof field === "string";
+  const optionalText = (field: unknown) => field === undefined || typeof field === "string";
   return (
     isInboxCommentReplyId(record.id) &&
-    [record.project_id, record.thread_id, record.re, record.message_id, record.text, record.created_at].every((field) => typeof field === "string") &&
+    [record.project_id, record.thread_id, record.re, record.text, record.created_at].every((field) => typeof field === "string") &&
+    // With its message, or sent alone (`call`).
+    (typeof record.message_id === "string" || typeof record.call === "string") &&
+    [record.message_id, record.call, record.idempotency_key].every(optionalText) &&
     !!from &&
     typeof from === "object" &&
     from.kind === "agent" &&
@@ -537,7 +546,7 @@ export function inboxCommentThreads(
   }
   for (const reply of agentReplies) {
     const round = inboxCommentReplyRound(messages, rounds, reply.created_at, sends, reply.from.session);
-    add(reply.re, { id: reply.id, author: reply.from, round, message_id: reply.message_id, text: reply.text, at: reply.created_at });
+    add(reply.re, { id: reply.id, author: reply.from, round, message_id: reply.message_id ?? "", text: reply.text, at: reply.created_at });
   }
   const last = inboxCommentLastReplies(
     records.filter((record) => isInboxCommentSent(record) || (options.drafts === true && record.sent_reply_id === null)),

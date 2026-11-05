@@ -257,6 +257,11 @@ describe("the guide against what it describes", () => {
         const covered = (INBOX_FILLED_ARGUMENTS as readonly string[]).includes(property) || section.includes(`\`${property}\``);
         expect(covered, `send_message's argument ${property} is not in the guide`).toBe(true);
       }
+      // The served schema takes replies alone, with no body: the guide no longer calls the body always required.
+      const required = (tools.find((tool) => tool.name === "send_message")!.inputSchema as { required?: string[] }).required ?? [];
+      expect(required).not.toContain("body");
+      expect(section).not.toContain("`body` is required;");
+      expect(help).toContain("`body` is required;");
     } finally {
       await client.close();
       server.stop();

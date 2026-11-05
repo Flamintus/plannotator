@@ -7,7 +7,10 @@
  * or not), and a new question in an agent's message (a `Stopped:` line, a
  * `Holds up:` line or any other question), unless it is in the thread the
  * person has open and visible. Plain news in an existing thread never
- * notifies. Every Inbox notification shares one tag, so the browser shows one
+ * notifies, with one exception under the experimental "persistent-comments":
+ * an agent's replies under the person's comments sent alone, with no message
+ * (one notice per call, as for a question: not while the thread is open and
+ * visible), since nothing else in the thread says they came. Every Inbox notification shares one tag, so the browser shows one
  * at a time. The page keeps the threads of the current burst: with one, the
  * banner names the project, the agent and the subject, and a click opens that
  * thread; with more, the burst becomes one notice, "3 waiting in 2 projects",
@@ -66,11 +69,14 @@ export function threadNotificationText(input: {
   section: InboxSectionId | null;
   /** The notice is about a question (else a new thread that may ask nothing). Absent: a question. */
   asks?: boolean;
+  /** The notice is about an agent's replies sent alone under this many comments (and asks nothing). */
+  replied?: number;
 }): {
   title: string;
   body: string;
 } {
   const asks = input.asks ?? true;
+  if (!asks && input.replied) return { title: `${input.project}: ${input.agent} replied under ${plural(input.replied, 'comment')}`, body: input.subject };
   const what =
     input.section === 'stopped'
       ? 'stopped on you'
@@ -123,6 +129,8 @@ export interface NotifyItem {
   asks: boolean;
   /** The thread itself is new. */
   fresh: boolean;
+  /** An agent's replies sent alone in it, under this many comments (`comment_reply` with a `call`). */
+  replied?: number;
   /** What brought it (`thread:<id>`, `<message id>/<question key>`): what tabs claim, so one tab raises each. */
   keys: string[];
 }
@@ -374,6 +382,8 @@ export function useInboxNotifications(options: {
   const pending = useRef<{ messageId: string; key: string }[]>([]);
   /** New threads an agent started, waiting for the list read. */
   const pendingThreads = useRef<string[]>([]);
+  /** An agent's replies sent alone, by call (claim key `replies:<call>`), waiting for the list read. */
+  const pendingReplies = useRef(new Map<string, { threadId: string; author: InboxAuthor; count: number }>());
   /** The threads of the current burst, with their project names and whether they ask. */
   const burst = useRef(new Map<string, { project: string; asks: boolean }>());
   /** When the last notice was raised, and whether the tab was in front then. */
@@ -485,6 +495,13 @@ export function useInboxNotifications(options: {
       if (!inboxQuestionWaitsForList(q) || q.state !== 'open' || q.revision !== 0 || counted.current.has(id)) return;
       counted.current.add(id);
       pending.current.push({ messageId: q.message_id, key: id });
+    } else if (event.kind === 'comment_reply' && event.call && event.from) {
+      // An agent's replies sent alone under comments (experimental "persistent-comments"): one item per call.
+      const key = `replies:${event.call}`;
+      if (counted.current.has(key)) return;
+      const entry = pendingReplies.current.get(key);
+      if (entry) entry.count += 1;
+      else pendingReplies.current.set(key, { threadId: event.thread_id, author: event.from, count: 1 });
     }
   }, []);
 
@@ -516,6 +533,7 @@ export function useInboxNotifications(options: {
         subject: row?.subject ?? '(no subject)',
         section: row?.section ?? null,
         asks: burst.current.get(item.threadId)?.asks ?? item.asks,
+        replied: item.replied,
       });
       // The question it notified about (`<message id>/<key>`). Unused since decision mode went thread only (2026-10-27).
       const question = item.keys.filter((key) => !key.startsWith('thread:')).at(-1);
@@ -548,8 +566,11 @@ export function useInboxNotifications(options: {
     (list: ListModel) => {
       const questions = pending.current;
       const fresh = pendingThreads.current;
+      const replied = [...pendingReplies.current];
       pending.current = [];
       pendingThreads.current = [];
+      pendingReplies.current.clear();
+      for (const [key] of replied) counted.current.add(key);
       const rowList = list.sections.flatMap((section) => section.threads);
       // Snoozed threads (approval "inbox-snooze") are in no section. They are known threads all the same, and
       // nothing notifies for them; what they asked rings when they come back, by the rule below.
@@ -559,10 +580,17 @@ export function useInboxNotifications(options: {
       if (rowList.length > 0 || snoozed.size > 0 || (list.projects ?? []).some((project) => project.threads > 0)) setHasThreads(true);
       const back = returnedItems(rowList, snoozedSeen.current);
       snoozedSeen.current = snoozed;
-      if (questions.length === 0 && fresh.length === 0 && back.length === 0) return;
+      if (questions.length === 0 && fresh.length === 0 && back.length === 0 && replied.length === 0) return;
       // The threads these items landed in, newest last, with the agent that wrote.
       const threads = new Map<string, NotifyItem>();
       for (const item of back) threads.set(item.threadId, item);
+      // Replies sent alone: a question in the same thread says more, and takes the notice (below).
+      for (const [key, { threadId, author, count }] of replied) {
+        if (snoozed.has(threadId)) continue;
+        const before = threads.get(threadId);
+        threads.delete(threadId);
+        threads.set(threadId, { threadId, author, asks: before?.asks ?? false, fresh: before?.fresh ?? false, keys: [...(before?.keys ?? []), key], replied: (before?.replied ?? 0) + count });
+      }
       for (const threadId of fresh) {
         if (snoozed.has(threadId)) continue;
         const root = messages.current.get(threadId);

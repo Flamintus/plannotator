@@ -650,6 +650,9 @@ describe('the rules', () => {
     expect(unseenArrivals(messages, null)).toEqual([]);
     expect(latestAgentSeq({ messages })).toBe(8);
     expect(latestAgentSeq({ messages: [{ ...messages[0]!, seq: undefined }] })).toBeNull();
+    // An agent's replies sent alone under comments, after its last message, are what the look covers too.
+    expect(latestAgentSeq({ messages, agent_replies_seq: 11 })).toBe(11);
+    expect(latestAgentSeq({ messages, agent_replies_seq: 5 })).toBe(8);
   });
 
   test('the look goes as far as every arrival up to it was seen', () => {

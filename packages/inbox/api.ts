@@ -1653,8 +1653,12 @@ export type InboxEvent =
   | { seq: number; kind: 'steps'; id: string; thread_id: string }
   /** A Board initiative made, renamed or deleted (approval "board-initiatives"): silent; the Board reads its cards again. Absent from an older Inbox. */
   | { seq: number; kind: 'initiative'; id: string; initiative: InboxInitiative }
-  /** An agent's reply under a sent comment (experimental "persistent-comments"): silent; the window reads that thread's files again. Absent from an older Inbox. */
-  | { seq: number; kind: 'comment_reply'; id: string; thread_id: string }
+  /**
+   * An agent's reply under a sent comment (experimental "persistent-comments"): the window reads that thread's files again.
+   * With its message, silent. Sent alone (no message), `call` (shared by the replies of one send_message) and `from` (the
+   * agent): the window notifies once per call (notify.ts). Absent from an older Inbox.
+   */
+  | { seq: number; kind: 'comment_reply'; id: string; thread_id: string; call?: string; from?: InboxCommentReplyRecord['from'] }
   /** The person's comments sent to a session, or a send read or delivered (the same switch): its thread's files list it. Absent from an older Inbox. */
   | { seq: number; kind: 'comment_send'; id: string; thread_id: string };
 
