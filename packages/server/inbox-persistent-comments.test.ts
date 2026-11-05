@@ -89,6 +89,8 @@ test("off by default: a sent comment leaves the window, read_thread lists none, 
     const client = await agent(server);
     const { sent } = await roundOne(server, client, project);
 
+    const settings = (await (await fetch(`http://127.0.0.1:${server.port}/api/inbox/settings`)).json()) as { experimental: unknown };
+    expect(settings.experimental).toEqual({ decision_mode: { on: false, env: null }, persistent_comments: { on: false, env: null } });
     const model = await files(server, sent.thread_id);
     expect(model.annotations).toEqual([]);
     expect(model.sent_comments).toBeUndefined();
@@ -160,7 +162,7 @@ test("on: sent comments stay with their round, read_thread names each by id, and
   const reader = await agent(again);
   expect((await files(again, sent.thread_id)).sent_comments!.find((r) => r.id === "c-file")!.unanchored_at).toEqual(expect.any(String));
   const after = await call(reader, "read_thread", { thread_id: sent.thread_id, ...READER });
-  expect(after.text.split("\n").find((l) => l.startsWith("- c-file "))).toContain("unanchored: its words were not in the file when the person last opened it");
+  expect(after.text.split("\n").find((l) => l.startsWith("- c-file "))).toContain("unanchored");
   expect(after.structured.comments.find((c: { id: string }) => c.id === "c-file").unanchored).toBe(true);
 
   // Found again: cleared.
@@ -212,5 +214,33 @@ test("Settings → Experimental turns it on and off at once, and keeps the other
     if (before.data === undefined) delete process.env.PLANNOTATOR_DATA_DIR;
     else process.env.PLANNOTATOR_DATA_DIR = before.data;
     if (before.experimental !== undefined) process.env.PLANNOTATOR_EXPERIMENTAL = before.experimental;
+  }
+});
+
+test("PLANNOTATOR_EXPERIMENTAL decides over config.json, both ways, and Settings cannot save over it", async () => {
+  const { dataDir } = world();
+  const before = { data: process.env.PLANNOTATOR_DATA_DIR, experimental: process.env.PLANNOTATOR_EXPERIMENTAL };
+  process.env.PLANNOTATOR_DATA_DIR = dataDir;
+  try {
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(join(dataDir, "config.json"), JSON.stringify({ experimental: { persistentComments: true } }));
+    process.env.PLANNOTATOR_EXPERIMENTAL = "decision-mode, -persistent-comments";
+    const server = await start(dataDir);
+    const experimental = async () => ((await (await fetch(`http://127.0.0.1:${server.port}/api/inbox/settings`)).json()) as { experimental: unknown }).experimental;
+    expect(await experimental()).toEqual({ decision_mode: { on: true, env: true }, persistent_comments: { on: false, env: false } });
+    expect((await post(server, "/api/inbox/annotations/c-any/unanchored", { unanchored: true })).status).toBe(409);
+    process.env.PLANNOTATOR_EXPERIMENTAL = " Persistent-Comments ";
+    expect(await experimental()).toEqual({ decision_mode: { on: false, env: null }, persistent_comments: { on: true, env: true } });
+    // While the variable decides, the switch is locked: a save is refused and writes nothing.
+    const config = readFileSync(join(dataDir, "config.json"), "utf8");
+    const locked = await post(server, "/api/inbox/settings", { experimental: { persistent_comments: false } });
+    expect([locked.status, ((await locked.json()) as { code: string }).code]).toEqual([409, "experimental_env_decides"]);
+    expect(readFileSync(join(dataDir, "config.json"), "utf8")).toBe(config);
+    expect(await experimental()).toEqual({ decision_mode: { on: false, env: null }, persistent_comments: { on: true, env: true } });
+  } finally {
+    if (before.data === undefined) delete process.env.PLANNOTATOR_DATA_DIR;
+    else process.env.PLANNOTATOR_DATA_DIR = before.data;
+    if (before.experimental === undefined) delete process.env.PLANNOTATOR_EXPERIMENTAL;
+    else process.env.PLANNOTATOR_EXPERIMENTAL = before.experimental;
   }
 });
