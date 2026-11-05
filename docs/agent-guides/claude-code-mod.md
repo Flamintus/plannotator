@@ -517,14 +517,20 @@ side: "The review loop on the screens" in `server-and-storage.md`):
   or `failed`. What became of each is kept on the launch (`sendStates`), so a
   send given again, by this loop or one restarted after the server went
   silent, is answered with its state and never put in twice; a failed one is
-  forgotten, so a retry is tried again. The turn is headed like a decision (`sendDeliveryFor` in
-  `delivery.ts`: `Plannotator: notes.md (pn-3f2a9c) — Round 2 done · 3
-  comments.` from `plannotatorSendOutcome`, then the `Target:` line), the
-  server's text after it; over 12 KB the text goes to a file of its own in
-  the launch directory (`send-<send id>.md`), never the decision's
-  `feedback.md`. A plan review's send ends with `PLAN_ROUND_NEXT_STEP`: once
-  replied, revise the plan and call ExitPlanMode again, which arrives as a
-  revision in the same review.
+  forgotten, so a retry is tried again. A round is not a message (#1116):
+  the turn is one line, headed like a decision without the `Target:` line
+  (`sendDeliveryFor` in `delivery.ts`: `Plannotator: notes.md (pn-3f2a9c) —
+  Round 2 done · 3 comments.` from `plannotatorSendOutcome`), then the
+  server's line (`reviewSendWakeText`): read the round with the tool's
+  `threads`, answer under each id with `reply`, and end the turn without a
+  message in chat. The round itself (the person's words, each comment with
+  the lines the page added under it, the threads still open) is what
+  `threads` returns first (`reviewJournalAgentRead`). An older CLI's text of
+  several lines goes under the heading as before; over 12 KB the text goes
+  to a file of its own in the launch directory (`send-<send id>.md`), never
+  the decision's `feedback.md`. A plan review's send ends with
+  `PLAN_ROUND_NEXT_STEP`: once replied, revise the plan and call
+  ExitPlanMode again, which arrives as a revision in the same review.
 - The tool is registered with `plannotatorToolLoopDescription` /
   `plannotatorToolLoopInputSchema` over the tailscale variant: `reply {
   session, replies: [{ id, text }] }` and `threads { session }`, parsed first
@@ -539,7 +545,14 @@ side: "The review loop on the screens" in `server-and-storage.md`):
   process watches the session's recent messages (`pickerFile`, newest first)
   on `/api/host/messages`, once per new newest message (`messagePushed`): the
   agent's answer joins the screen's picker, and nothing is selected for the
-  person.
+  person. What the agent writes in a turn a round's wake started is no
+  message (`recentAssistantTexts` with `skipRounds`, here and when `last`
+  opens with the loop on): a user row is a round's wake when its first line,
+  through another plugin's frame, is a send's heading (`— Round N done ·` or
+  `still open ·`, the mod's and the line a terminal client pastes) or the
+  Inbox's wake on comments alone (`Plannotator Inbox: … (snd_…)`), and the
+  turn runs to the next user row that is not tool results alone
+  (`toolResult` on the host's messages).
 Off, the polls name no feature and the tool's schema and description are the
 tailscale variant's, byte for byte. Tests: `bridge.test.ts` (sends over the
 real server half), `controller.test.ts` (reply, threads, `last`'s messages,

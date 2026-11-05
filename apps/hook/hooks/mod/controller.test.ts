@@ -1819,4 +1819,46 @@ describe('the review loop: reply, threads, and last\'s next messages', () => {
     await host.tick()
     expect(pushed).toHaveLength(1)
   })
+
+  test("a round is not a message: what the agent writes in a round's turn joins no picker, through its tool calls, up to the next prompt", async () => {
+    const host = fakeHost()
+    serveOnLaunch(host)
+    const pushed: { messages: { text: string }[] }[] = []
+    host.onFetch = (url, body) => {
+      if (url.endsWith('/api/host/messages')) {
+        pushed.push(body as { messages: { text: string }[] })
+        return { status: 200, ok: true, text: JSON.stringify({ messages: 2, changed: true }) }
+      }
+      return { status: 404, ok: false, text: '' }
+    }
+    host.transcript = [{ role: 'assistant', text: 'First answer.' }]
+    const mod = new PlannotatorMod(host, LOOP_SESSION)
+    await mod.runTool({ action: 'last' })
+    await host.tick()
+    const rounds = [
+      // A screen's send as this mod submits it, framed as the engine keeps a plugin's prompt.
+      'The plannotator plugin sent a message: Plannotator: notes.md (pn-3f2a9c) — Round 2 done · 3 comments. Read the round with …',
+      // The line a terminal client pastes.
+      'Plannotator: rollout.md (file-7acd212f03a2b3bc6b2f0e1a) — Round 1 still open · 1 comment. Read the round with …',
+      // The Inbox's wake on comments alone.
+      `Plannotator Inbox: Rollout (snd_${'0'.repeat(26)})\nThe person sent 2 comments on your work from the Plannotator Inbox; they finished round 1. …`,
+    ]
+    for (const [index, wake] of rounds.entries()) {
+      host.transcript = [
+        ...host.transcript,
+        { role: 'user', text: wake },
+        { role: 'assistant', text: 'Let me read the round.' },
+        { role: 'user', text: '', toolResult: true },
+        { role: 'assistant', text: `Replied under the comments (${index}).` },
+      ]
+      mod.onTurnComplete(`round-${index}`, 'Replied.', false)
+      await host.tick()
+    }
+    // At most the message the screen opened with, never a round's words.
+    expect(pushed.flatMap((body) => body.messages.map((message) => message.text))).toEqual(pushed.length > 0 ? ['First answer.'] : [])
+    host.transcript = [...host.transcript, { role: 'user', text: 'And the deploy?' }, { role: 'assistant', text: 'Deploy on Tuesday.' }]
+    mod.onTurnComplete('turn-1', 'Deploy on Tuesday.', false)
+    await host.tick()
+    expect(pushed.at(-1)!.messages.map((message) => message.text)).toEqual(['Deploy on Tuesday.', 'First answer.'])
+  })
 })

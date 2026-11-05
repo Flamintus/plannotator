@@ -21,6 +21,8 @@ export interface HttpResult {
 export interface TranscriptMessage {
   role: 'user' | 'assistant'
   text: string
+  /** A user row that only answers tool calls (no words of its own): no prompt. */
+  toolResult?: boolean
 }
 
 /** What this process loaded: the Inbox poll's `plugin` field. */

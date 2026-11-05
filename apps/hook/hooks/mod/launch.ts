@@ -633,15 +633,49 @@ export const MAX_PICKER_FILE_BYTES = 8 * 1024 * 1024
  */
 export const PICKER_FILE_BUDGET_BYTES = MAX_PICKER_FILE_BYTES - 256 * 1024
 
+/** Another plugin's prompt as the transcript keeps it, framed by the engine. */
+const PLUGIN_FRAME = /^The [^\n]{1,200}? plugin sent a message:\s*/
+
+/**
+ * Whether a prompt wakes the agent for a review round (#1116): a round is not
+ * a message, so `last`'s picker leaves out what the agent writes in its turn.
+ * Read on the prompt's first line, through another plugin's frame:
+ *
+ * - a screen's send, as this mod submits it (`sendDeliveryFor`), and the line
+ *   a terminal client pastes (`plannotator threads send`), headed alike:
+ *   `Plannotator: notes.md (pn-3f2a9c) — Round 2 done · 3 comments. …`
+ *   (`plannotatorSendOutcome`);
+ * - the Inbox's wake on comments alone, named by the oldest send's id:
+ *   `Plannotator Inbox: <subject> (snd_…)` (`inboxWakeText`).
+ */
+export function isRoundWakeText(text: string): boolean {
+  const first = text.trim().replace(PLUGIN_FRAME, '').split('\n', 1)[0] ?? ''
+  return /^Plannotator: .+ — Round \d+ (?:done|still open) · /.test(first) || /^Plannotator Inbox: .*\(snd_[0-9A-HJKMNP-TV-Z]{26}\)$/.test(first.trimEnd())
+}
+
 /**
  * The assistant messages that have text, newest first, at most `limit`.
  * Consecutive assistant rows (no user row between them) are one response, so
  * their texts are joined, as the transcript path groups chunks by message id.
+ * With `skipRounds` (the review loop on), what the agent writes in a turn a
+ * round's wake started (`isRoundWakeText`, up to the next prompt; a tool
+ * result is no prompt) is left out: a round is not a message.
  */
 export function recentAssistantTexts(
-  messages: readonly { role: string; text: string }[],
+  messages: readonly { role: string; text: string; toolResult?: boolean }[],
   limit: number = RECENT_MESSAGES_LIMIT,
+  options: { skipRounds?: boolean } = {},
 ): string[] {
+  if (options.skipRounds) {
+    let round = false
+    messages = messages.map((message) => {
+      if (message.role !== 'assistant') {
+        if (!message.toolResult) round = isRoundWakeText(message.text)
+        return message
+      }
+      return round ? { ...message, text: '' } : message
+    })
+  }
   const texts: string[] = []
   let run: string[] = []
   const flush = () => {
