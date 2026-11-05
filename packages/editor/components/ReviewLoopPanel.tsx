@@ -257,7 +257,9 @@ export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanel
       if (isPassageAnnotation(annotation)) {
         const on = annotation.inReplyTo;
         if (on && index.sent.has(on)) {
-          subThreads.set(on, [...(subThreads.get(on) ?? []), { id: annotation.id, annotation: annotation as unknown as Record<string, unknown>, sent_reply_id: null, parent: on }]);
+          const offset = loop.offsets.get(annotation.id);
+          const record: SentThreadRecord = { id: annotation.id, annotation: annotation as unknown as Record<string, unknown>, sent_reply_id: null, parent: on, ...(offset !== undefined ? { quote_offset: offset } : {}) };
+          subThreads.set(on, [...(subThreads.get(on) ?? []), record]);
           subDrafts.push(annotation);
         }
         continue;

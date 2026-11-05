@@ -7,11 +7,14 @@
  * spans two bodies, is no passage.
  *
  * The passage's offset counts the body's words as drawn, whitespace runs as
- * one (packages/core/passage.ts), so it holds however the words wrap.
+ * one (packages/core/passage.ts), so it holds however the words wrap; a body
+ * drawn in pieces (boxes between its blocks) counts all its pieces' words.
  */
 import { findPassage, passageOffset, type TextPassage } from '@plannotator/core/passage';
 
 export const PASSAGE_BODY_ATTRIBUTE = 'data-passage-body';
+/** On each piece of a body drawn in pieces (a message's words cut by the sub-threads' boxes between its blocks). */
+export const PASSAGE_PIECE_ATTRIBUTE = 'data-passage-piece';
 
 export interface SelectedPassage extends TextPassage {
   /** The message the passage is in: its body's `data-passage-body`. */
@@ -24,6 +27,26 @@ function bodyOf(node: Node | null, within: Element): HTMLElement | null {
   const element = node instanceof Element ? node : node?.parentElement ?? null;
   const body = element?.closest<HTMLElement>(`[${PASSAGE_BODY_ATTRIBUTE}]`) ?? null;
   return body && within.contains(body) ? body : null;
+}
+
+/**
+ * A body's words and where `body` starts in them. A body drawn in pieces
+ * (`PASSAGE_PIECE_ATTRIBUTE`, under one parent, in order) is its pieces' words
+ * with one newline between two pieces, where blank lines were: an offset reads
+ * any whitespace run as one, so the passage's offset is the one in the words.
+ */
+function bodyWords(body: HTMLElement, parentId: string): { words: string; at: number } {
+  const parent = body.parentElement;
+  if (!body.hasAttribute(PASSAGE_PIECE_ATTRIBUTE) || !parent) return { words: body.textContent ?? '', at: 0 };
+  const pieces = Array.from(parent.children).filter((piece) => piece.hasAttribute(PASSAGE_PIECE_ATTRIBUTE) && piece.getAttribute(PASSAGE_BODY_ATTRIBUTE) === parentId);
+  let words = '';
+  let at = 0;
+  pieces.forEach((piece, index) => {
+    if (index > 0) words += '\n';
+    if (piece === body) at = words.length;
+    words += piece.textContent ?? '';
+  });
+  return { words, at };
 }
 
 /** The passage the document's selection holds inside `within`, or null. */
@@ -47,8 +70,8 @@ export function selectedPassage(within: Element, selection: Selection | null = w
   const before = doc.createRange();
   before.setStart(whole.startContainer, whole.startOffset);
   before.setEnd(inside.startContainer, inside.startOffset);
-  const words = body.textContent ?? '';
-  const offset = passageOffset(words, before.toString().length + (raw.length - raw.trimStart().length));
+  const { words, at } = bodyWords(body, parentId);
+  const offset = passageOffset(words, at + before.toString().length + (raw.length - raw.trimStart().length));
   const box = typeof inside.getBoundingClientRect === 'function' ? inside.getBoundingClientRect() : body.getBoundingClientRect();
   return { parentId, quote, offset, rect: { top: box.top, left: box.left, width: box.width, height: box.height } };
 }

@@ -7,7 +7,8 @@
  * rounds from `inboxCommentRounds`, the resolved ids from `inboxCommentState`
  * (with `inboxCommentLastReplies`) and the messages with an open sub-thread under them from
  * `inboxOpenSubThreadPaths`; `placeThreads` names the block each thread goes
- * under (`Viewer`'s `belowBlock`).
+ * under (`Viewer`'s `belowBlock`), and `placeOnMessage` the block of a
+ * message's words each sub-thread goes under.
  *
  * A host that keeps no records of its own (the screens' review loop, any
  * client of the neutral thread view of `@plannotator/core/review-threads`)
@@ -16,7 +17,7 @@
  */
 
 import type { InboxCommentSendStatus } from '@plannotator/core/inbox-comment-sends';
-import type { TextPassage } from '@plannotator/core/passage';
+import { findPassage, type TextPassage } from '@plannotator/core/passage';
 import type { InboxAnnotationRecord } from '@plannotator/core/inbox-types';
 import type { ReviewThreadNode, ReviewThreadView } from '@plannotator/core/review-threads';
 
@@ -33,6 +34,8 @@ export interface SentThreadRecord {
   sent_reply_id: string | null;
   /** A sub-thread: the message whose passage it is on. */
   parent?: string;
+  /** A sub-thread's passage: where it starts in its parent's words (core's passage.ts); absent, its quote's first place there. */
+  quote_offset?: number;
   /** Its words were not found where it was made. */
   unanchored_at?: string | null;
 }
@@ -145,6 +148,81 @@ export function placeThreads<R extends SentThreadRecord>(
   return { byBlock, rest };
 }
 
+/**
+ * The blocks of a message's words as its box draws them (pre-wrapped): its
+ * paragraphs, which blank lines part, each from its first line's start to its
+ * last line's end in `text`.
+ */
+export function messageBlocks(text: string): { start: number; end: number }[] {
+  const blocks: { start: number; end: number }[] = [];
+  let start = -1;
+  let end = 0;
+  let at = 0;
+  for (const line of text.split('\n')) {
+    if (line.trim() === '') {
+      if (start >= 0) blocks.push({ start, end });
+      start = -1;
+    } else {
+      if (start < 0) start = at;
+      end = at + line.length;
+    }
+    at += line.length + 1;
+  }
+  if (start >= 0) blocks.push({ start, end });
+  return blocks;
+}
+
+/** A sub-thread's passage in its parent's words: its quote, from where it starts (`quote_offset`); none without a quote. */
+export function subThreadPassage(record: SentThreadRecord): TextPassage | undefined {
+  const quote = record.annotation.originalText;
+  if (typeof quote !== 'string' || quote.trim() === '') return undefined;
+  return { quote, offset: typeof record.quote_offset === 'number' && record.quote_offset >= 0 ? record.quote_offset : 0 };
+}
+
+/** A piece of a message's words as its box draws it (`from` to `to` in them), and what goes under it. */
+export interface MessagePiece<T> {
+  from: number;
+  to: number;
+  under: T[];
+}
+
+/**
+ * Where what sits on a message's words goes (its sub-threads, the box
+ * commenting on a passage of them), as a thread sits under the block of the
+ * document its passage starts in: each under the block of the words
+ * (`messageBlocks`) its passage starts in, several on one block in the order
+ * of their passages (the order given when two start at the same place); one
+ * whose passage is not found, at the message's end, after the others. The
+ * words are cut after each block something goes under, the blank lines that
+ * part it from the next left out (the boxes part them); a message whose
+ * sub-threads all go under its last block is one piece, its words whole.
+ */
+export function placeOnMessage<T>(text: string, items: readonly T[], passageOf: (item: T) => TextPassage | undefined): MessagePiece<T>[] {
+  const blocks = messageBlocks(text);
+  const last = Math.max(0, blocks.length - 1);
+  const placed = items.map((item, order) => {
+    const passage = passageOf(item);
+    const found = passage ? findPassage(text, passage) : null;
+    if (!found) return { item, order, block: last, at: Number.POSITIVE_INFINITY };
+    let block = 0;
+    while (block < last && blocks[block + 1]!.start <= found[0]) block++;
+    return { item, order, block, at: found[0] };
+  });
+  placed.sort((a, b) => a.block - b.block || (a.at === b.at ? 0 : a.at < b.at ? -1 : 1) || a.order - b.order);
+  const under = new Map<number, T[]>();
+  for (const entry of placed) under.set(entry.block, [...(under.get(entry.block) ?? []), entry.item]);
+  const pieces: MessagePiece<T>[] = [];
+  let from = 0;
+  for (let block = 0; block < last; block++) {
+    const here = under.get(block);
+    if (!here) continue;
+    pieces.push({ from, to: blocks[block]!.end, under: here });
+    from = blocks[block + 1]!.start;
+  }
+  pieces.push({ from, to: text.length, under: under.get(last) ?? [] });
+  return pieces;
+}
+
 /** The person's drafts a host keeps beside the neutral thread view (its own, not in the view yet). */
 export interface SentViewDrafts {
   /** The person's draft replies under each thread, by the thread's id, oldest first. */
@@ -181,7 +259,7 @@ export function sentThreadsFromView<A>(
     id: node.id,
     annotation: annotationOf?.(node.id) ?? { originalText: node.quote, text: node.text },
     sent_reply_id: node.draft ? null : node.reply_id,
-    ...(node.parent ? { parent: node.parent.id } : {}),
+    ...(node.parent ? { parent: node.parent.id, quote_offset: node.parent.quote_offset } : {}),
     ...(node.unanchored ? { unanchored_at: 'unanchored' } : {}),
   });
   const rounds = new Map<string, number>();
