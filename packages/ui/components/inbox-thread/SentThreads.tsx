@@ -435,7 +435,6 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, tree, view, a
       <div className="ib-sentb-msg" data-sent-message={id}>
         <div className="ib-sentb-meta">
           <span className="ib-sentc-who">You</span>
-          {roundChip}
         </div>
         {saidWithSubThreads(id, annotation.text ?? '', !draft && !!onSubThread)}
       </div>
@@ -451,7 +450,6 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, tree, view, a
             >
               <div className="ib-sentb-meta">
                 <span className="ib-sentc-who">{reply.who}</span>
-                {reply.draft ? <span className="ib-sentc-chip">Not sent</span> : reply.round !== undefined && <span className="ib-sentc-chip">Round {reply.round}</span>}
                 <SentStatusChip status={statuses?.get(reply.id)} />
                 {fresh?.has(reply.id) && <span className="ib-sentc-chip ib-sentb-new">New</span>}
                 {reply.draft && onSend && <SentSendButton id={reply.id} onSend={onSend} />}
