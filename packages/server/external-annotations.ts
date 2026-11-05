@@ -39,6 +39,8 @@ export interface ExternalAnnotationHandler {
   addAnnotations: (body: unknown) => { ids: string[] } | { error: string };
   /** Send an event that is not a store mutation (session-closed) to every open stream. */
   broadcast: (event: ExternalAnnotationEvent<StorableAnnotation>) => void;
+  /** How many pages have the stream open now. */
+  streams: () => number;
 }
 
 // ---------------------------------------------------------------------------
@@ -77,6 +79,7 @@ export function createExternalAnnotationHandler(
 
   return {
     broadcast,
+    streams: () => subscribers.size,
 
     addAnnotations(body: unknown): { ids: string[] } | { error: string } {
       const parsed = transform(body);

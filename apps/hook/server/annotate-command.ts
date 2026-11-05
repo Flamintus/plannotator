@@ -17,7 +17,13 @@ export interface CompleteAnnotateCommandOptions {
     serialized: string,
   ) => Promise<void>;
   writeStdout?: (output: string) => Promise<void>;
-  emitLegacyOutcome: (result: AnnotateOutcome) => void;
+  /** `reopenable`: the review stays open in its tab after this decision, which may be followed by another. */
+  emitLegacyOutcome: (result: AnnotateOutcome, extra?: { reopenable: true }) => void;
+  /**
+   * The review loop (#1116): after a decision, the server's word on whether
+   * the review stays reopenable in its tab (`afterDecision`); null: it does not.
+   */
+  afterDecision?: () => Promise<"reopened" | "over"> | null;
   exit?: (code: number) => void;
   logError?: (message: string) => void;
 }
@@ -40,10 +46,22 @@ export async function completeAnnotateCommand({
   writeResultFile = writeAnnotateResultFile,
   writeStdout: outputWriter = writeStdout,
   emitLegacyOutcome,
+  afterDecision,
   exit = process.exit,
   logError = (message) => console.error(message),
 }: CompleteAnnotateCommandOptions): Promise<void> {
-  const result = await waitForDecision();
+  let result = await waitForDecision();
+  // The review loop: a review the person ended under it stays open in its tab, which may reopen it. Each
+  // decision goes to the host as it comes (marked reopenable); the server stops once it can no longer be.
+  for (let open = requireApproval || resultFile ? null : (afterDecision?.() ?? null); open; open = afterDecision?.() ?? null) {
+    emitLegacyOutcome(result, { reopenable: true });
+    if ((await open) === "over") {
+      stopServer();
+      exit(0);
+      return;
+    }
+    result = await waitForDecision();
+  }
   await settleAfterDecision();
   stopServer();
 

@@ -301,4 +301,47 @@ describe("completeAnnotateCommand", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  // The review loop (R11): a review ended under it stays open in its tab; each decision reaches the host at once.
+  test("a reopenable review publishes each decision as it comes, waits through a reopen, and stops once it is over", async () => {
+    const events: string[] = [];
+    const decisions: AnnotateOutcome[] = [{ feedback: "first", annotations: [] }, { feedback: "second", annotations: [] }];
+    const ends: ("reopened" | "over")[] = ["reopened", "over"];
+    await completeAnnotateCommand({
+      waitForDecision: async () => {
+        events.push("decision");
+        return decisions.shift()!;
+      },
+      afterDecision: () => {
+        const end = ends.shift();
+        return end ? Promise.resolve(end) : null;
+      },
+      settleAfterDecision: async () => void events.push("settle"),
+      stopServer: () => void events.push("stop"),
+      requireApproval: false,
+      emitLegacyOutcome: (result, extra) => void events.push(`legacy:${result.feedback}:${extra?.reopenable === true}`),
+      exit: (code) => void events.push(`exit:${code}`),
+    });
+    expect(events).toEqual(["decision", "legacy:first:true", "decision", "legacy:second:true", "stop", "exit:0"]);
+  });
+
+  test("a strict gate never waits for a reopen: its record is written once, at the end", async () => {
+    let asked = 0;
+    const events: string[] = [];
+    await completeAnnotateCommand({
+      waitForDecision: async () => ({ approved: true, feedback: "" }),
+      afterDecision: () => {
+        asked += 1;
+        return Promise.resolve("over");
+      },
+      settleAfterDecision: async () => void events.push("settle"),
+      stopServer: () => void events.push("stop"),
+      requireApproval: true,
+      writeStdout: async () => void events.push("stdout"),
+      emitLegacyOutcome: () => void events.push("legacy"),
+      exit: (code) => void events.push(`exit:${code}`),
+    });
+    expect(asked).toBe(0);
+    expect(events).toEqual(["settle", "stop", "stdout", "exit:0"]);
+  });
 });

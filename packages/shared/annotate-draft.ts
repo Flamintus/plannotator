@@ -405,6 +405,11 @@ export function createDocumentDraftStore(options: DocumentDraftStoreOptions) {
       settled = true;
     },
 
+    /** The person reopened the decided review (the review loop): document writes are taken again. */
+    reopen(): void {
+      settled = false;
+    },
+
     /** Unsent comments in every copy this session covered or lists (and may serve). */
     countUnsent(count: (draft: unknown) => number): number {
       const paths = allCovered();
@@ -537,6 +542,16 @@ export function createAnnotateDraftSession(options: AnnotateDraftSessionOptions)
       deleteReviewDraft(keys, draftGeneration);
       store?.settle(clientId);
       settled = true;
+    },
+
+    /**
+     * The person reopened the review they had decided (the review loop keeps
+     * its server up after an end): saves and document writes are taken again,
+     * the page saving its comments as it did before the decision.
+     */
+    reopen(): void {
+      settled = false;
+      store?.reopen();
     },
 
     /**

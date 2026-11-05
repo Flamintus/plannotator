@@ -71,6 +71,12 @@ export interface HostResultRecord {
    * name can never be confused.
    */
   target?: string | string[];
+  /**
+   * The review loop: the review stays open in its tab after this decision,
+   * where the person may reopen it; the same file may then hold its next
+   * decision. A host that watches for that keeps the review after delivering.
+   */
+  reopenable?: true;
 }
 
 /** The `closedBy` / `unsentAnnotations` pair a host close adds to a dismissal. */

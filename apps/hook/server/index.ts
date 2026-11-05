@@ -983,9 +983,10 @@ process.on("exit", () => {
  * also needs the experimental setting and a host that carries sends; with no
  * tag there is none.
  */
-function cliReviewLoopLaunch(): { hostSession: string; reviewId?: string } | undefined {
+/** `reopen`: this command publishes each decision as it comes and keeps the server up after an end (the review loop's reopen). */
+function cliReviewLoopLaunch(options: { reopen?: boolean } = {}): { hostSession: string; reviewId?: string; reopen?: boolean } | undefined {
   const hostSession = process.env.PLANNOTATOR_SESSION_TAG;
-  return hostSession ? { hostSession, ...(hostReviewId ? { reviewId: hostReviewId } : {}) } : undefined;
+  return hostSession ? { hostSession, ...(hostReviewId ? { reviewId: hostReviewId } : {}), ...(options.reopen ? { reopen: true } : {}) } : undefined;
 }
 
 function registerCliSession(info: SessionInfo): void {
@@ -1924,7 +1925,8 @@ if (args[0] === "sessions") {
     markdown,
     filePath: absolutePath,
     origin: detectedOrigin,
-    reviewLoop: cliReviewLoopLaunch(),
+    // A strict gate's record is written once, at the end: no reopen there.
+    reviewLoop: cliReviewLoopLaunch({ reopen: !requireApprovalFlag && !resultFile }),
     mode: liveAppResolved ? "annotate-app" : annotateMode,
     liveApp: liveAppResolved
       ? {
@@ -2002,11 +2004,12 @@ if (args[0] === "sessions") {
 
   await completeAnnotateCommand({
     waitForDecision: server.waitForDecision,
+    afterDecision: server.afterDecision,
     settleAfterDecision: () => Bun.sleep(1500),
     stopServer: server.stop,
     requireApproval: requireApprovalFlag,
     resultFile,
-    emitLegacyOutcome: (outcome) => {
+    emitLegacyOutcome: (outcome, extra) => {
       const hostContext: AnnotateHostContext = bundlePaths
         ? { kind: "bundle", bundlePaths, origin: detectedOrigin }
         : {
@@ -2014,7 +2017,7 @@ if (args[0] === "sessions") {
             target: folderPath ?? absolutePath,
             origin: detectedOrigin,
           };
-      publishHostResult(annotateHostResult(outcome, hostContext));
+      publishHostResult({ ...annotateHostResult(outcome, hostContext), ...extra });
       emitAnnotateOutcome(outcome, { runtime: detectedOrigin, context: annotateContextLine(hostContext), target: annotateTarget });
     },
   });
@@ -2266,7 +2269,7 @@ if (args[0] === "sessions") {
     markdown: annotatedMessage.text,
     filePath: "last-message",
     origin: copilotDetected ? "copilot-cli" : detectedOrigin,
-    reviewLoop: cliReviewLoopLaunch(),
+    reviewLoop: cliReviewLoopLaunch({ reopen: true }),
     mode: "annotate-last",
     title: sessionTitle,
     sharingEnabled,
@@ -2309,7 +2312,17 @@ if (args[0] === "sessions") {
     label: `annotate-last`,
   });
 
-  const result = await server.waitForDecision();
+  let result = await server.waitForDecision();
+  // The review loop: a review the person ended stays open in its tab, which may reopen it (annotate-command.ts).
+  for (let open = server.afterDecision(); open; open = server.afterDecision()) {
+    publishHostResult({ ...annotateHostResult(result, { kind: "last", origin: detectedOrigin }), reopenable: true });
+    emitAnnotateOutcome(result, { runtime: detectedOrigin });
+    if ((await open) === "over") {
+      server.stop();
+      process.exit(0);
+    }
+    result = await server.waitForDecision();
+  }
 
   await Bun.sleep(1500);
 

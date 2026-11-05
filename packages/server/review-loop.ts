@@ -27,6 +27,11 @@ export type { ReviewLoop } from "@plannotator/shared/review-loop";
 export interface ReviewLoopLaunch {
   hostSession?: string;
   reviewId?: string;
+  /**
+   * The CLI publishes each decision as it comes and keeps the server up after
+   * the person ends the review, so it can be reopened in its tab (`ended`).
+   */
+  reopen?: boolean;
 }
 
 export function createServerReviewLoop(input: {
@@ -41,6 +46,10 @@ export function createServerReviewLoop(input: {
   /** A session published over the tailnet keeps today's single decision. */
   tailnetPublished?: boolean;
   messages?: readonly HostMessage[];
+  /** The server takes decisions again; used only when the launch says the CLI keeps the server up (`reopen`). */
+  onReopen?: () => void;
+  /** A page is open on the review. */
+  pageOpen?: () => boolean;
 }): ReviewLoop {
   const to = reviewLoopSessionOf(input.launch?.hostSession);
   return createReviewLoop({
@@ -55,6 +64,8 @@ export function createServerReviewLoop(input: {
     hostToken: () => input.hostToken,
     getServerPort: input.getServerPort,
     ...(input.messages !== undefined ? { messages: input.messages } : {}),
+    ...(input.launch?.reopen === true && input.onReopen ? { onReopen: input.onReopen } : {}),
+    ...(input.pageOpen ? { pageOpen: input.pageOpen } : {}),
     agentName: inboxAgentName,
   });
 }

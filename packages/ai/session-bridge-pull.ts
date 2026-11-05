@@ -44,6 +44,10 @@
  *   received and not reported since is sent again now and then
  *   (`receivedResendAfterMs`): the host answers with what became of it, and a
  *   host that never had it (a new process) puts it in.
+ *   A host that also lists `reopen` keeps watching a review after the person
+ *   ended it, so the review can be reopened in its tab: it takes a send of
+ *   mode `reopen` (the agent told the review goes on) and the review's next
+ *   decision.
  *
  * Auth: `Authorization: Bearer <token>`, where the token is a per-launch secret
  * the host generated and handed to the server process (env
@@ -97,12 +101,14 @@ export const SESSION_BRIDGE_POLL_FEATURES: readonly string[] = ["taken_over", "s
 /** What a host lists in its polls' `features`: it takes `send` commands, and its agent replies with the tool. */
 export const SESSION_BRIDGE_HOST_SEND_FEATURE = "send";
 export const SESSION_BRIDGE_HOST_TOOL_REPLY_FEATURE = "tool_reply";
+/** What a host lists when it keeps watching a review the person ended, so it can be reopened (a `reopen` send, then its next decision). */
+export const SESSION_BRIDGE_HOST_REOPEN_FEATURE = "reopen";
 const MAX_EVENT_BODY_BYTES = 1_000_000;
 
 /** What a send carries besides its text, so a host can head its turn. */
 export interface BridgeSendInfo {
-	/** `round`: the person finished a round; `now`: sent at once, the round still open. */
-	mode: "now" | "round";
+	/** `round`: the person finished a round; `now`: sent at once, the round still open; `reopen`: the person reopened the review they had ended. */
+	mode: "now" | "round" | "reopen";
 	round: number;
 	/** The comments, replies and sub-threads it carries. */
 	comments: number;
@@ -141,6 +147,8 @@ export interface PullSessionBridgeSends {
 	readonly ready: boolean;
 	/** The host's agent replies with the `plannotator` tool (`tool_reply`). */
 	readonly toolReply: boolean;
+	/** The host keeps watching a review the person ended, which may then be reopened (`reopen`). */
+	readonly reopen: boolean;
 	/** The host's session is in a turn. */
 	readonly busy: boolean;
 	/** Hand a send to the host; it waits here while no host polls. A send id given again is asked about again at once. */
@@ -646,6 +654,9 @@ export function createPullSessionBridge(options: PullSessionBridgeOptions): Pull
 		},
 		get toolReply() {
 			return hostFeatures.has(SESSION_BRIDGE_HOST_TOOL_REPLY_FEATURE);
+		},
+		get reopen() {
+			return hostFeatures.has(SESSION_BRIDGE_HOST_REOPEN_FEATURE);
 		},
 		get busy() {
 			return status() === "busy";

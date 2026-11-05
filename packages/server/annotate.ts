@@ -255,6 +255,13 @@ export interface AnnotateServerResult {
     /** The review loop ran: how it ended, a line of its own for the agent (`readReviewEnd`). */
     reviewEnd?: string;
   }>;
+  /**
+   * The review loop: after a decision that left the review reopenable in its
+   * tab (the launch's `reopen`), once: `reopened` when the person took it up
+   * again (wait for the next decision), `over` when it can no longer be. Null
+   * after any other decision.
+   */
+  afterDecision: () => Promise<"reopened" | "over"> | null;
   /** Stop the server */
   stop: () => void;
   /** Host-only status and close, called in-process by a host that runs this server itself. */
@@ -826,7 +833,7 @@ export async function startAnnotateServer(
     /** The review loop ran: how it ended, a line of its own for the agent (`readReviewEnd`). */
     reviewEnd?: string;
   }) => void;
-  const decisionPromise = new Promise<{
+  let decisionPromise = new Promise<{
     feedback: string;
     annotations: unknown[];
     exit?: boolean;
@@ -849,7 +856,15 @@ export async function startAnnotateServer(
   // Every decision producer goes through this: connected tabs and the client
   // lease below race, and a producer that loses must not delete the reviewer's
   // draft or report success for an outcome the caller never received.
-  const decision = createAnnotateDecisionSettler(resolveDecision!);
+  let decision = createAnnotateDecisionSettler(resolveDecision!);
+  /** The review loop's reopen: the person takes up the review they ended, and decides again. */
+  const takeDecisionsAgain = () => {
+    decisionPromise = new Promise((resolve) => {
+      resolveDecision = resolve;
+    });
+    decision = createAnnotateDecisionSettler(resolveDecision!);
+    annotateDrafts.reopen();
+  };
   // Stale-tab guard (packages/core/server-session.ts): advertised on
   // /api/plan and echoed by every decision; a different nonce is refused with
   // 409 session_mismatch before anything settles. Missing is accepted.
@@ -922,6 +937,8 @@ export async function startAnnotateServer(
     getServerPort: () => boundPort,
     tailnetPublished: options.tailnetPublished === true,
     ...(mode === "annotate-last" ? { messages: recentMessages ?? [] } : {}),
+    onReopen: takeDecisionsAgain,
+    pageOpen: () => externalAnnotations.streams() > 0,
   });
 
   // Live app session state, populated after the annotate port is known (the
@@ -1585,7 +1602,8 @@ export async function startAnnotateServer(
             archiveAnnotateDecision("", [], "dismissed");
             annotateDrafts.settle(readDraftGenerationFromUrl(req), url.searchParams.get("client"));
             clientLease.cancel();
-            return Response.json({ ok: true });
+            // The review loop: the review stays reopenable in this tab.
+            return Response.json({ ok: true, ...(reviewLoop.ended({ approved: false }) ? { reopenable: true } : {}) });
           }
 
           // API: Approve the annotation session (review-gate UX)
@@ -1635,8 +1653,8 @@ export async function startAnnotateServer(
               ...(readReviewEnd(body) ? { reviewEnd: readReviewEnd(body) } : {}),
             });
             if (!approvalWon) return alreadyDecided();
-            // Approving ends the review loop's review: its journal goes.
-            void reviewLoop.approved();
+            // Approving ends the review loop's review: its journal goes, once it can no longer be reopened.
+            const approvalReopenable = reviewLoop.ended({ approved: true });
             // Approve-with-notes carries user content — make it durable before
             // the draft (the reviewer's only other copy) is deleted (#678).
             const approvalDurable = persistSubmittedDecision(
@@ -1646,7 +1664,7 @@ export async function startAnnotateServer(
             );
             if (approvalDurable) annotateDrafts.settle(readDraftGenerationFromBody(body), url.searchParams.get("client"));
             clientLease.cancel();
-            return Response.json({ ok: true });
+            return Response.json({ ok: true, ...(approvalReopenable ? { reopenable: true } : {}) });
           }
 
           // API: Submit annotation feedback
@@ -1681,7 +1699,8 @@ export async function startAnnotateServer(
               if (feedbackDurable) annotateDrafts.settle(readDraftGenerationFromBody(body), url.searchParams.get("client"));
               clientLease.cancel();
 
-              return Response.json({ ok: true });
+              // The review loop: the review stays reopenable in this tab (a Done; feedback that went is today's decision).
+              return Response.json({ ok: true, ...(reviewLoop.ended({ approved: false }) ? { reopenable: true } : {}) });
             } catch (err) {
               const message =
                 err instanceof Error
@@ -1813,6 +1832,7 @@ export async function startAnnotateServer(
     url: serverUrl,
     isRemote,
     waitForDecision: () => decisionPromise,
+    afterDecision: () => reviewLoop.afterEnd(),
     stop,
     hostControl,
   };

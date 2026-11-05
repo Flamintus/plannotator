@@ -31,6 +31,12 @@
  * - Writes never block the event loop: each gives up at once on a held lock
  *   and is retried on timers (`retryReviewJournalWrite`).
  * - Approving the review ends it (`approved`): the journal goes.
+ * - Ending it on the screen (Approve, Done, Close; `ended`), where the server
+ *   takes decisions again (`onReopen`) and the host keeps watching the review
+ *   (`reopen`), leaves it reopenable while the page is open and the host
+ *   there: the decision goes to the agent at once, `POST /api/threads/reopen`
+ *   takes the review up again and tells the agent, and an approval's journal
+ *   goes only once that is over (`afterEnd`).
  *
  * Runtime-agnostic (vendored to Pi): plain data in and out.
  */
@@ -66,6 +72,7 @@ import type { ReviewAgent, ReviewReplyHow, ReviewSend, ReviewSendMode } from "@p
 export const REVIEW_THREADS_PATH = "/api/threads";
 export const REVIEW_THREADS_SEND_PATH = "/api/threads/send";
 export const REVIEW_THREADS_RESOLVE_PATH = "/api/threads/resolve";
+export const REVIEW_THREADS_REOPEN_PATH = "/api/threads/reopen";
 export const HOST_THREADS_PATH = "/api/host/threads";
 export const HOST_THREADS_REPLY_PATH = "/api/host/threads/reply";
 export const HOST_MESSAGES_PATH = "/api/host/messages";
@@ -73,11 +80,25 @@ export const HOST_MESSAGES_PATH = "/api/host/messages";
 export const REVIEW_LOOP_OFF_CODE = "review_loop_off";
 /** The `code` of the 409 a page write gets while the loop is unavailable. */
 export const REVIEW_LOOP_UNAVAILABLE_CODE = "review_loop_unavailable";
+/** The `code` of the 409 a page write gets while the person has ended the review (until they reopen it). */
+export const REVIEW_LOOP_ENDED_CODE = "review_ended";
+/** The `code` of the 409 a reopen gets when the review is not ended here, or can no longer be reopened. */
+export const REVIEW_LOOP_NOT_REOPENABLE_CODE = "not_reopenable";
+/** How long an ended review stays reopenable with no page open or no host watching (a reload, a host restarting). */
+export const REVIEW_LOOP_END_GRACE_MS = 30_000;
+
+/**
+ * What the agent reads when the person reopens a review they had ended (the
+ * host heads it with the review and "Reopened"): one line, as a round's wake.
+ */
+export const REVIEW_REOPENED_TEXT =
+  "The person reopened this review after ending it: it goes on, and their next comments come here as a round. End your turn without a message in chat.";
 
 const PATHS: ReadonlySet<string> = new Set([
   REVIEW_THREADS_PATH,
   REVIEW_THREADS_SEND_PATH,
   REVIEW_THREADS_RESOLVE_PATH,
+  REVIEW_THREADS_REOPEN_PATH,
   HOST_THREADS_PATH,
   HOST_THREADS_REPLY_PATH,
   HOST_MESSAGES_PATH,
@@ -113,10 +134,12 @@ export interface ReviewLoopCarrier {
   readonly busy: boolean;
   /** The agent answers with the `plannotator` tool's `reply` action. */
   readonly toolReply: boolean;
+  /** The host keeps watching a review the person ended, so it can be reopened. */
+  readonly reopen?: boolean;
   deliver(
     sendId: string,
     text: string,
-    info: { mode: ReviewSendMode; round: number; comments: number },
+    info: { mode: ReviewSendMode | "reopen"; round: number; comments: number },
     report: { delivered(): void; failed(message?: string): void },
   ): void;
 }
@@ -160,6 +183,15 @@ export interface ReviewLoopOptions {
   pollMs?: number;
   /** A write that failed after the answer went (a delivery's mark, an approval's close). */
   log?: (message: string) => void;
+  /**
+   * The server takes the person's decisions again (a reopen). Absent: an
+   * ended review is never reopenable here (its CLI stops at the decision).
+   */
+  onReopen?: () => void;
+  /** A page is open on this review (default: always). */
+  pageOpen?: () => boolean;
+  /** How long an ended review waits for a page or the host to come back (default `REVIEW_LOOP_END_GRACE_MS`). */
+  endGraceMs?: number;
 }
 
 /** A request to one of the loop's paths, as plain data. */
@@ -182,6 +214,19 @@ export interface ReviewLoop {
   messages(): HostMessage[] | null;
   /** The person approved the review: it ends, and its journal goes. */
   approved(): Promise<void>;
+  /**
+   * The person ended the review on this screen (Approve, Done, Close). True:
+   * it stays reopenable (the loop available, the host watching, the server
+   * taking decisions again), until `afterEnd` says it is over; an approval's
+   * journal goes then. False: it ends now, as `approved` does.
+   */
+  ended(how: { approved: boolean }): boolean;
+  /**
+   * After an `ended` that returned true, once: `reopened` when the person
+   * takes the review up again (the server is taking decisions), `over` when
+   * no page or no host stayed for the grace. Null when nothing ended so.
+   */
+  afterEnd(): Promise<"reopened" | "over"> | null;
   dispose(): void;
 }
 
@@ -214,6 +259,10 @@ export function createReviewLoop(options: ReviewLoopOptions): ReviewLoop {
   let used = false;
   /** Sends the host could not put in the session, until one is handed over again or delivered: the page shows them and may retry. */
   const failed = new Map<string, string | null>();
+  /** The person ended the review here and may still reopen it: how it ended, and what `afterEnd` resolves. */
+  let ending: { approved: boolean; resolve: (how: "reopened" | "over") => void; watch: ReturnType<typeof setInterval> } | null = null;
+  /** The last reopenable end, until the caller takes it (`afterEnd`). */
+  let endPending: Promise<"reopened" | "over"> | null = null;
 
   const available = (): boolean => {
     const on = key !== null && options.carrier()?.ready === true;
@@ -281,9 +330,44 @@ export function createReviewLoop(options: ReviewLoopOptions): ReviewLoop {
   };
 
   const unavailable = (): HostControlAnswer => ({ status: 409, body: { error: "The review loop is not available for this review.", code: REVIEW_LOOP_UNAVAILABLE_CODE } });
+  const endedRefusal = (): HostControlAnswer => ({ status: 409, body: { error: "This review was ended: reopen it to go on.", code: REVIEW_LOOP_ENDED_CODE } });
+
+  const closeJournal = async () => {
+    // Only a review this screen carried: a screen that kept today's single decision leaves the journal to whoever wrote it.
+    if (key === null || !used) return;
+    await retryReviewJournalWrite(() => closeReviewJournal(writing, { key })).catch((error) => {
+      log(`review loop: could not close the journal of ${key}: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  };
+  const finishEnd = (how: "reopened" | "over") => {
+    const end = ending;
+    if (!end) return;
+    ending = null;
+    clearInterval(end.watch);
+    if (how === "over" && end.approved) void closeJournal();
+    end.resolve(how);
+  };
+  /** Still reopenable now: the loop available, and the host watching the review. */
+  const reopenable = () => available() && options.carrier()?.reopen === true;
+
+  const handleReopen = (): HostControlAnswer => {
+    if (!ending) return { status: 409, body: { error: "This review is not ended here, or can no longer be reopened.", code: REVIEW_LOOP_NOT_REOPENABLE_CODE } };
+    if (!reopenable()) return { status: 409, body: { error: "The agent session is not watching this review now: try again in a moment.", code: REVIEW_LOOP_UNAVAILABLE_CODE } };
+    options.onReopen?.();
+    finishEnd("reopened");
+    const round = state();
+    // The agent was told the review ended: it is told it goes on, in one line headed by the host.
+    options.carrier()?.deliver(`reopen-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, REVIEW_REOPENED_TEXT, { mode: "reopen", round: round.available ? round.round : 1, comments: 0 }, {
+      delivered: () => {},
+      failed: (message) => log(`review loop: the agent was not told the review was reopened${message ? ` (${message})` : ""}.`),
+    });
+    push();
+    return { status: 200, body: { reopened: true, ...state() } };
+  };
 
   const handleSend = async (body: unknown): Promise<HostControlAnswer> => {
     if (!available()) return unavailable();
+    if (ending) return endedRefusal();
     if (!isRecord(body)) return { status: 400, body: { error: "Expected a JSON object." } };
     const mode = body.mode;
     if (mode !== "now" && mode !== "round") return { status: 400, body: { error: 'mode: "now" or "round".' } };
@@ -333,6 +417,7 @@ export function createReviewLoop(options: ReviewLoopOptions): ReviewLoop {
 
   const handleResolve = async (body: unknown): Promise<HostControlAnswer> => {
     if (!available()) return unavailable();
+    if (ending) return endedRefusal();
     if (!isRecord(body) || typeof body.id !== "string" || !body.id) return { status: 400, body: { error: "id: the comment or sub-thread to resolve." } };
     if (body.resolved !== undefined && typeof body.resolved !== "boolean") return { status: 400, body: { error: "resolved: true, or false to reopen." } };
     const id = body.id;
@@ -416,19 +501,49 @@ export function createReviewLoop(options: ReviewLoopOptions): ReviewLoop {
         }
       }
       if (request.method !== "POST") return { status: 405, body: { error: "Use POST." } };
+      if (request.pathname === REVIEW_THREADS_REOPEN_PATH) return handleReopen();
       return request.pathname === REVIEW_THREADS_SEND_PATH ? handleSend(request.body) : handleResolve(request.body);
     },
     messages: () => (pushedMessages ? [...pushedMessages] : null),
-    async approved() {
-      // Only a review this screen carried: a screen that kept today's single decision leaves the journal to whoever wrote it.
-      if (key === null || !used) return;
-      await retryReviewJournalWrite(() => closeReviewJournal(writing, { key })).catch((error) => {
-        log(`review loop: could not close the journal of ${key}: ${error instanceof Error ? error.message : String(error)}`);
+    approved: closeJournal,
+    ended(how) {
+      if (ending || disposed || !options.onReopen || !reopenable()) {
+        if (how.approved) void closeJournal();
+        return false;
+      }
+      let resolve!: (how: "reopened" | "over") => void;
+      endPending = new Promise((settle) => {
+        resolve = settle;
       });
+      // Over once no page is open, or the host stopped watching, for the whole grace (a reload, a host restarting).
+      let awaySince: number | null = null;
+      const watch = setInterval(() => {
+        if (reopenable() && (options.pageOpen?.() ?? true)) {
+          awaySince = null;
+          return;
+        }
+        const now = Date.now();
+        awaySince ??= now;
+        if (now - awaySince >= (options.endGraceMs ?? REVIEW_LOOP_END_GRACE_MS)) finishEnd("over");
+      }, options.pollMs ?? 1_000);
+      ending = { approved: how.approved, resolve, watch };
+      return true;
+    },
+    afterEnd() {
+      const pending = endPending;
+      endPending = null;
+      return pending;
     },
     dispose() {
       disposed = true;
       if (timer) clearInterval(timer);
+      // Stopping: whoever waits on the end hears it is over (the journal is left as it is).
+      const end = ending;
+      if (end) {
+        ending = null;
+        clearInterval(end.watch);
+        end.resolve("over");
+      }
     },
   };
 }

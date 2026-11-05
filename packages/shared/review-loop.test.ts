@@ -16,7 +16,7 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-function fakeCarrier(state: { ready?: boolean; busy?: boolean; toolReply?: boolean } = {}) {
+function fakeCarrier(state: { ready?: boolean; busy?: boolean; toolReply?: boolean; reopen?: boolean } = {}) {
   const delivered: { sendId: string; text: string; info: { mode: string; round: number; comments: number }; report: { delivered(): void; failed(message?: string): void } }[] = [];
   const carrier: ReviewLoopCarrier & { delivered: typeof delivered } = {
     get ready() {
@@ -27,6 +27,9 @@ function fakeCarrier(state: { ready?: boolean; busy?: boolean; toolReply?: boole
     },
     get toolReply() {
       return state.toolReply ?? false;
+    },
+    get reopen() {
+      return state.reopen ?? false;
     },
     deliver(sendId, text, info, report) {
       delivered.push({ sendId, text, info, report });
@@ -214,6 +217,75 @@ describe("review loop on a screen", () => {
     expect(existsSync(reviewJournalDir(dataDir, reviewJournalKey(target)))).toBe(true);
     await loop.approved();
     expect(existsSync(reviewJournalDir(dataDir, reviewJournalKey(target)))).toBe(false);
+    loop.dispose();
+  });
+
+  test("an end stays reopenable only where the server decides again and the host watches; the journal stays until it is over", async () => {
+    const journal = () => existsSync(reviewJournalDir(dataDir, reviewJournalKey(target)));
+    // No `onReopen` (a CLI that stops at the decision) or a host that does not watch: today's end.
+    for (const [overrides, carrier] of [
+      [{}, fakeCarrier({ reopen: true }).carrier],
+      [{ onReopen: () => {} }, fakeCarrier().carrier],
+    ] as const) {
+      const { loop, page } = loopOf(overrides, carrier);
+      await page("POST", "/api/threads/send", { mode: "round", comments: [{ id: "c1", on: onFile, quote: "q", text: "t" }] });
+      expect(loop.ended({ approved: true })).toBe(false);
+      expect(loop.afterEnd()).toBeNull();
+      await Bun.sleep(20);
+      expect(journal()).toBe(false);
+      loop.dispose();
+    }
+
+    const { carrier, state } = fakeCarrier({ reopen: true });
+    let reopened = 0;
+    const { loop, page } = loopOf({ onReopen: () => void (reopened += 1), pollMs: 5, endGraceMs: 40 }, carrier);
+    await page("POST", "/api/threads/send", { mode: "round", comments: [{ id: "c1", on: onFile, quote: "q", text: "t" }] });
+    expect(loop.ended({ approved: true })).toBe(true);
+    // Ended: the page writes nothing until it reopens, and the approval's journal stays.
+    expect((await page("POST", "/api/threads/send", { mode: "now", comments: [{ id: "c2", on: onFile, quote: "q", text: "t" }] }))!.body).toMatchObject({ code: "review_ended" });
+    expect(journal()).toBe(true);
+    const first = loop.afterEnd()!;
+    expect(loop.afterEnd()).toBeNull();
+
+    // Reopened: the server decides again, the agent is told in one line, and the page writes again.
+    const answer = await page("POST", "/api/threads/reopen", {});
+    expect(answer!.status).toBe(200);
+    expect(await first).toBe("reopened");
+    expect(reopened).toBe(1);
+    const told = carrier.delivered.at(-1)!;
+    expect(told.info).toEqual({ mode: "reopen", round: 2, comments: 0 });
+    expect(told.text.split("\n")).toHaveLength(1);
+    expect((await page("POST", "/api/threads/reopen", {}))!.body).toMatchObject({ code: "not_reopenable" });
+    expect((await page("POST", "/api/threads/resolve", { id: "c1" }))!.status).toBe(200);
+
+    // Ended again, then the host stops watching for the grace: over, and the approval's journal goes.
+    expect(loop.ended({ approved: true })).toBe(true);
+    state.reopen = false;
+    expect((await page("POST", "/api/threads/reopen", {}))!.body).toMatchObject({ code: "review_loop_unavailable" });
+    expect(await loop.afterEnd()!).toBe("over");
+    await Bun.sleep(20);
+    expect(journal()).toBe(false);
+    loop.dispose();
+  });
+
+  test("an ended review is over once no page has stayed open for the grace; a Done leaves its journal", async () => {
+    let pages = 1;
+    const { loop, page } = loopOf({ onReopen: () => {}, pageOpen: () => pages > 0, pollMs: 5, endGraceMs: 40 }, fakeCarrier({ reopen: true }).carrier);
+    await page("POST", "/api/threads/send", { mode: "round", comments: [{ id: "c1", on: onFile, quote: "q", text: "t" }] });
+    expect(loop.ended({ approved: false })).toBe(true);
+    const end = loop.afterEnd()!;
+    // A reload: the page gone for less than the grace keeps it reopenable.
+    pages = 0;
+    await Bun.sleep(15);
+    pages = 1;
+    await Bun.sleep(60);
+    let settled = false;
+    void end.then(() => (settled = true));
+    await Bun.sleep(0);
+    expect(settled).toBe(false);
+    pages = 0;
+    expect(await end).toBe("over");
+    expect(existsSync(reviewJournalDir(dataDir, reviewJournalKey(target)))).toBe(true);
     loop.dispose();
   });
 
