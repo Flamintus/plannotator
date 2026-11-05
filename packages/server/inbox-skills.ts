@@ -47,6 +47,11 @@ function noStore(res: Response): Response {
  */
 export function inboxSkillCatalog(codeReview: boolean, discovered: () => ReturnType<typeof listReferenceSkills> = listReferenceSkills, shape = false): Response {
   if (!codeReview && !shape) return handleReferenceSkills();
+  return Response.json({ skills: inboxSkillEntries(codeReview, shape, discovered) });
+}
+
+/** The catalog's entries (see `inboxSkillCatalog`), for the server's own text: the comment sends' skills block. */
+export function inboxSkillEntries(codeReview: boolean, shape: boolean, discovered: () => ReturnType<typeof listReferenceSkills> = listReferenceSkills) {
   let skills: ReturnType<typeof listReferenceSkills>;
   try {
     skills = discovered();
@@ -62,7 +67,7 @@ export function inboxSkillCatalog(codeReview: boolean, discovered: () => ReturnT
     description: skill.description,
     humanOnly: true,
   }));
-  return Response.json({ skills: [...builtins, ...skills] });
+  return [...builtins, ...skills];
 }
 
 /** The answer for a skills path, or null for any other path. `codeReview`: the person's Code review switch. */

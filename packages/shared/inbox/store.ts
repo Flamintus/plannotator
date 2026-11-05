@@ -180,6 +180,7 @@ import {
   inboxCommentState,
   inboxCommentThreads,
   inboxCommentsToCarry,
+  inboxCommentWrites,
   inboxOpenCommentsFeedback,
   inboxQuoteOffset,
   inboxSubThreadAnnotation,
@@ -187,7 +188,16 @@ import {
   isInboxCommentReplyRecord,
   isInboxSubThread,
 } from "@plannotator/core/inbox-comment-threads";
-import { inboxCommentSendId, isInboxCommentSendRecord, type InboxCommentSend, type InboxCommentSendMode } from "@plannotator/core/inbox-comment-sends";
+import {
+  inboxCommentSendId,
+  inboxCommentSendMark,
+  inboxCommentSendMarked,
+  inboxWakeItems,
+  isInboxCommentSendRecord,
+  type InboxCommentSend,
+  type InboxCommentSendMode,
+  type InboxWakeItem,
+} from "@plannotator/core/inbox-comment-sends";
 import {
   inboxInitiativeNameKey,
   INBOX_INITIATIVE_NAME_MAX,
@@ -708,9 +718,10 @@ export class InboxStore {
   private readonly annotations = new Map<string, InboxAnnotationRecord>();
   /** Per thread, its annotations waiting for a Send (not sent, not removed): a row's `unsent.comments`. */
   private readonly unsentAnnotations = new Map<string, number>();
-  /** The agents' replies under the person's sent comments, by id (experimental "persistent-comments"), and their ids by thread, in seq order. */
+  /** The agents' replies under the person's sent comments, by id (experimental "persistent-comments"), their ids by thread, in seq order, and each one's seq. */
   private readonly commentReplyRecords = new Map<string, InboxCommentReplyRecord>();
   private readonly commentReplyIdsByThread = new Map<string, string[]>();
+  private readonly commentReplySeq = new Map<string, number>();
   /** The person's comment sends (experimental "persistent-comments"), by id, their ids by thread in seq order, and each one's first seq. */
   private readonly commentSendRecords = new Map<string, InboxCommentSend>();
   private readonly commentSendIdsByThread = new Map<string, string[]>();
@@ -939,6 +950,7 @@ export class InboxStore {
         if (isInboxCommentReplyRecord(line.record) && !this.commentReplyRecords.has(line.record.id)) {
           this.commentReplyRecords.set(line.record.id, line.record);
           this.commentReplyIdsByThread.set(line.record.thread_id, [...(this.commentReplyIdsByThread.get(line.record.thread_id) ?? []), line.record.id]);
+          this.commentReplySeq.set(line.record.id, line.seq);
         }
         break;
       case "comment_send":
@@ -1504,7 +1516,8 @@ export class InboxStore {
     for (const id of this.threadMembers.get(threadId) ?? []) {
       if (this.messages.get(id)?.author.kind === "agent" && (this.messageSeq.get(id) ?? 0) > archiveSeq) return true;
     }
-    return false;
+    // Replies sent alone under comments, as a message would.
+    return this.repliesAloneSeqs(threadId).some((seq) => seq > archiveSeq);
   }
 
   /**
@@ -1751,9 +1764,11 @@ export class InboxStore {
       if (record.thread_id !== threadId || record.removed_at !== null || record.sent_reply_id === null) continue;
       carried.set(record.sent_reply_id, (carried.get(record.sent_reply_id) ?? 0) + 1);
     }
+    const repliesAlone = this.repliesAloneSeqs(threadId);
     return {
       ...thread,
       archive_seq: this.archiveSeq(threadId),
+      ...(repliesAlone.length > 0 ? { agent_replies_seq: Math.max(...repliesAlone) } : {}),
       messages: thread.messages.map((message) => {
         const seq = this.messageSeq.get(message.id);
         return {
@@ -1838,7 +1853,9 @@ export class InboxStore {
     }
     // A reply of the person's is a look at everything before it.
     const seenSeq = Math.max(root.person_seen_seq ?? 0, lastPersonSeq);
-    const unseen = messages.filter((m) => m.author.kind === "agent" && seqOf(m) > seenSeq).length;
+    // An agent's replies sent alone under comments are news as a message is, one per call.
+    const repliesAlone = this.repliesAloneSeqs(threadId);
+    const unseen = messages.filter((m) => m.author.kind === "agent" && seqOf(m) > seenSeq).length + repliesAlone.filter((seq) => seq > seenSeq).length;
     // A reply that tags agents is read for each recipient by its own delivery:
     // it stays Sent until every session a connection wakes has it (an agent
     // that only reads the Inbox never holds it there).
@@ -1882,7 +1899,7 @@ export class InboxStore {
     // the agent has not read), and goes back to the archive on its own once
     // handled. Derived; the thread stays resolved until the person acts.
     const archiveSeq = this.archiveSeq(threadId);
-    const agentAfterArchive = archiveSeq !== null && messages.some((m) => m.author.kind === "agent" && seqOf(m) > archiveSeq);
+    const agentAfterArchive = archiveSeq !== null && (messages.some((m) => m.author.kind === "agent" && seqOf(m) > archiveSeq) || repliesAlone.some((seq) => seq > archiveSeq));
     // Mark read on a came-back thread sends it back to the archive: while
     // that read stands, the person's reply before it no longer holds it out.
     const readAt = this.readAt(root, messages);
@@ -1895,6 +1912,7 @@ export class InboxStore {
     const backFromArchive =
       agentAfterArchive &&
       (messages.some((m) => m.author.kind === "agent" && seqOf(m) > archiveSeq! && seqOf(m) > seenSeq) ||
+        repliesAlone.some((seq) => seq > archiveSeq! && seq > seenSeq) ||
         summary.questions.open > 0 ||
         summary.questions.picked > 0 ||
         replyUnread);
@@ -2263,6 +2281,8 @@ export class InboxStore {
       if ((message.set_aside || isAckNote(message)) && message.author.kind === "person") continue;
       if ((this.messageSeq.get(message.id) ?? 0) > readSeq) return null;
     }
+    // Replies sent alone under comments end it too, as a message does.
+    if (this.repliesAloneSeqs(root.id).some((seq) => seq > readSeq)) return null;
     return root.person_read_at ?? null;
   }
 
@@ -2294,7 +2314,7 @@ export class InboxStore {
         // An action item the person marked (in their reply draft, or its Undo window running) is theirs: Mark read leaves it.
         return state === "open" || (state === "picked" && r.kind !== "action");
       });
-      let latestAgent = 0;
+      let latestAgent = Math.max(0, ...this.repliesAloneSeqs(threadId));
       for (const m of members) if (m.author.kind === "agent") latestAgent = Math.max(latestAgent, this.messageSeq.get(m.id) ?? 0);
       if (this.readAt(root, members) === null || waiting.length > 0) {
         const at = this.stamp();
@@ -2448,7 +2468,8 @@ export class InboxStore {
     if (!root || root.thread_id !== threadId) throw new InboxError("thread_not_found", `No thread ${threadId}.`);
     if (root.resolved_at !== null) throw new InboxError("thread_resolved", "This thread is archived; unarchive it first.");
     const members = this.threadMessages(threadId);
-    let latestAgent = 0;
+    // Replies sent alone under comments are agent news too.
+    let latestAgent = Math.max(0, ...this.repliesAloneSeqs(threadId));
     let lastPerson = 0;
     for (const message of members) {
       const seq = this.messageSeq.get(message.id) ?? 0;
@@ -3086,7 +3107,8 @@ export class InboxStore {
     // reply (never the Inbox's notes). Only an agent message after both is
     // new, so only then is a write due.
     let seen = root.person_seen_seq ?? 0;
-    let latestAgent = 0;
+    // Replies sent alone under comments are agent news too (the window's read gives their seq, `agent_replies_seq`).
+    let latestAgent = Math.max(0, ...this.repliesAloneSeqs(threadId).filter((seq) => throughSeq === undefined || seq <= throughSeq));
     for (const id of this.threadMembers.get(threadId) ?? []) {
       const seq = this.messageSeq.get(id) ?? 0;
       const message = this.messages.get(id);
@@ -5195,11 +5217,14 @@ export class InboxStore {
    * An agent's reply under a comment the person sent (experimental
    * "persistent-comments"; send_message's `comment_replies`), whoever wrote
    * the comment: written at once, as its own record (`comment_reply`), with
-   * the agent's message it came with (`message_id`), never edited, removed or
-   * resolved. An id of a reply under it answers its comment. The person sees
-   * it under the comment.
+   * the agent's message it came with (`message_id`), or sent alone (`call`,
+   * no message in the thread), never edited, removed or resolved. An id of a
+   * reply under it answers its comment. The person sees it under the comment.
    */
-  replyToComment(commentId: string, input: { text: string; from: InboxCommentReplyRecord["from"]; message_id: string }): InboxCommentReplyRecord {
+  replyToComment(
+    commentId: string,
+    input: { text: string; from: InboxCommentReplyRecord["from"] } & ({ message_id: string } | { call: string; idempotency_key?: string }),
+  ): InboxCommentReplyRecord {
     const comment = this.sentComment(commentId);
     const text = inboxCommentReplyText(input.text);
     if (text === null) throw new InboxError("validation_error", `text: the reply (1 to ${INBOX_COMMENT_REPLY_TEXT_MAX} characters).`, { field: "text" });
@@ -5212,7 +5237,7 @@ export class InboxStore {
       thread_id: comment.thread_id,
       re: comment.id,
       from: input.from,
-      message_id: input.message_id,
+      ...("message_id" in input ? { message_id: input.message_id } : { call: input.call, ...(input.idempotency_key ? { idempotency_key: input.idempotency_key } : {}) }),
       text,
       created_at: at,
     };
@@ -5223,6 +5248,25 @@ export class InboxStore {
   /** The agents' replies under a thread's sent comments, in the order they were written. */
   commentReplies(threadId: string): InboxCommentReplyRecord[] {
     return (this.commentReplyIdsByThread.get(threadId) ?? []).map((id) => this.commentReplyRecords.get(id)!);
+  }
+
+  /** The seq of an agent's reply under a comment (when it was written, on the event log), or null. */
+  commentReplyCursor(id: string): number | null {
+    return this.commentReplySeq.get(id) ?? null;
+  }
+
+  /**
+   * The agents' replies sent alone in a thread (no message: `call`), as news
+   * for the person: the seq of each call's last reply. A message's news rules
+   * count them (unseen until a look passes them, Mark read, Mark unread).
+   */
+  private repliesAloneSeqs(threadId: string): number[] {
+    const byCall = new Map<string, number>();
+    for (const reply of this.commentReplies(threadId)) {
+      if (!reply.call) continue;
+      byCall.set(reply.call, Math.max(byCall.get(reply.call) ?? 0, this.commentReplySeq.get(reply.id) ?? 0));
+    }
+    return [...byCall.values()];
   }
 
   // ─────────── comment sends (experimental "persistent-comments") ───────────
@@ -5373,9 +5417,12 @@ export class InboxStore {
    */
   private openCommentsFeedback(message: InboxMessage, session: string): string {
     const messages = this.threadMessages(message.thread_id);
-    const threads = inboxCommentThreads(messages, this.sentAnnotations(message.thread_id), this.commentReplies(message.thread_id), this.commentSends(message.thread_id));
+    const replies = this.commentReplies(message.thread_id);
+    const threads = inboxCommentThreads(messages, this.sentAnnotations(message.thread_id), replies, this.commentSends(message.thread_id));
     const sentTo = (m: InboxMessage) => (m.reask ? null : (this.recipientOf(m)?.session ?? null));
-    const carried = inboxCommentsToCarry(messages, threads, session, sentTo).filter((t) => !this.commentCarrierClosedByArchive(t.reply_id));
+    // An agent's replies sent alone are its writing again too (inboxCommentWrites).
+    const writes = inboxCommentWrites(messages, replies);
+    const carried = inboxCommentsToCarry(writes, threads, session, (m) => ("call" in m ? null : sentTo(m))).filter((t) => !this.commentCarrierClosedByArchive(t.reply_id));
     return inboxOpenCommentsFeedback(carried, this.projectsById.get(message.project_id)?.root ?? "");
   }
 
@@ -5724,6 +5771,7 @@ export class InboxStore {
     this.unsentAnnotations.clear();
     this.commentReplyRecords.clear();
     this.commentReplyIdsByThread.clear();
+    this.commentReplySeq.clear();
     this.commentSendRecords.clear();
     this.commentSendIdsByThread.clear();
     this.commentSendSeq.clear();
@@ -5858,7 +5906,7 @@ export class InboxStore {
     // A New message, or a reply the person sent to another session, is
     // settled only by its delivery to the session it names, never by another
     // agent's read; so is a reply that tags agents.
-    if (!message.to && !hasTags(message) && (this.messages.get(message.thread_id)?.agent_checked_seq ?? 0) >= seq) return false;
+    if (!message.to && !hasTags(message) && !this.carriesCommentSends(message) && (this.messages.get(message.thread_id)?.agent_checked_seq ?? 0) >= seq) return false;
     return true;
   }
 
@@ -5886,7 +5934,7 @@ export class InboxStore {
    * agent up to it (the Sent band's "Delivered to <agent>, <time>"). A tagged
    * session's delivery marks nothing for the owner. Idempotent per session.
    */
-  recordDelivery(replyId: string, by: { host: string; session: string; intoTurn?: boolean }): InboxMessage {
+  recordDelivery(replyId: string, by: { host: string; session: string; intoTurn?: boolean; commentSends?: boolean }): InboxMessage {
     const reply = this.messages.get(replyId);
     if (!reply || reply.author.kind !== "person" || (!reply.reply_to && !reply.to)) throw new InboxError("message_not_found", `No reply ${replyId}.`);
     if (!this.isFor(reply, by.session)) {
@@ -5903,12 +5951,15 @@ export class InboxStore {
         ),
       };
       this.appendMessage(delivered, at);
+      if (by.commentSends) this.recordCommentSendsDelivery(this.commentSendsRiding(reply.id, by.session), by);
       return delivered;
     }
     if (reply.delivery) return reply;
     const at = this.stamp();
     const delivered: InboxMessage = { ...reply, delivery: { state: "delivered", host: by.host, session: by.session, at, ...intoTurnOf(reply.deliver_now_by, by.intoTurn) } };
     this.appendMessage(delivered, at);
+    // The comment sends its words carry went with it (while sent comments are on).
+    if (by.commentSends) this.recordCommentSendsDelivery(this.commentSendsRiding(reply.id, by.session), by);
     // Up to it, but never past a reply still owed to another session.
     this.markAgentChecked(reply.thread_id, this.messageSeq.get(reply.id) ?? 0, at, by.session);
     // A 👍 that reached the agent was seen.
@@ -5975,6 +6026,96 @@ export class InboxStore {
       const read: InboxCommentSend = own ? { ...send, read_at: at } : { ...send, tags: send.tags!.map((t) => (t.session === session ? { ...t, read_at: at } : t)) };
       this.appendCommentSend(read, at);
     }
+  }
+
+  // ──────────── comment sends on the wake ────────────
+  // The person's comment sends wait for their session beside its replies, on
+  // the same wake (the rules: packages/core/inbox-comment-sends.ts; the
+  // commands: packages/server/inbox-comment-send-delivery.ts). The caller
+  // says whether sent comments are on (`sends`, `commentSends`): off, no
+  // send is handed or settled here.
+
+  /** What `session`'s wake hands over (`inboxWakeItems`): its waiting replies, and while `sends`, its waiting comment sends. */
+  pendingWakeItems(session: string, options: { tags?: boolean; together?: boolean; sends?: boolean } = {}): InboxWakeItem[] {
+    return this.pendingWakeItemsFor(new Set([session]), options).get(session) ?? [];
+  }
+
+  /** `pendingWakeItems` for many sessions (the Codex, Qwen and T3 wakes), one pass over the messages and one over the sends. */
+  pendingWakeItemsFor(sessions: ReadonlySet<string>, options: { tags?: boolean; together?: boolean; sends?: boolean } = {}): Map<string, InboxWakeItem[]> {
+    const messages = sessions.size === 1 ? new Map([[[...sessions][0]!, this.pendingReplies([...sessions][0]!, options)]]) : this.pendingRepliesFor(sessions, options);
+    const sends = new Map<string, InboxCommentSend[]>();
+    if (options.sends === true) {
+      for (const send of this.commentSendRecords.values()) {
+        for (const session of [send.to.session, ...(options.tags === false ? [] : (send.tags ?? []).map((tag) => tag.session))]) {
+          const mark = sessions.has(session) ? inboxCommentSendMark(send, session) : null;
+          if (mark && !mark.delivery && !mark.read_at) (sends.get(session) ?? sends.set(session, []).get(session)!).push(send);
+        }
+      }
+    }
+    const seqOf = (id: string) => this.messageSeq.get(id) ?? this.commentSendSeq.get(id) ?? 0;
+    const out = new Map<string, InboxWakeItem[]>();
+    for (const session of new Set([...messages.keys(), ...sends.keys()])) {
+      const items = inboxWakeItems(session, messages.get(session) ?? [], sends.get(session) ?? [], { together: options.together === true, seqOf });
+      if (items.length > 0) out.set(session, items);
+    }
+    return out;
+  }
+
+  /** Whether the person's message carries words a comment send names (`with_message`): it settles only by its delivery or its session's own read. */
+  private carriesCommentSends(message: InboxMessage): boolean {
+    return this.commentSendRecords.size > 0 && this.commentSends(message.thread_id).some((send) => send.with_message === message.id);
+  }
+
+  /** The ids of the sends a message's words carry for `session`. */
+  commentSendsRiding(messageId: string, session: string): string[] {
+    const message = this.messages.get(messageId);
+    if (!message || this.commentSendRecords.size === 0) return [];
+    return this.commentSends(message.thread_id)
+      .filter((send) => send.with_message === message.id && inboxCommentSendMark(send, session))
+      .map((send) => send.id);
+  }
+
+  /** Comment sends reached `by.session` (alone, or with a message): each records it on its mark there; a send for another session is skipped. Idempotent. */
+  recordCommentSendsDelivery(ids: readonly string[], by: { host: string; session: string }): InboxCommentSend[] {
+    const done: InboxCommentSend[] = [];
+    for (const id of new Set(ids)) {
+      const send = this.commentSendRecords.get(id);
+      const mark = send ? inboxCommentSendMark(send, by.session) : null;
+      if (!send || !mark) continue;
+      if (mark.delivery) {
+        done.push(send);
+        continue;
+      }
+      const at = this.stamp();
+      const next = inboxCommentSendMarked(send, by.session, { delivery: { state: "delivered", host: by.host, session: by.session, at } });
+      this.appendCommentSend(next, at);
+      done.push(next);
+    }
+    return done;
+  }
+
+  /** Send now for a comment send (as `requestDeliverNow`): its recipient's, or `session`'s, a session it tags. Refused once delivered. */
+  requestCommentSendNow(id: string, session: string | null = null, by: InboxDeliverNowBy = "person"): InboxCommentSend {
+    const send = this.commentSendRecords.get(id);
+    if (!send) throw new InboxError("message_not_found", `No comment send ${id}.`);
+    const to = session ?? send.to.session;
+    const mark = inboxCommentSendMark(send, to);
+    if (!mark) throw new InboxError("not_addressed", "That session is not one this comment send goes to.");
+    if (mark.delivery) throw new InboxError("already_delivered", "That session already took this.", { delivery: mark.delivery });
+    if (mark.deliver_now_at) return send;
+    const at = this.stamp();
+    const next = inboxCommentSendMarked(send, to, { deliver_now_at: at, deliver_now_by: by });
+    this.appendCommentSend(next, at);
+    return next;
+  }
+
+  /** The connection could not put a Send now comment send into the running turn: its mark goes (as `clearDeliverNow`), its `deliver_now_by` kept. */
+  clearCommentSendNow(id: string, session: string): void {
+    const send = this.commentSendRecords.get(id);
+    const mark = send ? inboxCommentSendMark(send, session) : null;
+    if (!send || !mark || mark.delivery || !mark.deliver_now_at) return;
+    const at = this.stamp();
+    this.appendCommentSend(inboxCommentSendMarked(send, session, { deliver_now_at: null }), at);
   }
 
   /**
@@ -6163,6 +6304,8 @@ export class InboxStore {
       afterMs: number;
       tags?: boolean;
       clockOf: (itemId: string) => { autoSince: number | null; since: number } | null;
+      /** Sent comments are on: the comment sends waiting alone go in too (`requestCommentSendNow`). */
+      commentSends?: boolean;
     },
   ): InboxMessage[] {
     const now = this.now().getTime();
@@ -6185,6 +6328,14 @@ export class InboxStore {
         : { ...item, deliver_now_at: at, deliver_now_by: "auto", wait_started_at: waited };
       this.appendMessage(next, at);
       marked.push(next);
+    }
+    // The comment sends waiting alone, while sent comments are on.
+    if (options.commentSends) {
+      for (const item of this.pendingWakeItems(session, { tags: options.tags, sends: true })) {
+        const mark = item.message ? null : inboxCommentSendMark(item.sends[0]!, session);
+        const clock = mark && !mark.deliver_now_at && !mark.deliver_now_by ? options.clockOf(item.id) : null;
+        if (clock && clock.autoSince !== null && clock.autoSince + options.afterMs <= now) this.requestCommentSendNow(item.id, session, "auto");
+      }
     }
     return marked;
   }

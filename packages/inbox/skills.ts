@@ -27,82 +27,25 @@
 import { INBOX_MESSAGE_SKILL_AUDIENCE, INBOX_REPLY_SKILL_AUDIENCE, type SkillBlockAudience } from '@plannotator/core/skill-reference-block';
 import type { InboxAnnotationRecord } from '@plannotator/core/inbox-types';
 import { fetchSkillCatalog, normalizeSkillContent } from '@plannotator/ui/utils/skillCatalog';
+import type { SkillCatalogEntry, SkillExportContent } from '@plannotator/ui/utils/skillReferences';
 import {
-  extractSkillReferences,
-  renderSkillReferencesBlock,
-  type SkillCatalogEntry,
-  type SkillExportContent,
-} from '@plannotator/ui/utils/skillReferences';
-import { inboxReviewSkill } from '@plannotator/core/inbox-review';
-import { shapeSkill } from '@plannotator/core/shape-skill';
+  builtinSkillContent,
+  composeInboxSkillsBlock,
+  INBOX_SKILL_INSTRUCTIONS_BUDGET,
+  inboxSkillFilter,
+  inboxSkillReferences,
+} from '@plannotator/core/inbox-skills-block';
 import { inboxApi } from './api';
 import { annotationOf } from './attachments';
 
 export { INBOX_MESSAGE_SKILL_AUDIENCE, INBOX_REPLY_SKILL_AUDIENCE };
-
-/** The most SKILL.md text one message pastes, over all its human-only skills. */
-export const INBOX_SKILL_INSTRUCTIONS_BUDGET = 40_000;
-
-/** Every skill the texts reference, in first-appearance order across them, once each. */
-export function inboxSkillReferences(texts: readonly string[], catalog: readonly SkillCatalogEntry[]): SkillCatalogEntry[] {
-  const seen = new Set<string>();
-  const refs: SkillCatalogEntry[] = [];
-  for (const text of texts) {
-    for (const ref of extractSkillReferences(text, [...catalog])) {
-      if (seen.has(ref.name)) continue;
-      seen.add(ref.name);
-      refs.push(ref);
-    }
-  }
-  return refs;
-}
-
-/**
- * The block for these references (pure): `contents` holds the SKILL.md of
- * the human-only ones that could be read. '' with no references.
- */
-export function composeInboxSkillsBlock(
-  refs: readonly SkillCatalogEntry[],
-  contents: ReadonlyMap<string, SkillExportContent>,
-  audience: SkillBlockAudience,
-  budget = INBOX_SKILL_INSTRUCTIONS_BUDGET,
-): string {
-  if (refs.length === 0) return '';
-  // In reference order, while the budget lasts; a skill past it is named with its folder.
-  const pasted = new Map<string, SkillExportContent>();
-  let spent = 0;
-  for (const ref of refs) {
-    const content = ref.humanOnly ? contents.get(ref.name) : undefined;
-    if (!content || spent + content.content.length > budget) continue;
-    pasted.set(ref.name, content);
-    spent += content.content.length;
-  }
-  return renderSkillReferencesBlock(refs, { contentOf: (name) => pasted.get(name), audience }).trimEnd();
-}
+// The pure rules, shared with the server's text for a comment send.
+export { builtinSkillContent, composeInboxSkillsBlock, INBOX_SKILL_INSTRUCTIONS_BUDGET, inboxSkillFilter, inboxSkillReferences };
 
 /** What `inboxSkillsBlock` reads; the window's own routes by default, a test's stand-ins otherwise. */
 export interface InboxSkillSources {
   catalog: () => Promise<SkillCatalogEntry[]>;
   content: (name: string) => Promise<SkillExportContent | undefined>;
-}
-
-/**
- * A Plannotator skill's instructions (root `plannotator`: the review skills the
- * Inbox lists while Code review is on, and `/shape` while Shape is on), from the window's own text, never read
- * from disk. Undefined for any other skill.
- */
-export function builtinSkillContent(ref: SkillCatalogEntry): SkillExportContent | undefined {
-  if (ref.root !== 'plannotator') return undefined;
-  const skill = inboxReviewSkill(ref.name) ?? shapeSkill(ref.name);
-  return skill ? { content: skill.body, truncated: false, dir: '', path: '' } : undefined;
-}
-
-/**
- * What a composer may offer and match in this thread: `/review-recheck` only
- * where a review already happened (`reviewed`), every other entry as listed.
- */
-export function inboxSkillFilter(reviewed: boolean): (entry: SkillCatalogEntry) => boolean {
-  return (entry) => reviewed || entry.root !== 'plannotator' || inboxReviewSkill(entry.name)?.afterReview !== true;
 }
 
 const windowSources: InboxSkillSources = {

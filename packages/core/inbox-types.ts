@@ -1543,6 +1543,13 @@ export interface InboxThread {
    */
   archive_seq?: number | null;
   /**
+   * The window's read only: the seq of the newest agent reply under a comment
+   * sent alone, with no message (experimental "persistent-comments"). Those
+   * replies are agent news as a message is, so a look through it covers them.
+   * Absent while there is none, from an older Inbox and from the MCP tools.
+   */
+  agent_replies_seq?: number;
+  /**
    * The window's read only: every pull request the person handed to this thread is a teammate's (Pull requests'
    * Hand to an agent; the Inbox's own pull list said so when the owner was kept). Its reviews take no verdict:
    * the owner's direction, "a teammate's PR shows its diff with no verdict". Absent otherwise.

@@ -976,6 +976,53 @@ export interface InboxReplyCommand {
    * an older connection ignores it.
    */
   steps?: { done: number; total: number; doing: string | null }
+  /**
+   * The person's comment sends this command delivers (experimental
+   * "persistent-comments"): their `snd_` ids, oldest first, fixed when the
+   * Inbox made the command; the newest one's round and mode (`now`: the
+   * round stays open; `round`: the person finished it); how many comments,
+   * replies and sub-threads they carry. The body holds their text. Comments
+   * alone: the command's `id` is the oldest send's, which `reply_to` takes.
+   * With the person's words: the command is their message's, and the text
+   * follows the words. The wake adds `inboxCommentsWakeLine`. Sends waiting
+   * in one thread go together only to a connection whose poll said it
+   * returns `sends` with `delivered` (`INBOX_COMMENTS_POLL_FIELD`); any other
+   * gets one send per command and settles it by the command's id. An older
+   * connection ignores the field and delivers the command as a reply.
+   * Absent on every other command.
+   */
+  comments?: { sends: string[]; round: number; mode: 'now' | 'round'; count: number }
+}
+
+/**
+ * The poll field (`true`) by which a connection says it reads a command's
+ * `comments` and posts its `sends` back with `delivered`
+ * (`{ type: "delivered", id, sends }`): only such a connection is handed the
+ * comment sends waiting in one thread together. An older Inbox ignores it.
+ */
+export const INBOX_COMMENTS_POLL_FIELD = 'comments'
+
+/**
+ * The line a wake that delivers comment sends carries (`comments`): the
+ * person's comments on the agent's work, the round and whether it is still
+ * open, and how to answer under each id. On comments alone it is the wake's
+ * instruction line; under the person's words it follows the reply's.
+ */
+export function inboxCommentsWakeLine(comments: { round?: unknown; mode?: unknown; count?: unknown }): string {
+  const round = typeof comments.round === 'number' && Number.isInteger(comments.round) && comments.round > 0 ? ` ${comments.round}` : ''
+  const count = typeof comments.count === 'number' && Number.isInteger(comments.count) && comments.count > 0 ? comments.count : 0
+  const what = count === 1 ? 'a comment' : count > 1 ? `${count} comments` : 'comments'
+  const state = comments.mode === 'round' ? `they finished round${round}` : `round${round} is still open, more may follow`
+  return `The person sent ${what} on your work from the Plannotator Inbox; ${state}. Answer under each id now: plannotator_inbox send_message with comment_replies, and reply_to set to the id in parentheses on the first line.`
+}
+
+/** A command's `comments`, when it reads as one: its sends' ids, round, mode and count. */
+function wakeComments(value: unknown): { sends: string[]; round: number; mode: 'now' | 'round'; count: number } | null {
+  if (!value || typeof value !== 'object') return null
+  const { sends, round, mode, count } = value as Record<string, unknown>
+  if (!Array.isArray(sends) || !sends.every((id) => typeof id === 'string') || (mode !== 'now' && mode !== 'round')) return null
+  const whole = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0
+  return whole(round) && whole(count) ? { sends: sends as string[], round, mode, count } : null
 }
 
 /**
@@ -1284,6 +1331,7 @@ export function inboxWakeText(
     reask_one?: unknown
     tidy?: boolean
     steps?: unknown
+    comments?: unknown
   },
   toolName: string = INBOX_TOOL_NAME,
 ): string {
@@ -1300,6 +1348,10 @@ export function inboxWakeText(
   const steps = wakeSteps(command.steps)
   const closing = `${steps ? `\n\n${inboxStepsWakeLine(steps)}` : ''}\n\n${inboxWakeClosingLine(command.thread_id, toolName)}`
   const subject = (command.subject ?? '').replace(/\s+/g, ' ').trim() || (command.type === 'message' ? 'a message' : 'a reply')
+  // The person's comment sends: their line, the wake's instruction on comments alone (the command is the oldest send's).
+  const comments = wakeComments(command.comments)
+  const commentsLine = comments ? `\n${inboxCommentsWakeLine(comments)}` : ''
+  const commentsOnly = comments !== null && comments.sends.includes(command.id)
   // The thread was handed to another session: the notice alone.
   if (command.handed_away && typeof command.handed_away === 'object') {
     const to = wakeName(command.handed_away.to) || 'another agent'
@@ -1316,8 +1368,9 @@ export function inboxWakeText(
     if (command.added === true) {
       return `Plannotator Inbox: ${subject} (${command.id})\n${INBOX_ADDED_INSTRUCTION}\n${inboxAddedLine(owner, command.id)}\n\n${command.body}${closing}`
     }
-    return `Plannotator Inbox: ${subject} (${command.id})\n${INBOX_TAGGED_INSTRUCTION}\n${inboxTaggedLine(owner, command.id)}\n\n${command.body}${closing}`
+    return `Plannotator Inbox: ${subject} (${command.id})\n${INBOX_TAGGED_INSTRUCTION}\n${inboxTaggedLine(owner, command.id)}${commentsLine}\n\n${command.body}${closing}`
   }
+  if (commentsOnly) return `Plannotator Inbox: ${subject} (${command.id})${commentsLine}\n\n${command.body}${closing}`
   const others = Array.isArray(command.also_tagged)
     ? command.also_tagged
         .filter((name) => typeof name === 'string' && name.trim() !== '')
@@ -1345,7 +1398,7 @@ export function inboxWakeText(
       ? `\n${inboxContinuesLine(command.id)}`
       : ''
   const naming = command.name_thread === true ? `\n${INBOX_NAME_THREAD_LINE}` : ''
-  return `Plannotator Inbox: ${subject} (${command.id})\n${instruction}${redirected}${also}${naming}\n\n${command.body}${closing}`
+  return `Plannotator Inbox: ${subject} (${command.id})\n${instruction}${redirected}${also}${commentsLine}${naming}\n\n${command.body}${closing}`
 }
 
 /**

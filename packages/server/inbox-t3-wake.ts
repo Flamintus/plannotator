@@ -41,9 +41,11 @@ import { join } from "node:path";
 import { INBOX_T3_HOST, isT3ThreadId, type InboxMessage } from "@plannotator/core/inbox-types";
 import type { InboxReplyCommand } from "@plannotator/shared/inbox/connection";
 import type { InboxStore } from "@plannotator/shared/inbox/store";
+import type { InboxWakeItem } from "@plannotator/core/inbox-comment-sends";
 import type { T3Credentials } from "@plannotator/t3-code/auth";
 import type { T3Rpc } from "@plannotator/t3-code/t3-client";
 import { codexQueueMessage } from "./inbox-codex-wake";
+import { commentSendWakes, recordWakeDelivery } from "./inbox-comment-send-delivery";
 
 /** The T3 client loads only once a grant exists: every other CLI start skips the MCP client. */
 let t3Modules: Promise<[typeof import("@plannotator/t3-code/auth"), typeof import("@plannotator/t3-code/delivery"), typeof import("@plannotator/t3-code/t3-client")]> | null = null;
@@ -127,9 +129,11 @@ interface Link {
 export function createInboxT3Wake(options: {
   store: InboxStore;
   dataDir: string;
-  commandOf: (item: InboxMessage, session: string) => InboxReplyCommand;
+  commandOf: (item: InboxWakeItem, session: string) => InboxReplyCommand;
   /** An item not to hand at all (a steps-only Tidy wake once steps are off: the server withdraws it). */
-  skip?: (item: InboxMessage, session: string) => boolean;
+  skip?: (item: InboxWakeItem, session: string) => boolean;
+  /** The person's sent comments are on: their comment sends wait here too, one per item (inbox-comment-send-delivery.ts). */
+  commentSends?: () => boolean;
   /** How the wake reaches T3 (tests pass a scripted one). Default: T3's MCP over HTTP. */
   connect?: T3Connect;
   now?: () => number;
@@ -250,7 +254,10 @@ export function createInboxT3Wake(options: {
   /** Whether a reply to the thread can go in under this grant. */
   const sendsInto = (session: string, link: Link): boolean => !deniedNow(session, link) && covers(link, session);
 
-  const wakesItem = (item: InboxMessage, session: string): boolean => {
+  const wakesItem = (wakeItem: InboxWakeItem, session: string): boolean => {
+    // The person's comment sends waiting alone (inbox-comment-send-delivery.ts).
+    if (!wakeItem.message) return commentSendWakes(store, wakeItem, session, INBOX_T3_HOST);
+    const item = wakeItem.message;
     if (!store.isOwner(item, session)) return item.tags?.some((tag) => tag.session === session && tag.host === INBOX_T3_HOST && tag.wakes) ?? false;
     if (item.to) return item.to.host === INBOX_T3_HOST;
     const asked = item.reply_to ? store.message(item.reply_to) : null;
@@ -282,7 +289,7 @@ export function createInboxT3Wake(options: {
     retryAt.set(key, { at: now() + wait, wait });
   };
 
-  const deliverOne = async (link: Link, item: InboxMessage, session: string): Promise<void> => {
+  const deliverOne = async (link: Link, item: InboxWakeItem, session: string): Promise<void> => {
     const key = `${item.id}.${session}`;
     const retry = retryAt.get(key);
     if (retry && retry.at > now()) return;
@@ -294,7 +301,7 @@ export function createInboxT3Wake(options: {
       await new T3Delivery(new T3Thread(link.rpc, session), link.credentials).sendFirst(text, `plannotator-inbox-${item.id}`);
       retryAt.delete(key);
       try {
-        store.recordDelivery(item.id, { host: INBOX_T3_HOST, session });
+        recordWakeDelivery(store, item.id, { host: INBOX_T3_HOST, session }, undefined, options.commentSends?.() === true);
       } catch {
         // Gone, or no longer this session's.
       }
@@ -342,7 +349,7 @@ export function createInboxT3Wake(options: {
   const sweepOnce = async (): Promise<void> => {
     const sessions = knownSessions();
     if (sessions.size === 0) return;
-    const pending = store.pendingRepliesFor(sessions, { tags: true });
+    const pending = store.pendingWakeItemsFor(sessions, { tags: true, sends: options.commentSends?.() === true });
     const pendingKeys = new Set<string>();
     /** Items this pass could send: a retry is kept only for those, so nothing that cannot go runs a timer. */
     const sendable = new Set<string>();
@@ -413,12 +420,13 @@ export function createInboxT3Wake(options: {
 
   let sweepQueued = false;
   const unsubscribe = store.subscribe((line) => {
-    if (line.kind !== "message") return;
-    const message = line.record as InboxMessage;
-    if (message.author.kind === "agent") {
+    if (line.kind !== "message" && line.kind !== "comment_send") return;
+    // A comment send waits for a session its own messages made known: only a moment to look again.
+    const message = line.kind === "message" ? (line.record as InboxMessage) : null;
+    if (message?.author.kind === "agent") {
       if (message.wakes !== true || message.author.host !== INBOX_T3_HOST || !message.author.session) return;
       knownSessions().add(message.author.session);
-    } else {
+    } else if (message) {
       if (message.to?.host === INBOX_T3_HOST) knownSessions().add(message.to.session);
       for (const tag of message.tags ?? []) if (tag.host === INBOX_T3_HOST && tag.wakes) knownSessions().add(tag.session);
     }
