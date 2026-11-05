@@ -421,9 +421,9 @@ slot and mentions on the edit box (0.45.0)".
   place and anchors, `inReplyTo`). `mentions` follows the edit box's rule.
   Three cards take no Reply: a region of an image, a checkbox toggle and a
   question's answer (a general comment and a diff view comment do). Omit it
-  and there is no action and no box. Threads draw depth first whether or not you pass it: a reply to
-  a reply sits one indent step deeper, the same step at every level, and a
-  reply does not repeat its parent's quote.
+  and there is no action and no box. Threads draw depth first whether or not
+  you pass it: a reply to a reply sits one indent step deeper, the same step
+  at every level, and a reply does not repeat its parent's quote.
 - **`renderCardBody?: (annotation) => ReactNode`** (ui 0.54.0) — the host's
   own body for a plan-annotation card, drawn where the comment text goes,
   inside the card (a click on it selects the card). The Inbox draws a
