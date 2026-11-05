@@ -403,15 +403,16 @@ slot and mentions on the edit box (0.45.0)".
   their own (the Inbox sorts a video's comments by the moment they are at).
   Ties keep creation order; replies still thread under their parent. Omit it
   and the panel sorts by creation exactly as before.
-- **`title?`, `titleNote?`, `cardParts?: (annotation) => { quote?, images?, text? }`**
+- **`title?`, `titleNote?`, `cardParts?: (annotation) => { quote?, images?, text?, actions? }`**
   (ui 0.53.0; `text` ui 0.54.0) — the header's title (default "Annotations")
   and a quiet note at its right, and per card whether the built-in quote,
   image row and comment text are drawn (the Inbox's video comments draw the
   moment and the frame in `renderCardHeader` instead). `text: false` treats
   the stored text as the host's stand-in, not the person's words: it is not
   drawn and the card's edit box starts empty (the Inbox's drawing with no
-  words, whose text "See the marked-up image." is for the agent). Omit them
-  and the panel is as before.
+  words, whose text "See the marked-up image." is for the agent).
+  `actions: false` (Unreleased) draws the card without edit and delete (the
+  Inbox's sent comments). Omit them and the panel is as before.
 - **`renderCardBody?: (annotation) => ReactNode`** (ui 0.54.0) — the host's
   own body for a plan-annotation card, drawn where the comment text goes,
   inside the card (a click on it selects the card). The Inbox draws a
@@ -692,7 +693,7 @@ npm install @plannotator/ui @plannotator/core
 - `@plannotator/core` — pure utils + types, zero deps, browser-safe (CI enforces no `node:` imports). Published.
 - `@plannotator/ui` — React components/hooks + theme + `configure()`. Depends on an exact published `@plannotator/core` version. Published.
 - `@plannotator/shared`, `@plannotator/ai` — stay private to the monorepo; `shared` re-exports `core`'s modules via shims so Plannotator's internals are untouched.
-- Currently `@plannotator/ui` 0.62.0 (unreleased; 0.61.0 is published) depends exactly on `@plannotator/core` 0.25.19 (published). `core` is bumped only when something under `packages/core` changes, so `ui` can advance alone. Keep the published core version exact in `packages/ui/package.json`; do not use a `workspace:` protocol there, because a directly published manifest must remain installable outside this monorepo. Bun still links the matching local workspace during development. When both packages change, publish `core` first, then build and publish the UI tarball. `bun run check:sibling-deps @plannotator/ui` (from the repo root; it reads npm) fails while the pinned core isn't on npm. See HANDOFF.md "Publishing & versioning" for the verification command.
+- Currently `@plannotator/ui` 0.62.0 (unreleased; 0.61.0 is published) depends exactly on `@plannotator/core` 0.25.20 (unreleased; 0.25.19 is published). `core` is bumped only when something under `packages/core` changes, so `ui` can advance alone. Keep the published core version exact in `packages/ui/package.json`; do not use a `workspace:` protocol there, because a directly published manifest must remain installable outside this monorepo. Bun still links the matching local workspace during development. When both packages change, publish `core` first, then build and publish the UI tarball. `bun run check:sibling-deps @plannotator/ui` (from the repo root; it reads npm) fails while the pinned core isn't on npm. See HANDOFF.md "Publishing & versioning" for the verification command.
 
 ## The one rule
 
