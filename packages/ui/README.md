@@ -272,6 +272,30 @@ by). Use it instead of inserting into the Viewer's DOM.
 
 See HANDOFF.md § "Viewer `belowTitle` (published in ui 0.54.0)".
 
+#### Content under a block (`Viewer.belowBlock`; Unreleased)
+
+`belowBlock?: (block) => ReactNode` draws a host's node right under one of
+the document's blocks, e.g. the comment threads on it (the Inbox's sent
+comments). The Viewer asks for each block in body order.
+
+- **Where.** A list item's node goes right after that item, inside its
+  list; any other block's right after the block (a table, a code block or a
+  diagram as a whole).
+- **Outside the document text, positions unchanged.** Each wrapper
+  `[data-viewer-below-block]` (its `data-below-block` the block's id) is
+  `annotation-exclude`, `data-pinpoint-ignore`, `data-print-hide`, with no
+  `data-block-id`, as `belowTitle`'s is, and the highlighter stores and
+  restores comment positions as if no slot were there. A selection inside a
+  slot makes no comment and opens no toolbar. Match the wrapper by presence,
+  not by value.
+- **A slot never remounts its block.** It is a sibling with a key of its
+  own, so one that appears later keeps the block and the highlight painted
+  on it.
+- **Absent is absent.** No prop, or a nullish or boolean result for a block,
+  draws no wrapper: the DOM is exactly the one without the prop.
+
+See HANDOFF.md § "Viewer `belowBlock` (Unreleased)".
+
 ### Diagram engine (`components/diagram`; 0.41.0)
 
 One renderer slot and one canvas render every Mermaid and Graphviz diagram — the fences in `Viewer` (`MermaidBlock`, `GraphvizBlock`), their popout, and whatever a host renders itself. `DiagramViewer` from `@plannotator/ui/components/diagram` takes `kind`, `source`, `theme` (`{ colorTheme, mode, shadowAmount? }`), `comments: DiagramComment[]` and `onCreateComment(anchor, text, additionalTargets)`; pass `onSave(source) => Promise<{ status: 'ok' } | { status: 'stale', currentSource }>` to get the Source pane (left of the canvas on desktop, under it on the phone; `readOnlySource` shows it without Save), and `sourceOpen` to toggle it. Zoom, pan and fit are the canvas's (wheel, drag, `+` `-` `0`, arrow keys); a click opens the composer at the part beneath while a drag pans (4 px threshold, 10 px for a finger), nothing highlights on a plain mouse-over (the ring under the pointer needs the platform modifier held), every edge carries an invisible 14 px hit path in one top layer and a click is resolved by priority over everything under the pointer (node, then edge, then cluster; an edge label is its edge), a click on no part comments on the whole diagram (kind `diagram`), sequence diagrams are addressable (actors, messages, notes, frames), a saved comment paints a ring and a numbered badge from the array order, and every comment re-resolves against each render through the engine's finder (id, then label, then unanchored — reported through `onUnanchoredChange`). The anchor is `DiagramAnchor` from `@plannotator/core/diagram-anchor` (`{ v: 1, family, kind, id | from + to, label, sourceLine }`, document lines), and Plannotator stores it as `Annotation.diagramAnchor`. Runtime slots: `utils/mermaid` (as before) and `utils/graphviz` (new, same shape, `@viz-js/viz` pinned `3.31.0`), each lazy on first use or filled by the host. `DiagramPopout` is the full-size viewer in the `PopoutDialog` chrome. See HANDOFF.md § "Diagram engine (0.41.0)" for every export, the adapter, the sanitizer and the migration notes.
@@ -403,7 +427,7 @@ slot and mentions on the edit box (0.45.0)".
   their own (the Inbox sorts a video's comments by the moment they are at).
   Ties keep creation order; replies still thread under their parent. Omit it
   and the panel sorts by creation exactly as before.
-- **`title?`, `titleNote?`, `cardParts?: (annotation) => { quote?, images?, text? }`**
+- **`title?`, `titleNote?`, `cardParts?: (annotation) => { quote?, images?, text?, actions?, reply? }`**
   (ui 0.53.0; `text` ui 0.54.0) — the header's title (default "Annotations")
   and a quiet note at its right, and per card whether the built-in quote,
   image row and comment text are drawn (the Inbox's video comments draw the
@@ -416,17 +440,18 @@ slot and mentions on the edit box (0.45.0)".
   takes the Reply off that card alone, and `passage: false` (Unreleased) the
   offer to comment on a passage of its words. Omit them and the panel is as
   before.
-- **`onReply?: (parentId, { text, mentions? }) => void`** (Unreleased) — the
+- **`onReply?: (parentId, { text, mentions? }) => void | boolean | Promise<void | boolean>`**
+  (Unreleased) — the
   person's Reply. Supplied (and not `readOnly`), each plan-annotation card of
-  the open document gets a Reply action that opens one box under the card's
-  thread, where the reply will land; sending calls `onReply` and the host
+  the open document gets a Reply action that opens one box after the card's
+  own replies, where the reply will land; sending calls `onReply` and the host
   adds the reply, built with `buildReplyAnnotation(parent, { id, text,
   createdA, author, mentions })` from `utils/annotationReply` (the parent's
   place and anchors, `inReplyTo`). A host that could not save the reply
   answers `false`, or a promise of it (Unreleased): the box stays open with
-  its words. `mentions` follows the edit box's rule. A
-  card whose place is not a text highlight (a region of an image, a checkbox
-  toggle, a question's answer) takes no Reply. Omit it and there is no action
+  its words. `mentions` follows the edit box's rule. Three cards take no
+  Reply: a region of an image, a checkbox toggle and a question's answer (a
+  general comment and a diff view comment do). Omit it and there is no action
   and no box. Threads draw depth first whether or not you pass it: a reply to
   a reply sits one indent step deeper, the same step at every level, and a
   reply does not repeat its parent's quote.
@@ -453,6 +478,12 @@ slot and mentions on the edit box (0.45.0)".
   `exportLinkedDocAnnotations`): one line printed under the entry's heading
   (the Inbox's `At 1:42 (102.4 s of 7:41)`). Never stored; an annotation
   without it exports byte-identically.
+- **Export: `commentIds`** (Unreleased) — an option of `exportAnnotations`,
+  and the optional last argument of `exportLinkedDocAnnotations`,
+  `exportMessageAnnotations`, `exportCodeFileAnnotations` and
+  `exportEditorAnnotations`: each entry's heading ends with its annotation's
+  own id, ` (id <id>)` (`commentIdSuffix`), for feedback an agent receives.
+  Off by default: a host that passes nothing exports byte-identically.
 
 ### Image annotator seams (`components/ImageAnnotator`; ui 0.54.0)
 
@@ -718,7 +749,7 @@ npm install @plannotator/ui @plannotator/core
 - `@plannotator/core` — pure utils + types, zero deps, browser-safe (CI enforces no `node:` imports). Published.
 - `@plannotator/ui` — React components/hooks + theme + `configure()`. Depends on an exact published `@plannotator/core` version. Published.
 - `@plannotator/shared`, `@plannotator/ai` — stay private to the monorepo; `shared` re-exports `core`'s modules via shims so Plannotator's internals are untouched.
-- Currently `@plannotator/ui` 0.62.0 (unreleased; 0.61.0 is published) depends exactly on `@plannotator/core` 0.25.19 (published). `core` is bumped only when something under `packages/core` changes, so `ui` can advance alone. Keep the published core version exact in `packages/ui/package.json`; do not use a `workspace:` protocol there, because a directly published manifest must remain installable outside this monorepo. Bun still links the matching local workspace during development. When both packages change, publish `core` first, then build and publish the UI tarball. `bun run check:sibling-deps @plannotator/ui` (from the repo root; it reads npm) fails while the pinned core isn't on npm. See HANDOFF.md "Publishing & versioning" for the verification command.
+- Currently `@plannotator/ui` 0.62.0 (unreleased; 0.61.0 is published) depends exactly on `@plannotator/core` 0.25.20 (unreleased; 0.25.19 is published). `core` is bumped only when something under `packages/core` changes, so `ui` can advance alone. Keep the published core version exact in `packages/ui/package.json`; do not use a `workspace:` protocol there, because a directly published manifest must remain installable outside this monorepo. Bun still links the matching local workspace during development. When both packages change, publish `core` first, then build and publish the UI tarball. `bun run check:sibling-deps @plannotator/ui` (from the repo root; it reads npm) fails while the pinned core isn't on npm. See HANDOFF.md "Publishing & versioning" for the verification command.
 
 ## The one rule
 

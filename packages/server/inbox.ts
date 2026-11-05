@@ -99,6 +99,7 @@ import {
   loadConfig,
   saveCookieHost,
   parseAutoUpdateEnv,
+  EXPERIMENTAL_FEATURES,
   parseExperimentalEnv,
   resolveExperimental,
   parseInboxToolEnv,
@@ -2278,10 +2279,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     persistent_comments: { on: persistentCommentsOn(), env: parseExperimentalEnv("persistent-comments") ?? null },
   });
 
-  /** Each experimental switch Settings saves: its feature name, its config.json key, and how a refusal names it. */
+  /** Each experimental switch Settings saves: its feature name (its config.json key is EXPERIMENTAL_FEATURES') and how a refusal names it. */
   const EXPERIMENTAL_SWITCHES = {
-    decision_mode: { feature: "decision-mode", key: "decisionMode", words: "decision mode" },
-    persistent_comments: { feature: "persistent-comments", key: "persistentComments", words: "keeping sent comments in view" },
+    decision_mode: { feature: "decision-mode", words: "decision mode" },
+    persistent_comments: { feature: "persistent-comments", words: "keeping sent comments in view" },
   } as const;
 
   /** Save one switch, `experimental: { decision_mode }` or `{ persistent_comments }`. `validateOnly`: check and write nothing. */
@@ -2292,7 +2293,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       throw new InboxError("validation_error", "experimental: { decision_mode: boolean } or { persistent_comments: boolean }.", { field: "experimental" });
     }
     const on = (input as Record<string, boolean>)[name]!;
-    const { feature, key, words } = EXPERIMENTAL_SWITCHES[name];
+    const { feature, words } = EXPERIMENTAL_SWITCHES[name];
+    const key = EXPERIMENTAL_FEATURES[feature];
     // The env var decides (like PLANNOTATOR_INBOX_TAILSCALE): saving to config.json would change nothing.
     const env = parseExperimentalEnv(feature);
     if (env !== undefined) {
