@@ -145,6 +145,8 @@ import { replyKeysToRenew, routeSendAnnotations, sendTargetAnswerIds, sendTarget
 import { useSentComments } from './SentComments';
 import { unfoldOpenThreads } from '../sentComments';
 import { isInboxCommentSendable } from '@plannotator/core/inbox-comment-sends';
+import { isInboxCommentReply } from '@plannotator/core/inbox-comment-threads';
+import { CommentListMeta } from '@plannotator/ui/components/inbox-thread/CommentListMeta';
 
 export { routeSendAnnotations, sendTargetsOf, type SendTarget };
 
@@ -2526,10 +2528,33 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
   const [commentEdit, setCommentEdit] = useState<CommentEdit | null>(null);
   const openListAt = (id: string | null) => {
     if (id === null) setCommentsList(null);
-    else if (listHome && records.some((record) => record.id === id)) setCommentsList((open) => ({ at: id, press: (open?.press ?? 0) + 1 }));
+    else if (listHome && (records.some((record) => record.id === id) || sentComments.records.some((record) => record.id === id))) setCommentsList((open) => ({ at: id, press: (open?.press ?? 0) + 1 }));
+  };
+  /**
+   * A comment's line in the list (experimental "persistent-comments"; ui's `CommentListMeta`, as the screens' panel):
+   * a draft "Not sent" (and Send, with comment sends); a sent one its round, what became of its send, its resolution
+   * with Resolve or Reopen, and how many replies are under its passage (read in its box). Off: no line.
+   */
+  const commentMeta = (record: InboxAnnotationRecord): React.ReactNode => {
+    if (!files?.sent_comments) return null;
+    const tree = sentComments.tree;
+    const send = sentComments.send;
+    if (record.sent_reply_id === null) return <CommentListMeta draft {...(send && isInboxCommentSendable(record) ? { onSend: () => send(record.id) } : {})} />;
+    const thread = !isInboxCommentReply(record);
+    const resolve = sentComments.resolve;
+    return (
+      <CommentListMeta
+        round={tree.rounds.get(record.sent_reply_id)}
+        status={tree.statuses?.get(record.id)}
+        resolved={thread ? tree.resolved.has(record.id) : undefined}
+        replies={thread ? (tree.replies.get(record.id)?.length ?? 0) : 0}
+        {...(thread && resolve ? { onResolve: (resolved: boolean) => resolve(record, resolved) } : {})}
+      />
+    );
   };
   const commentsListProps: AnnotationsListProps = {
     records,
+    ...(files?.sent_comments ? { sent: sentComments.records, meta: commentMeta } : {}),
     attachments: allFiles,
     onEdit: editRecord,
     onRemove: removeRecord,
@@ -4314,14 +4339,14 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
       announce('Round finished.');
       await reloadFiles();
     } catch (cause) {
-      setError(cause instanceof InboxApiError ? cause.message : 'The round did not finish. Press Finish round again.');
+      setError(cause instanceof InboxApiError ? cause.message : 'The round did not finish. Press Send Feedback again.');
     } finally {
       setSending(false);
     }
   };
   const finishButton = finishOffered ? (
     <button type="button" className="ib-btn" data-finish-round="" onClick={() => void finishRound()} disabled={sending || voice.busy}>
-      Finish round
+      Send Feedback
     </button>
   ) : null;
 
@@ -6283,7 +6308,8 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
               )}
               {/* 👍 Looks good beside Reply: sent to the agent after the Undo window; hidden while a question waits.
                   Before the checklist: the actions first, the status after. */}
-              {ackOffered && !waiting && !draftKept && (
+              {/* Hidden while draft comments wait, as on a Send's foot: the Draft note keeps its place at the right. */}
+              {ackOffered && !waiting && !draftKept && sentComments.sendable.length === 0 && (
                 <Tip
                   content={
                     ackOn

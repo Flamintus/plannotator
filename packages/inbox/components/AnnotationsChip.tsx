@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { InboxAnnotationRecord, InboxAttachmentState } from '@plannotator/core/inbox-types';
 import { annotationOf, recordQuote, recordTag } from '../attachments';
 import { plural } from '../format';
@@ -34,6 +34,13 @@ export interface AnnotationsListProps {
   unanchored?: ReadonlySet<string>;
   editing: CommentEdit | null;
   onEditing: (next: CommentEdit | null) => void;
+  /**
+   * The thread's comments already sent (experimental "persistent-comments"): listed after the drafts, each alone,
+   * read-only (no Edit or Remove). Absent: the drafts only, as before.
+   */
+  sent?: readonly InboxAnnotationRecord[];
+  /** One more line under a comment (its round, resolution, Send, the replies under its passage); absent: none. */
+  meta?: (record: InboxAnnotationRecord) => ReactNode;
 }
 
 /** What opens the list, and marks a press on it as not a click outside: a press there toggles the list itself. */
@@ -64,6 +71,8 @@ export function AnnotationsList({
   unanchored,
   editing: held,
   onEditing,
+  sent,
+  meta,
   at,
   press,
   onClose,
@@ -135,10 +144,15 @@ export function AnnotationsList({
     };
   }, [onEditing]);
 
+  // The drafts first, then what was sent (each alone, read-only).
+  const sentHere = sent ?? [];
+  const sentIds = new Set(sentHere.map((record) => record.id));
+  const rows = sentHere.length === 0 ? records : [...records, ...sentHere.filter((record) => !records.some((draft) => draft.id === record.id))];
+
   // The last comment went. Focus goes back only if the list had it: a Send that took them has its own place for focus.
   useEffect(() => {
-    if (records.length === 0) closeRef.current(focusHere.current);
-  }, [records.length]);
+    if (rows.length === 0) closeRef.current(focusHere.current);
+  }, [rows.length]);
 
   // From the chip, the list opens at the chip; where that would run past the window's right edge it lines up with
   // the reply box's right edge instead (and never past the window's left edge).
@@ -194,22 +208,23 @@ export function AnnotationsList({
       className="ib-annpop"
       role="dialog"
       tabIndex={-1}
-      aria-label={plural(records.length, 'comment')}
+      aria-label={plural(rows.length, 'comment')}
       data-comments-list=""
       style={shift ? ({ '--ib-annpop-shift': `${shift}px` } as CSSProperties) : undefined}
     >
       <div className="ib-aph">
-        <b>{plural(records.length, 'comment')}</b>
+        <b>{plural(rows.length, 'comment')}</b>
         <span className="ib-sp" />
         <button type="button" className="ib-iconbtn" onClick={() => closeRef.current(true)} aria-label="Close the list">
           <Icon name="x" />
         </button>
       </div>
-      {records.map((record) => {
+      {rows.map((record) => {
         const annotation = annotationOf(record);
         const tag = recordTag(record);
         const quote = recordQuote(record);
-        const isEditing = editing?.id === record.id;
+        const isSent = sentIds.has(record.id);
+        const isEditing = !isSent && editing?.id === record.id;
         return (
           <div className={`ib-arow${isEditing ? ' ib-ed' : ''}${at === record.id ? ' ib-at' : ''}`} key={record.id} data-annotation-row={record.id} aria-current={at === record.id || undefined}>
             <div className="ib-a1">
@@ -230,7 +245,7 @@ export function AnnotationsList({
                   Unanchored
                 </span>
               )}
-              {!isEditing && (
+              {!isEditing && !isSent && (
                 <>
                   <span className="ib-sp" />
                   <button type="button" className="ib-aa" onClick={() => onEditing({ id: record.id, text: annotation.text ?? '' })}>
@@ -288,6 +303,7 @@ export function AnnotationsList({
             ) : (
               annotation.text && <p className="ib-ac">{annotation.text}</p>
             )}
+            {!isEditing && meta?.(record)}
           </div>
         );
       })}

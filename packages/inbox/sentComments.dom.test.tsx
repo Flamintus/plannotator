@@ -102,7 +102,7 @@ beforeAll(async () => {
   mkdirSync(join(dir, 'bin'));
   writeFileSync(join(dir, 'bin', 'tailscale'), '#!/bin/sh\nexit 1\n');
   chmodSync(join(dir, 'bin', 'tailscale'), 0o755);
-  child = Bun.spawn(['bun', SERVER_SCRIPT, join(dir, 'data'), join(dir, 'projects'), '14'], {
+  child = Bun.spawn(['bun', SERVER_SCRIPT, join(dir, 'data'), join(dir, 'projects'), '15'], {
     env: { ...process.env, DOM_TESTS: '0', PLANNOTATOR_DATA_DIR: join(dir, 'data'), PLANNOTATOR_EXPERIMENTAL: 'persistent-comments', HOME: dir, PATH: `${join(dir, 'bin')}:${process.env.PATH}` },
     stdin: 'pipe',
     stdout: 'pipe',
@@ -677,3 +677,40 @@ test.skipIf(!hasDom)("on a file, words selected in a sent card open a comment on
   const id = draft()!.getAttribute('data-annotation-id')!;
   expect(document.querySelector(`[data-bind-id="${id}"], [data-highlight-id="${id}"]`)).toBeNull();
 }, 30_000);
+
+test.skipIf(!hasDom)("with comment sends, the closed foot keeps the Draft note at its right and Send Feedback ends the round; the comments list lists what was sent, each alone, with its round, replies and resolution", async () => {
+  const { sent } = await command<{ sent: string }>({ send: { project: world.project, session: 'ses_list_msg', body: 'Deploys roll out to every store, then we watch sales.' } });
+  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('lst-d1', 'every store', 'Lyon first.', 'block-0') });
+  await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('lst-d2', 'watch sales', 'Who watches?', 'block-0') });
+  // lst-d1 went (with a reply of the person's), and the agent answered under it; lst-d2 waits.
+  await postJson(`/api/inbox/messages/${sent}/reply`, { idempotency_key: 'k-list-1', feedback: '# Feedback', annotation_ids: ['lst-d1'] });
+  await command({ commentReply: { comment: 'lst-d1', session: 'ses_list_msg', text: 'Lyon and Nantes the first week.' } });
+
+  const el = await renderApp(`#thread=${sent}`);
+  await until(() => el.querySelector('[data-sent-comment="lst-d2"]') !== null, 'the draft box');
+  // The round's end is Send Feedback, as on the screens; the Draft note counts the draft, and Looks good waits for it.
+  expect(el.querySelector('[data-foot-row] [data-finish-round]')!.textContent).toBe('Send Feedback');
+  expect(el.querySelector('[data-foot-status] [data-draft-foot]')!.textContent).toContain('1 comment');
+  expect(el.querySelector('[data-ack]')).toBeNull();
+
+  // The list: the draft first (Not sent, Send, Edit), then the sent one, alone and read-only, with its line.
+  act(() => el.querySelector<HTMLButtonElement>('[data-foot-status] button[data-draft-comments]')!.click());
+  await until(() => el.querySelector('[data-comments-list]') !== null, 'the list');
+  const row = (id: string) => el.querySelector<HTMLElement>(`[data-comments-list] [data-annotation-row="${id}"]`);
+  expect([...el.querySelectorAll('[data-comments-list] [data-annotation-row]')].map((r) => r.getAttribute('data-annotation-row'))).toEqual(['lst-d2', 'lst-d1']);
+  expect(row('lst-d2')!.querySelector('[data-comment-meta-round]')!.textContent).toBe('Not sent');
+  expect(row('lst-d2')!.querySelector('[data-comment-meta-send]')).not.toBeNull();
+  expect([...row('lst-d2')!.querySelectorAll('button')].some((b) => b.textContent === 'Edit')).toBe(true);
+  expect(row('lst-d1')!.querySelector('[data-comment-meta-round]')!.textContent).toBe('Round 1');
+  expect(row('lst-d1')!.querySelector('[data-comment-meta-replies]')!.textContent).toBe('\u21b3 1 reply under the passage');
+  // Its reply's words are read in the box, not in the list.
+  expect(row('lst-d1')!.textContent).not.toContain('Lyon and Nantes');
+  expect([...row('lst-d1')!.querySelectorAll('button')].some((b) => b.textContent === 'Edit' || b.textContent === 'Remove')).toBe(false);
+
+  // Resolve from the list: the box and the line both say Resolved.
+  await act(async () => {
+    row('lst-d1')!.querySelector<HTMLButtonElement>('[data-comment-meta-resolve="resolve"]')!.click();
+  });
+  await until(() => row('lst-d1')?.querySelector('[data-comment-meta-resolved]') != null, 'Resolved in the list');
+  expect(el.querySelector('[data-sent-comment="lst-d1"]')!.hasAttribute('data-sent-resolved')).toBe(true);
+}, 40_000);
