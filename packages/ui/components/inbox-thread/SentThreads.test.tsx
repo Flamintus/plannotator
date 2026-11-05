@@ -130,9 +130,9 @@ describe.skipIf(!hasDom)('SentThreads', () => {
     expect(s1.querySelector('.ib-sentb-head [data-sent-round="2"]')).not.toBeNull();
     expect([...reply.children].map((el) => el.className)).toEqual(['ib-sentb-meta', 'ib-sentc-said', 'ib-sentb-subs']);
     expect([...reply.querySelectorAll('mark[data-passage-mark]')].map((m) => m.textContent)).toEqual(['feature-flag switch']);
-    // No action passed: nothing to press, nothing to select a passage in, and the quote is words.
+    // No action passed: nothing to press but the chevron that folds the box (any box folds), nothing to select a passage in, and the quote is words.
     expect(document.querySelector('[data-sent-reply-to], [data-sent-resolve], [data-passage-body]')).toBeNull();
-    expect(c1.querySelector('.ib-sentb-head button')).toBeNull();
+    expect([...c1.querySelectorAll(':scope > .ib-sentb-head button')].map((button) => button.getAttribute('data-sent-unfold'))).toEqual(['c1']);
   });
 
   test('a resolved thread folds to one line only once nothing under it is open; a press opens it to be read, its chevron folds it again', async () => {

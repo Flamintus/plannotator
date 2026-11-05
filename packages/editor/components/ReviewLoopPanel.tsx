@@ -11,8 +11,9 @@
  *   selected in a sent message offer the document's selection toolbar, and
  *   each action makes the same comment on that passage as on the document:
  *   a comment, a deletion, a quick label), Reply,
- *   Resolve and Reopen at a thread's head, a resolved thread folded to one
- *   line once nothing under it is open, and Send on a draft (it goes alone,
+ *   Resolve and Reopen at a thread's head, any box folded to one line and
+ *   opened again by hand (a resolved thread folded by default once nothing
+ *   under it is open), and Send on a draft (it goes alone,
  *   at once, and the round stays open). The person's drafts are boxes too,
  *   "Not sent", after the sent ones on their block.
  * - The annotations panel stays today's list, one comment per card with its

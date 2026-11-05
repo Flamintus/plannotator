@@ -26,9 +26,11 @@
  * passage starts, as a thread sits under its block in the document, in a
  * group of boxes like the document's (`BoxGroup`, one rule for the room
  * above and below every box); its passage marked in those words; one whose
- * passage is not found, at the message's end, Unanchored. A resolved thread
- * folds to one "Resolved" line (a press opens it to be read) only once
- * nothing under it, at any depth, is open.
+ * passage is not found, at the message's end, Unanchored. Any box folds and
+ * unfolds by hand, at any depth and of any kind or state: its head's `▾`
+ * folds it to one line (`▸`, its passage, what its head says, what it holds,
+ * a draft's Send), and a press on that line opens it. By default only a
+ * resolved thread folds, once nothing under it, at any depth, is open.
  *
  * A sub-thread is a comment like one on the document's words: words selected
  * in a message offer the document's selection toolbar (`PassageToolbar`, the
@@ -61,7 +63,7 @@ import { shortLabel } from './shortLabel';
 import { isGeneralThread, placeOnMessage, placeThreads, subThreadPassage, type SentCommentsTree, type SentReplyRow, type SentThreadRecord } from './sentCommentsTree';
 
 const NO_RECORDS: readonly SentThreadRecord[] = [];
-const NO_IDS: ReadonlySet<string> = new Set();
+const NO_FLIPS: ReadonlyMap<string, boolean> = new Map();
 
 /** The person's reply under a comment, or comment on a passage, as the composer hands it. */
 export type ReplyInput = { text: string; mentions?: readonly string[] };
@@ -117,10 +119,11 @@ type ListBox = { at: string; text: string; opened: number; passage?: TextPassage
  * What the person has open among one surface's threads (a thread's messages,
  * or a file's document): the one box (another opens in its place and keeps
  * the words), the passage offered for a comment (`offer`, with the group of
- * threads its words are in), and the folded threads opened to be read
- * (`shown`; a thread that folds again later starts folded). `surface` names
- * the groups this view draws (`data-sent-threads`), so a selection in another
- * surface's threads, or anywhere else, offers nothing here.
+ * threads its words are in), and the boxes folded or unfolded by hand, any
+ * box at any depth (`isFolded`, `toggleFold`; `byDefault`: whether the box is
+ * folded by default, a resolved thread with nothing open under it). `surface`
+ * names the groups this view draws (`data-sent-threads`), so a selection in
+ * another surface's threads, or anywhere else, offers nothing here.
  */
 export interface SentThreadsView {
   surface: string;
@@ -128,8 +131,8 @@ export interface SentThreadsView {
   setBox: Dispatch<SetStateAction<ListBox | null>>;
   offer: { passage: SelectedPassage; group: string } | null;
   closeOffer: () => void;
-  shown: ReadonlySet<string>;
-  toggleShown: (id: string) => void;
+  isFolded: (id: string, byDefault: boolean) => boolean;
+  toggleFold: (id: string, byDefault: boolean) => void;
 }
 
 const THREADS_ATTRIBUTE = 'data-sent-threads';
@@ -139,13 +142,16 @@ const THREADS_ATTRIBUTE = 'data-sent-threads';
  * (a thread there takes comments on its passages), a selection let go that
  * holds one sent message's words offers to comment on that passage; it
  * listens on the document, since a drag past the last line ends outside the
- * threads. `folded`: the threads folded now, so one opened to be read and
- * then opened again (a Reopen, a reply) leaves `shown`.
+ * threads. `folded`: the threads folded by default now, so a box folded or
+ * unfolded by hand whose default changed since (a resolved thread opened
+ * again by a Reopen or a reply, an open one resolved) is back to its default:
+ * a thread opened to be read starts folded when it folds again.
  */
 export function useSentThreadsView(offering: boolean, folded: ReadonlySet<string>): SentThreadsView {
   const surface = useId();
   const [box, setBox] = useState<ListBox | null>(null);
-  const [shownIds, setShown] = useState<ReadonlySet<string>>(NO_IDS);
+  // The boxes the person folded or unfolded by hand, each with its default then (folded or not).
+  const [flips, setFlips] = useState<ReadonlyMap<string, boolean>>(NO_FLIPS);
   // The passage offered: one message's words inside a group of this surface's (the one way a passage is offered, ../PassageToolbar).
   const { offer, close: closeOffer } = usePassageOffer<NonNullable<SentThreadsView['offer']>>(offering, (selection) => {
     const range = selection && selection.rangeCount > 0 && !selection.isCollapsed ? selection.getRangeAt(0) : null;
@@ -155,19 +161,24 @@ export function useSentThreadsView(offering: boolean, folded: ReadonlySet<string
     const passage = group && key.startsWith(`${surface}:`) ? selectedPassage(group, selection) : null;
     return passage ? { passage, group: key } : null;
   });
-  // Opened to be read while folded: a thread that unfolds on its own (opened again) leaves it.
-  const shown = useMemo(() => {
-    const kept = [...shownIds].filter((id) => folded.has(id));
-    return kept.length === shownIds.size ? shownIds : new Set(kept);
-  }, [shownIds, folded]);
-  const toggleShown = useCallback((id: string) => {
-    setShown((current) => {
-      const next = new Set(current);
-      if (!next.delete(id)) next.add(id);
+  // A box whose default changed since the person flipped it is back to its default, for good.
+  const kept = useMemo(() => {
+    const still = [...flips].filter(([id, byDefault]) => folded.has(id) === byDefault);
+    return still.length === flips.size ? flips : new Map(still);
+  }, [flips, folded]);
+  useEffect(() => {
+    if (kept !== flips) setFlips(kept);
+  }, [kept, flips]);
+  const isFolded = useCallback((id: string, byDefault: boolean) => (kept.get(id) === byDefault ? !byDefault : byDefault), [kept]);
+  const toggleFold = useCallback((id: string, byDefault: boolean) => {
+    setFlips((current) => {
+      const next = new Map(current);
+      if (next.get(id) === byDefault) next.delete(id);
+      else next.set(id, byDefault);
       return next;
     });
   }, []);
-  return useMemo(() => ({ surface, box, setBox, offer, closeOffer, shown, toggleShown }), [surface, box, offer, closeOffer, shown, toggleShown]);
+  return useMemo(() => ({ surface, box, setBox, offer, closeOffer, isFolded, toggleFold }), [surface, box, offer, closeOffer, isFolded, toggleFold]);
 }
 
 /**
@@ -339,10 +350,11 @@ export type SentThreadsProps<R extends SentThreadRecord = InboxAnnotationRecord>
  * words); a sub-thread is a box in the box, in the message whose passage it
  * is on, under the block of its words the passage starts in
  * (`placeOnMessage`), in a group like this one (`BoxGroup`), at the same
- * indent at each level, at any depth. A resolved thread folds to one line
- * ("Resolved", a press opens it to be read) only when nothing under it, at
- * any depth, is open; until then it stays unfolded, marked Resolved, its open
- * sub-threads in view. Reply opens a box at the thread's foot; words selected
+ * indent at each level, at any depth. Any box folds by hand to one line (its
+ * head's `▾`; a press on the line opens it); by default a resolved thread is
+ * folded only when nothing under it, at any depth, is open; until then it
+ * stays unfolded, marked Resolved, its open sub-threads in view. Reply opens
+ * a box at the thread's foot; words selected
  * in a sent message offer ui's selection toolbar (`PassageToolbar`), whose
  * Comment opens a box under the passage's block with the passage at its
  * head. A draft goes with the next Send, or alone by its own Send (`onSend`).
@@ -472,8 +484,10 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
   const round = record.sent_reply_id ? rounds.get(record.sent_reply_id) : undefined;
   const isSub = isInboxSubThread(record);
   const isResolved = resolved.has(id);
-  const foldable = isInboxCommentThreadFolded(id, resolved, openBelow);
-  const folded = foldable && !view.shown.has(id);
+  // Folded by default: a resolved thread with nothing open under it; any box folds and unfolds by hand.
+  const byDefault = isInboxCommentThreadFolded(id, resolved, openBelow);
+  const folded = view.isFolded(id, byDefault);
+  const toggleFold = () => view.toggleFold(id, byDefault);
   const under = replies.get(id) ?? [];
   const context: BoxContext<R> = { tree, view, actions };
   const marks = {
@@ -481,27 +495,50 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
     'data-sent-subthread': isSub ? '' : undefined,
     'data-sent-deletion': deletion ? '' : undefined,
     'data-sent-resolved': isResolved ? '' : undefined,
+    'data-sent-draft': draft ? '' : undefined,
     'data-sent-folded': folded ? '' : undefined,
   };
   // A press in a box is a look at it (and, the press being in them too, at the boxes around it).
   const look = onLook ? () => onLook(record) : undefined;
+  // What the head says, folded or not: its kind, its round or Not sent, its send's status, Live, ✓ Resolved, Unanchored.
+  const chips = (
+    <SentChips
+      kind={commentKind(annotation)}
+      draft={draft}
+      round={round}
+      status={statuses?.get(id)}
+      live={live?.has(id)}
+      resolved={isResolved}
+      unanchored={lost || typeof record.unanchored_at === 'string'}
+    />
+  );
+  // A draft's Send, at its head and on its folded line alike.
+  const send = draft && onSend && (
+    <span className="ib-sentb-acts">
+      <SentSendButton id={id} onSend={onSend} />
+    </span>
+  );
   if (folded) {
-    const subs = countSubThreads(id, replies, subThreads);
+    const held = heldUnder(id, replies, subThreads, fresh);
     return (
       <div className="ib-sentb-card" {...marks} onClickCapture={look}>
-        <button type="button" className="ib-sentb-fold" aria-expanded={false} data-sent-unfold={id} onClick={() => view.toggleShown(id)}>
+        <button type="button" className="ib-sentb-fold" aria-expanded={false} data-sent-unfold={id} onClick={toggleFold}>
           <Icon name="chevR" size={12} />
-          <span className="ib-sentb-state" data-sent-resolved-chip="">
-            <Icon name="check" size={12} />
-            Resolved
-          </span>
           <span className="ib-sentb-fquote">{general ? 'General comment' : `“${shortLabel(quote)}”`}</span>
-          <SentRoundChip draft={draft} round={round} />
-          <span className="ib-sentb-count" data-sent-messages={1 + under.length} data-sent-subthreads={subs}>
+          <span className="ib-sentb-chips">
+            {chips}
+            {held.fresh && (
+              <span className="ib-sentc-chip ib-sentb-new" data-sent-new="">
+                New
+              </span>
+            )}
+          </span>
+          <span className="ib-sentb-count" data-sent-messages={1 + under.length} data-sent-subthreads={held.subs}>
             {plural(1 + under.length, 'message')}
-            {subs > 0 ? `, ${plural(subs, 'sub-thread')}` : ''}
+            {held.subs > 0 ? `, ${plural(held.subs, 'sub-thread')}` : ''}
           </span>
         </button>
+        {send}
       </div>
     );
   }
@@ -553,13 +590,11 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
   // A comment on the whole document has no passage: its head says so.
   const quoteText = general ? <span className="ib-sentb-qt ib-sentb-general">General comment</span> : <span className="ib-sentb-qt">“{quote}”</span>;
   return (
-    <div className="ib-sentb-card" {...marks} data-sent-draft={draft ? '' : undefined} onClickCapture={look}>
+    <div className="ib-sentb-card" {...marks} onClickCapture={look}>
       <div className="ib-sentb-head">
-        {foldable && (
-          <button type="button" className="ib-sentb-chev" aria-expanded={true} aria-label="Fold the resolved comment" data-sent-unfold={id} onClick={() => view.toggleShown(id)}>
-            <Icon name="chevD" size={12} />
-          </button>
-        )}
+        <button type="button" className="ib-sentb-chev" aria-expanded={true} aria-label="Fold the comment" data-sent-unfold={id} onClick={toggleFold}>
+          <Icon name="chevD" size={12} />
+        </button>
         {!isSub && onOpen ? (
           <button type="button" className="ib-sentb-quote" onClick={() => onOpen(root)} title="Show the passage">
             {quoteText}
@@ -567,22 +602,8 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
         ) : (
           <span className="ib-sentb-quote">{quoteText}</span>
         )}
-        <span className="ib-sentb-chips">
-          <SentChips
-            kind={commentKind(annotation)}
-            draft={draft}
-            round={round}
-            status={statuses?.get(id)}
-            live={live?.has(id)}
-            resolved={isResolved}
-            unanchored={lost || typeof record.unanchored_at === 'string'}
-          />
-        </span>
-        {draft && onSend && (
-          <span className="ib-sentb-acts">
-            <SentSendButton id={id} onSend={onSend} />
-          </span>
-        )}
+        <span className="ib-sentb-chips">{chips}</span>
+        {send}
         {!draft && (onReply || onResolve) && (
           <span className="ib-sentb-acts">
             {onReply && (
@@ -639,11 +660,22 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
   );
 }
 
-/** The sub-threads under a thread, on its messages and theirs, at any depth (what its folded line counts). */
-function countSubThreads(id: string, replies: ReadonlyMap<string, readonly SentReplyRow[]>, subThreads: ReadonlyMap<string, readonly SentThreadRecord[]>): number {
+/**
+ * What a folded box hides that its line says: the sub-threads under it, on its messages and theirs, at any depth
+ * (`subs`, counted), and whether an agent's reply among them, at any depth, is New (`fresh`).
+ */
+function heldUnder(
+  id: string,
+  replies: ReadonlyMap<string, readonly SentReplyRow[]>,
+  subThreads: ReadonlyMap<string, readonly SentThreadRecord[]>,
+  fresh: ReadonlySet<string> | undefined,
+): { subs: number; fresh: boolean } {
   const seen = new Set<string>();
+  let isNew = false;
   const walk = (threadId: string) => {
-    for (const messageId of [threadId, ...(replies.get(threadId) ?? []).map((reply) => reply.id)]) {
+    const under = replies.get(threadId) ?? [];
+    if (fresh && under.some((reply) => fresh.has(reply.id))) isNew = true;
+    for (const messageId of [threadId, ...under.map((reply) => reply.id)]) {
       for (const sub of subThreads.get(messageId) ?? NO_RECORDS) {
         if (seen.has(sub.id)) continue;
         seen.add(sub.id);
@@ -652,7 +684,7 @@ function countSubThreads(id: string, replies: ReadonlyMap<string, readonly SentR
     }
   };
   walk(id);
-  return seen.size;
+  return { subs: seen.size, fresh: isNew };
 }
 
 /**

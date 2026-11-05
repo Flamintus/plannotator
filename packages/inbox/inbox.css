@@ -7809,8 +7809,8 @@ dialog.ib-zx .ib-listcol.ib-zx-list { position: relative; inset: auto; visibilit
    the block its passage starts in (ui Viewer `belowBlock`), as crit's. At its head the passage and its round, Reply and
    Resolve; then its messages, the comment and each reply (who, round, words); a sub-thread is a box in the box, in the
    message whose passage it is on, under the block of its words the passage starts in, at the same indent at each level.
-   A resolved thread with nothing open under it folds to one "Resolved" line; with an open sub-thread under it, it stays
-   open, marked Resolved.
+   Any box folds to one line, and opens again, by hand; by default a resolved thread with nothing open under it is folded,
+   and one with an open sub-thread under it stays open, marked Resolved.
    A group of boxes is one element at every depth (a document block's threads, `.ib-sentb`; a message block's sub-threads,
    `.ib-sentb-subs`): one rule gives every box, whatever its depth and its kind, the same room above and below. */
 .ib-sentb, .ib-sentb-subs { display: grid; gap: 8px; margin: 14px 0; }
@@ -7856,11 +7856,12 @@ button.ib-sentb-quote:hover, button.ib-sentb-quote:focus-visible { color: var(--
 .ib-sentb-msg > .ib-sentb-subs:last-child { margin-bottom: 6px; }
 .ib-sentb-subs > .ib-sentb-card { background: var(--card); }
 .ib-sentb-subs > .ib-sentb-card .ib-sentb-subs > .ib-sentb-card { background: color-mix(in oklch, var(--muted) 28%, var(--card)); }
-/* The folded thread: one line, "Resolved", its passage and how much it holds; a press opens it to be read. */
-.ib-sentb-card[data-sent-folded] { background: transparent; }
+/* A folded box (any, by hand; a resolved thread with nothing open under it, by default): one line, its passage, what its
+   head says and how much it holds, a press on it opens the box; a draft's Send after it. */
+.ib-sentb-card[data-sent-folded] { display: flex; align-items: center; background: transparent; }
+.ib-sentb-card[data-sent-folded] > .ib-sentb-acts { padding-right: 8px; }
 .ib-sentb-fold { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 6px 10px; border: 0; background: none; color: var(--muted-foreground); font: inherit; font-size: var(--ib-fs-12-5, 12.5px); text-align: left; cursor: pointer; }
 .ib-sentb-fold:hover, .ib-sentb-fold:focus-visible { background: var(--muted); color: var(--foreground); }
-.ib-sentb-state { flex: none; display: inline-flex; align-items: center; gap: 4px; font-weight: 600; color: var(--success, var(--foreground)); }
 .ib-sentb-fquote { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ib-sentb-count { flex: none; font-size: var(--ib-fs-11-5, 11.5px); }
 @media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) { .ib-sentb-count { display: none; } }

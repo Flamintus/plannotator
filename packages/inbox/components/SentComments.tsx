@@ -35,9 +35,10 @@
  *
  * The person resolves a thread, or opens it again, at its head (not on a
  * linked machine's thread: the device door does not forward it). A resolved
- * comment leaves the highlights; its box folds to one "Resolved" line (a
- * press opens it to be read) only once nothing under it, at any depth, is
- * open: until then it stays unfolded, marked Resolved. A message holding a
+ * comment leaves the highlights; its box folds to one line (a press opens it
+ * to be read) only once nothing under it, at any depth, is open: until then
+ * it stays unfolded, marked Resolved. Any box also folds and unfolds by hand
+ * (ui's `SentThreads`). A message holding a
  * thread still open opens unfolded in its thread (sentComments.ts
  * `unfoldOpenThreads`).
  *
