@@ -1465,7 +1465,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   // only code comments, which carry their own lines, derive blocks from the annotations.
   const documentBlocks = useMemo(() => (view && !isCode ? attachmentBlocks(kind, view.text, attachment.name) : []), [view, kind, isCode, attachment.name]);
   // A Markdown or text file's sent comments, as threads under the blocks they are on (and in the panel).
-  const sentThreads = view && isText ? sentFile.slotsFor(documentBlocks) : undefined;
+  const sentThreads = view && isText ? sentFile.slotsFor(documentBlocks, selectedId) : undefined;
   const commentBlocks = useMemo(() => (isCode ? codeCommentBlocks(annotations) : []), [isCode, annotations]);
   const blocks = isCode ? commentBlocks : documentBlocks;
   // A Markdown file with 4 or more headings has Contents (contents.ts). On a desktop, Side by side and Full screen

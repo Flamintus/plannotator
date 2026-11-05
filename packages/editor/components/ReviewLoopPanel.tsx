@@ -108,6 +108,8 @@ export interface ReviewLoopPanelInput {
   threadsInText: boolean;
   /** The blocks of the document shown, where the boxes go. */
   blocks: readonly Block[];
+  /** The comment selected on the page (its card, its highlight): its box is where the person is. */
+  selected?: string | null;
 }
 
 export interface ReviewLoopPanelProps {
@@ -125,7 +127,7 @@ export interface ReviewLoopPanelProps {
 
 /** The panel's props under the loop; null while it is not available (the panel is today's). */
 export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanelProps | null {
-  const { loop, annotations, here, person, readOnly, addDraft, sendNow, select, reply, notify, blocks } = input;
+  const { loop, annotations, here, person, readOnly, addDraft, sendNow, select, reply, notify, blocks, selected = null } = input;
   const { index, state } = loop;
   const inText = input.threadsInText;
   const held = useMemo(() => new Map(annotations.map((annotation) => [annotation.id, annotation])), [annotations]);
@@ -340,7 +342,7 @@ export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanel
   const lastBlock = blocks.length > 0 ? blocks[blocks.length - 1]!.id : null;
   const belowBlock = useMemo(() => {
     if (!boxes || boxes.roots.length === 0) return undefined;
-    const slots = sentThreadSlots(boxes.roots, blocks, { group: 'doc', tree: boxes.tree, view: threadsView, ...boxActions });
+    const slots = sentThreadSlots(boxes.roots, blocks, { group: 'doc', tree: boxes.tree, view: threadsView, selected, ...boxActions });
     // The screens' viewer has no slot after the document: what goes at its end goes under its last block.
     return (block: Block): React.ReactNode => {
       const below = slots.below(block);
@@ -353,7 +355,7 @@ export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanel
         </div>
       );
     };
-  }, [boxes, blocks, lastBlock, threadsView, boxActions]);
+  }, [boxes, blocks, lastBlock, threadsView, selected, boxActions]);
 
   // ── In the text: the panel's flat list, one more line per comment ──
   const listLine = useCallback((annotation: Annotation): React.ReactNode => {

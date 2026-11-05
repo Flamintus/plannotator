@@ -5659,6 +5659,7 @@ const App: React.FC = () => {
     // The threads go under their passage wherever the viewer draws blocks; an HTML page keeps them in the panel.
     threadsInText: renderAs !== 'html' && !isEditingMarkdown && !isPlanDiffActive,
     blocks,
+    selected: selectedAnnotationId,
   });
 
   const annotationDocumentGroups = useMemo(() => {

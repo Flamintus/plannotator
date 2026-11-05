@@ -7817,6 +7817,12 @@ dialog.ib-zx .ib-listcol.ib-zx-list { position: relative; inset: auto; visibilit
 .ib-sentb { font-size: var(--ib-fs-14, 14px); line-height: 1.5; color: var(--foreground); }
 .ib-sentb-card { min-width: 0; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in oklch, var(--muted) 28%, var(--card)); overflow: hidden; }
 .ib-sentb-card[data-sent-draft] { border-style: dashed; }
+/* Where the person is (the bench, R25): every box's frame is grey at rest, at any depth, folded or not; only the innermost
+   box under the pointer, holding the keyboard's focus or holding the comment selected on the page takes a colour, the
+   comments' own, or the success colour once resolved (as the terminal's rail lights its note). A box around it stays grey. */
+.ib-sentb-card { --ib-sentb-here: var(--annotation-comment, var(--accent)); }
+.ib-sentb-card[data-sent-resolved] { --ib-sentb-here: var(--success, var(--primary)); }
+.ib-sentb-card:is(:hover, :has(:focus-visible), [data-sent-selected]):not(:has(.ib-sentb-card:hover, .ib-sentb-card :focus-visible, .ib-sentb-card[data-sent-selected])) { border-color: var(--ib-sentb-here); }
 .ib-sentb-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 6px 8px 6px 10px; border-bottom: 1px solid var(--border); background: color-mix(in oklch, var(--muted) 60%, var(--card)); }
 /* A box that is all head (a deletion with no words) ends on the frame, not on a second line. */
 .ib-sentb-head:last-child { border-bottom: 0; }
@@ -7827,10 +7833,9 @@ button.ib-sentb-quote:hover, button.ib-sentb-quote:focus-visible { color: var(--
 .ib-sentb-general { font-style: italic; }
 .ib-sentb-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; }
 .ib-sentb-acts { display: inline-flex; gap: 2px; margin-left: auto; }
-/* Resolved reads at a glance (the bench, R4): the success colour on its chip ("✓ Resolved"), its frame and its passage's bar,
-   where an open thread keeps the primary bar and the plain frame; its words quieter. Folded, the line's "✓ Resolved" too. */
+/* Resolved reads at a glance (the bench, R4): the success colour on its chip ("✓ Resolved") and its passage's bar (its frame
+   too, where the person is), where an open thread keeps the primary bar; its words quieter. Folded, the line's "✓ Resolved" too. */
 .ib-sentb-resolved { display: inline-flex; align-items: center; gap: 3px; background: color-mix(in oklab, var(--success, var(--primary)) 16%, var(--card)); color: var(--success, var(--foreground)); font-weight: 600; }
-.ib-sentb-card[data-sent-resolved] { border-color: var(--success, var(--primary)); }
 .ib-sentb-card[data-sent-resolved] > .ib-sentb-head { background: color-mix(in oklch, var(--muted) 35%, var(--card)); }
 .ib-sentb-card[data-sent-resolved] > .ib-sentb-head .ib-sentb-quote { border-left-color: color-mix(in oklab, var(--success, var(--primary)) 70%, transparent); }
 /* A deletion (the person asks for the words to go, on the document or on a passage of a message): said at its head, its

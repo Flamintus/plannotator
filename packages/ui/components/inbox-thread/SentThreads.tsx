@@ -340,6 +340,12 @@ export type SentThreadsProps<R extends SentThreadRecord = InboxAnnotationRecord>
    * the same actions, Delete and the labels making their sub-thread at once. Absent: Comment only, as before.
    */
   passageToolbar?: PassageToolbarOptions;
+  /**
+   * The comment selected on the page (its card in the panel, its entry in the list, its highlight pressed): the box
+   * drawn that holds it, the innermost, is where the person is (`data-sent-selected`), as the box under the pointer
+   * or holding the keyboard's focus is. Absent: none.
+   */
+  selected?: string | null;
 } & SentThreadsActions<R>;
 
 /**
@@ -361,10 +367,13 @@ export type SentThreadsProps<R extends SentThreadRecord = InboxAnnotationRecord>
  *
  * The records are any client's (`SentThreadRecord`): the Inbox's own, or the
  * ones a host builds from the neutral thread view (`sentThreadsFromView`).
- * A resolved thread says so plainly: its passage's bar and its frame take
- * the success colour, a "✓ Resolved" chip at its head, its words dimmed.
+ * A resolved thread says so plainly: its passage's bar takes the success
+ * colour, a "✓ Resolved" chip at its head, its words dimmed. Every box's frame
+ * is grey; only the box where the person is, the innermost (`selected`, or
+ * under the pointer, or holding the focus), takes a colour, the comments'
+ * own, or the success colour once resolved.
  */
-export function SentThreads<R extends SentThreadRecord = InboxAnnotationRecord>({ group, records, tree, view, lost = false, passageToolbar, ...actions }: SentThreadsProps<R>) {
+export function SentThreads<R extends SentThreadRecord = InboxAnnotationRecord>({ group, records, tree, view, lost = false, passageToolbar, selected = null, ...actions }: SentThreadsProps<R>) {
   if (records.length === 0) return null;
   const key = `${view.surface}:${group}`;
   const { onSubThread } = actions;
@@ -372,7 +381,7 @@ export function SentThreads<R extends SentThreadRecord = InboxAnnotationRecord>(
   return (
     <BoxGroup
       items={records.map((record) => ({ record, lost }))}
-      context={{ tree, view, actions }}
+      context={{ tree, view, actions, selected }}
       attributes={{
         [THREADS_ATTRIBUTE]: key,
         'data-sent-comments': '',
@@ -429,11 +438,15 @@ export function sentThreadSlots<R extends SentThreadRecord>(
   };
 }
 
-/** What every box of a surface shares: the tree its threads are read from, the surface's view and the person's actions. */
+/**
+ * What every box of a surface shares: the tree its threads are read from, the surface's view, the person's actions
+ * and the comment selected on the page.
+ */
 interface BoxContext<R extends SentThreadRecord> {
   tree: SentCommentsTree<R>;
   view: SentThreadsView;
   actions: SentThreadsActions<R>;
+  selected: string | null;
 }
 
 /**
@@ -468,7 +481,7 @@ function BoxGroup<R extends SentThreadRecord>({
 }
 
 /** One thread (a comment, or a sub-thread; `root`: its thread's first comment), as a box; `lost`: placed where it is because its passage was not found. */
-function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, view, actions }: { record: R; root: R; lost: boolean } & BoxContext<R>) {
+function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, view, actions, selected }: { record: R; root: R; lost: boolean } & BoxContext<R>) {
   const { rounds, resolved, replies, subThreads, openBelow, passages, statuses, live, fresh } = tree;
   const { onOpen, onLook, onResolve, onReply, onSubThread, onSend } = actions;
   const { box, setBox } = view;
@@ -489,7 +502,11 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
   const folded = view.isFolded(id, byDefault);
   const toggleFold = () => view.toggleFold(id, byDefault);
   const under = replies.get(id) ?? [];
-  const context: BoxContext<R> = { tree, view, actions };
+  const context: BoxContext<R> = { tree, view, actions, selected };
+  // Folded, what it hides that its line says (and whether the comment selected is in there).
+  const held = folded ? heldUnder(id, replies, subThreads, fresh, selected) : null;
+  // The comment selected is one of this box's messages (or, folded, anything under it): the person is here.
+  const here = selected !== null && (selected === id || under.some((reply) => reply.id === selected) || held?.selected === true);
   const marks = {
     'data-sent-comment': id,
     'data-sent-subthread': isSub ? '' : undefined,
@@ -497,6 +514,7 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
     'data-sent-resolved': isResolved ? '' : undefined,
     'data-sent-draft': draft ? '' : undefined,
     'data-sent-folded': folded ? '' : undefined,
+    'data-sent-selected': here ? '' : undefined,
   };
   // A press in a box is a look at it (and, the press being in them too, at the boxes around it).
   const look = onLook ? () => onLook(record) : undefined;
@@ -518,8 +536,7 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
       <SentSendButton id={id} onSend={onSend} />
     </span>
   );
-  if (folded) {
-    const held = heldUnder(id, replies, subThreads, fresh);
+  if (held) {
     return (
       <div className="ib-sentb-card" {...marks} onClickCapture={look}>
         <button type="button" className="ib-sentb-fold" aria-expanded={false} data-sent-unfold={id} onClick={toggleFold}>
@@ -662,29 +679,34 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
 
 /**
  * What a folded box hides that its line says: the sub-threads under it, on its messages and theirs, at any depth
- * (`subs`, counted), and whether an agent's reply among them, at any depth, is New (`fresh`).
+ * (`subs`, counted), and whether an agent's reply among them, at any depth, is New (`fresh`); and whether the comment
+ * selected on the page is one of the messages under it, at any depth (`selected`).
  */
 function heldUnder(
   id: string,
   replies: ReadonlyMap<string, readonly SentReplyRow[]>,
   subThreads: ReadonlyMap<string, readonly SentThreadRecord[]>,
   fresh: ReadonlySet<string> | undefined,
-): { subs: number; fresh: boolean } {
+  selected: string | null,
+): { subs: number; fresh: boolean; selected: boolean } {
   const seen = new Set<string>();
   let isNew = false;
+  let holds = false;
   const walk = (threadId: string) => {
     const under = replies.get(threadId) ?? [];
     if (fresh && under.some((reply) => fresh.has(reply.id))) isNew = true;
+    if (selected !== null && under.some((reply) => reply.id === selected)) holds = true;
     for (const messageId of [threadId, ...under.map((reply) => reply.id)]) {
       for (const sub of subThreads.get(messageId) ?? NO_RECORDS) {
         if (seen.has(sub.id)) continue;
         seen.add(sub.id);
+        if (sub.id === selected) holds = true;
         walk(sub.id);
       }
     }
   };
   walk(id);
-  return { subs: seen.size, fresh: isNew };
+  return { subs: seen.size, fresh: isNew, selected: holds };
 }
 
 /**

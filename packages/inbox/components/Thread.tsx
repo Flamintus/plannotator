@@ -5822,7 +5822,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
                         }
                       : undefined
                   }
-                  belowBlocks={isAgent ? sentComments.slotsFor(message.id, { live: liveMessage(message), onOpen: openRecord }) : undefined}
+                  belowBlocks={isAgent ? sentComments.slotsFor(message.id, { live: liveMessage(message), onOpen: openRecord, selected: commentsList?.at ?? null }) : undefined}
                   comments={
                     isAgent && liveMessage(message)
                       ? {

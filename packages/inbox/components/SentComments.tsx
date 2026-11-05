@@ -356,14 +356,15 @@ export function useSentComments(input: {
    * The threads on an agent's message, for its body (MessageBody
    * `belowBlocks`): each under the block its passage starts in, the ones
    * whose passage was not found at the end; `live`, a thread of this machine
-   * the person can still answer: Resolve, Reply and comments on passages.
+   * the person can still answer: Resolve, Reply and comments on passages;
+   * `selected`, the comment the list is open at (its box is where the person is).
    * Undefined: none on it.
    */
-  const slotsFor = (messageId: string, { live, onOpen }: { live: boolean; onOpen: (record: InboxAnnotationRecord) => void }) => {
+  const slotsFor = (messageId: string, { live, onOpen, selected }: { live: boolean; onOpen: (record: InboxAnnotationRecord) => void; selected?: string | null }) => {
     const list = boxesByMessage.get(messageId);
     if (!list) return undefined;
     const actions = live && canResolve ? { onResolve: resolve, onReply: reply, onSubThread: subThread, ...(sendAction ? { onSend: sendAction } : {}) } : {};
-    return (blocks: readonly Block[]) => sentThreadSlots(list, blocks, { group: messageId, tree, view, onOpen, passageToolbar: MESSAGE_TOOLBAR, ...actions });
+    return (blocks: readonly Block[]) => sentThreadSlots(list, blocks, { group: messageId, tree, view, onOpen, selected, passageToolbar: MESSAGE_TOOLBAR, ...actions });
   };
   return {
     records,
@@ -645,14 +646,15 @@ export function useSentFileComments(input: {
   /**
    * The threads on the document drawn (its blocks), for its viewer (`below`,
    * ui Viewer `belowBlock`) and after it (`after`: a comment on the whole
-   * file, then the ones whose passage was not found). Undefined: no sent
-   * comment here.
+   * file, then the ones whose passage was not found); `selected`, the
+   * comment selected in the pane (its box is where the person is).
+   * Undefined: no sent comment here.
    */
-  const slotsFor = (blocks: readonly Block[]) => {
+  const slotsFor = (blocks: readonly Block[], selected?: string | null) => {
     if (roots.length === 0) return undefined;
     const movedHere = moved.key === (view?.key ?? '') ? moved.blocks : undefined;
     const actions = live ? { onResolve, onReply: sent?.onReply, onSubThread, ...(onSend ? { onSend } : {}) } : {};
-    return sentThreadSlots(roots, blocks, { group: 'file', tree: sentTree, view: threadsView, passageToolbar: FILE_TOOLBAR, ...actions }, { moved: movedHere });
+    return sentThreadSlots(roots, blocks, { group: 'file', tree: sentTree, view: threadsView, selected, passageToolbar: FILE_TOOLBAR, ...actions }, { moved: movedHere });
   };
 
   return {
