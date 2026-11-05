@@ -82,7 +82,7 @@ import { isGraphvizLanguage, isMermaidLanguage } from './diagramLanguages';
 import { isHtmlEmbedLanguage, isSvgFenceLanguage } from './html-embed/languages';
 import type { HtmlEmbedHost } from './html-embed/HtmlEmbedBlock';
 import { getIdentity } from '../utils/identity';
-import { type QuickLabel } from '../utils/quickLabels';
+import { quickLabelText, type QuickLabel } from '../utils/quickLabels';
 import type { SelectionAction } from '../utils/selectionActions';
 import type { MentionSource } from '../utils/mentions';
 import { DocBadges, type DocBadgesProps, type LinkedDocBadgeInfo } from './DocBadges';
@@ -1482,7 +1482,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
     if (!codeEl) return;
     applyCodeBlockAnnotation(
       codeBlockToolbar.block.id, codeEl, AnnotationType.COMMENT,
-      `${label.emoji} ${label.text}`, undefined, true, label.tip
+      quickLabelText(label), undefined, true, label.tip
     );
     setCodeBlockToolbar(null);
   };
@@ -2286,7 +2286,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
               if (codeEl) {
                 applyCodeBlockAnnotation(
                   codeBlockQuickLabelPicker.codeBlock.block.id, codeEl, AnnotationType.COMMENT,
-                  `${label.emoji} ${label.text}`, undefined, true, label.tip
+                  quickLabelText(label), undefined, true, label.tip
                 );
               }
               setCodeBlockQuickLabelPicker(null);

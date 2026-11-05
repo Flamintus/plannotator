@@ -44,6 +44,14 @@ export const THUMBS_UP_LABEL: QuickLabel = {
   color: 'green',
 };
 
+/**
+ * A label's words as the comment it makes carries them ("👍 Looks good", "<emoji> <text>"): one wording for every
+ * surface that makes one, the document's words and a passage of a message's alike.
+ */
+export function quickLabelText(label: Pick<QuickLabel, 'emoji' | 'text'>): string {
+  return `${label.emoji} ${label.text}`;
+}
+
 export const DEFAULT_QUICK_LABELS: QuickLabel[] = [
   { id: 'clarify-this',            emoji: '❓', text: 'Clarify this',            color: 'yellow' },
   { id: 'missing-overview',        emoji: '🗺️', text: 'Missing overview',        color: 'purple', tip: 'Provide a narrative overview of what is being built, why it is being built, and how it will be built. Add this before the implementation details.' },

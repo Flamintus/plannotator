@@ -3,7 +3,7 @@ import { imageRegionFileName, imageRegionLocationLines, parseImageRegion, type I
 import { AnnotationType, type Annotation, type ImageAttachment } from '../types';
 import type { MentionSource } from '../utils/mentions';
 import { getIdentity } from '../utils/identity';
-import { THUMBS_UP_LABEL } from '../utils/quickLabels';
+import { quickLabelText, THUMBS_UP_LABEL } from '../utils/quickLabels';
 import { hashDraftScope } from '../utils/draftScopeHash';
 import { AnnotationPanel } from './AnnotationPanel';
 import { CommentPopover, type CommentAskAIHandler } from './CommentPopover';
@@ -935,7 +935,7 @@ export const ImageLightbox: React.FC<{
             ...(current.line ? { lineStart: current.line, lineEnd: current.line } : {}),
           } : undefined}
           onSubmit={(text, attachments, mentions) => saveRegion(text, attachments, mentions)}
-          onQuickLookGood={() => saveRegion(`${THUMBS_UP_LABEL.emoji} ${THUMBS_UP_LABEL.text}`, undefined, undefined, true)}
+          onQuickLookGood={() => saveRegion(quickLabelText(THUMBS_UP_LABEL), undefined, undefined, true)}
           onClose={() => setPending(null)}
         />
       )}

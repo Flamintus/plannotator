@@ -10,7 +10,7 @@ import Highlighter from '@plannotator/web-highlighter';
 import type { Annotation, EditorMode, HostDraft, ImageAttachment } from '../types';
 import { metaWithBelowTitle, metaWithoutBelowTitle, snapRangeOutOfBelowTitle } from '../utils/belowTitleSlot';
 import { AnnotationType } from '../types';
-import type { QuickLabel } from '../utils/quickLabels';
+import { quickLabelText, type QuickLabel } from '../utils/quickLabels';
 import {
   dropEmptyNodes,
   trimWhitespaceOnlyBoundaryNodes,
@@ -2092,7 +2092,7 @@ export function useAnnotationHighlighter({
     if (isMathAnnotationSource(toolbarState.source)) {
       createAnnotationFromMathSource(
         toolbarState.source, AnnotationType.COMMENT,
-        `${label.emoji} ${label.text}`, undefined, true, label.tip
+        quickLabelText(label), undefined, true, label.tip
       );
       clearPendingSelection();
       setToolbarState(null);
@@ -2102,7 +2102,7 @@ export function useAnnotationHighlighter({
     if (!highlighter) return;
     createAnnotationFromSource(
       highlighter, toolbarState.source, AnnotationType.COMMENT,
-      `${label.emoji} ${label.text}`, undefined, true, label.tip
+      quickLabelText(label), undefined, true, label.tip
     );
     clearPendingSelection();
     setToolbarState(null);
@@ -2182,7 +2182,7 @@ export function useAnnotationHighlighter({
       createAnnotationFromMathSource(
         quickLabelPicker.source,
         AnnotationType.COMMENT,
-        `${label.emoji} ${label.text}`,
+        quickLabelText(label),
         undefined,
         true,
         label.tip,
@@ -2195,7 +2195,7 @@ export function useAnnotationHighlighter({
     if (!highlighterRef.current) return;
     createAnnotationFromSource(
       highlighterRef.current, quickLabelPicker.source, AnnotationType.COMMENT,
-      `${label.emoji} ${label.text}`, undefined, true, label.tip
+      quickLabelText(label), undefined, true, label.tip
     );
     clearPendingSelection();
     setQuickLabelPicker(null);
