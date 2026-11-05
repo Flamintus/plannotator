@@ -62,7 +62,7 @@ If the reviewer approves while leaving notes, direct structured transport preser
 ```json
 {
   "decision": "annotated",
-  "feedback": "# File Feedback\n\nI've reviewed this file and have 2 pieces of feedback:\n\n## 1. Remove this\n`the selected text`\n> I don't want this.\n\n## 2. Feedback on: \"some highlighted text\"\n> This needs more detail.\n\n---"
+  "feedback": "# File Feedback\n\nI've reviewed this file and have 2 pieces of feedback:\n\n## 1. Remove this (id 4b7d0e2a-1c9f-4a63-9e58-0d3b6f2c7a19)\n`the selected text`\n> I don't want this.\n\n## 2. Feedback on: \"some highlighted text\" (id e81f5c3d-6a20-4b9e-a4d7-52c9b0f1e386)\n> This needs more detail.\n\n---"
 }
 ```
 
