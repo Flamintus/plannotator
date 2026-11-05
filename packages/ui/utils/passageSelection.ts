@@ -15,6 +15,9 @@
  * each makes the same kind of annotation (`PassageComment`).
  */
 import { findPassage, passageOffset, type TextPassage } from '@plannotator/core/passage';
+
+/** Re-exported for hosts without their own dependency on core (the editor). */
+export { passageOffset };
 import { AnnotationType, type Annotation } from '../types';
 import { quickLabelText, THUMBS_UP_LABEL, type QuickLabel } from './quickLabels';
 

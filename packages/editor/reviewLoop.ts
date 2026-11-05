@@ -18,7 +18,7 @@
  * deletion, a quick label's).
  */
 import type { ReviewThreadsState } from '@plannotator/core/external-annotation';
-import { passageOffset } from '@plannotator/core/passage';
+import { passageOffset } from '@plannotator/ui/utils/passageSelection';
 import type { ReviewAnchor, ReviewReplyNode, ReviewThreadNode, ReviewThreadView } from '@plannotator/core/review-threads';
 import { AnnotationType, type Annotation } from '@plannotator/ui/types';
 import { PASSAGE_ANNOTATION_PREFIX } from '@plannotator/ui/utils/annotationOwnsHighlight';
