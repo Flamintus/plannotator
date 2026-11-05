@@ -5,7 +5,8 @@
  *
  * The block between the two markers is a copy of packages/inbox/inbox.css's, the boxes' one source;
  * tests/review-loop-boxes-css.test.ts fails while the two differ. After it, what those boxes take from the rest of
- * the Inbox's sheet (its icons and its buttons), under the screens' wrapper only.
+ * the Inbox's sheet (its icons and its buttons), under the screens' wrapper only, and the icon of a chip the panel's
+ * cards draw too (their state, ui's `SentCardChips`).
  */
 
 /* ── copied from packages/inbox/inbox.css ── */
@@ -92,7 +93,7 @@ button.ib-sentb-quote:hover, button.ib-sentb-quote:focus-visible { color: var(--
 .ib-sentc-acts { display: flex; justify-content: flex-end; gap: 4px; }
 /* ── end of the copy ── */
 
-.pn-review-boxes svg.ib-ic { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+:is(.pn-review-boxes, .ib-sentc-chip) svg.ib-ic { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .pn-review-boxes .ib-btn { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 13px; border-radius: 7px; border: 1px solid var(--border); background: var(--card); color: var(--foreground); font-size: 13.5px; font-weight: 500; white-space: nowrap; cursor: pointer; }
 .pn-review-boxes .ib-btn:disabled { opacity: 0.5; cursor: default; }
 .pn-review-boxes .ib-btn.ib-pri { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); }

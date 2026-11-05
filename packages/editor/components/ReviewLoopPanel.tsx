@@ -26,7 +26,9 @@
  * A document the viewer does not draw in blocks (an HTML page) has nowhere
  * to put a box: there the panel keeps the threads as cards, as before
  * (`threadsInText` false): a sent card keeps its place and its highlight,
- * says its round and its send's status ("Not delivered" with Retry), and
+ * says what a box's head says, in the same chips (ui's `SentCardChips`: its
+ * kind, its round or Not sent, its send's status, Live, ✓ Resolved; "Not
+ * delivered" with Retry, New on the agent's reply), and
  * Resolve or Reopen (folded to its header once resolved, unless something
  * under it is open); the agent's replies are cards under their comment;
  * words selected in a sent card offer a sub-thread on that passage.
@@ -35,7 +37,7 @@ import React, { useCallback, useMemo } from 'react';
 import type { TextPassage } from '@plannotator/core/passage';
 import type { ReviewThreadNode, ReviewReplyNode } from '@plannotator/core/review-threads';
 import { SentListLine } from '@plannotator/ui/components/inbox-thread/CommentListMeta';
-import { SENT_STATUS_WORDS, sentThreadSlots, useSentThreadsView } from '@plannotator/ui/components/inbox-thread/SentThreads';
+import { SentCardChips, sentThreadSlots, useSentThreadsView } from '@plannotator/ui/components/inbox-thread/SentThreads';
 import type { PassageToolbarOptions } from '@plannotator/ui/components/PassageToolbar';
 import { sentThreadsFromView, type SentCommentsTree, type SentReplyRow, type SentThreadRecord } from '@plannotator/ui/components/inbox-thread/sentCommentsTree';
 import { AnnotationType, type Annotation, type Block } from '@plannotator/ui/types';
@@ -47,7 +49,6 @@ import type { ReviewLoop, ReviewLoopSendResult } from '../hooks/useReviewLoop';
 import { EMPTY_REVIEW_LOOP_INDEX, isPassageAnnotation, reviewLoopCards, reviewLoopPassages, reviewLoopThreadOf, type ReviewLoopElement } from '../reviewLoop';
 
 const CHIP = 'ml-1 shrink-0 rounded px-1.5 py-0.5 text-[9px] font-medium';
-const MUTED_CHIP = `${CHIP} bg-muted text-muted-foreground`;
 const ACTION = 'rounded px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-default disabled:opacity-50';
 const NO_PASSAGES: readonly PassageMark[] = [];
 /** The screens' document selection toolbar (the `Viewer`'s, every action): a passage of a box's message offers the same. */
@@ -405,24 +406,38 @@ export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanel
     return isPassageAnnotation(annotation) ? { passage: false, reply: false } : { passage: false };
   }, [index, folded, inText]);
 
+  /** A card's state, as a box's head says it (ui's `SentCardChips`), plus the screens' own: New, Not delivered. */
   const renderCardHeader = useCallback((annotation: Annotation): React.ReactNode => {
+    if (inText) return null;
     const element = index.elements.get(annotation.id);
-    if (inText || !element || element.node.draft) return null;
+    if (!element || element.node.draft) {
+      // A draft of the person's own (never an agent's comment on the page): Not sent, as its box says.
+      return annotation.source || index.sent.has(annotation.id) ? null : <SentCardChips draft />;
+    }
+    const thread = element.kind === 'thread';
     const node = element.node as ReviewThreadNode & ReviewReplyNode;
-    const agent = element.kind === 'reply' && (node as ReviewReplyNode).author.kind === 'agent';
-    const carrier = element.kind === 'thread' ? (node as ReviewThreadNode).reply_id : (node as ReviewReplyNode).message_id;
+    const agent = !thread && node.author.kind === 'agent';
+    const carrier = thread ? node.reply_id : node.message_id;
     const notDelivered = !agent && failed.has(carrier);
     return (
       <>
-        <span className={MUTED_CHIP} data-review-loop-chip="round">Round {node.round}</span>
-        {agent && loop.isNew(node.id) && <span className={`${CHIP} bg-primary/15 text-primary`} data-review-loop-chip="new">New</span>}
-        {!agent && notDelivered && (
+        <SentCardChips
+          annotation={thread ? annotation : undefined}
+          round={node.round}
+          status={notDelivered ? undefined : node.status}
+          live={thread && node.live}
+          resolved={thread && node.state === 'resolved'}
+        />
+        {agent && loop.isNew(node.id) && (
+          <span className="ib-sentc-chip ib-sentb-new" data-review-loop-chip="new">
+            New
+          </span>
+        )}
+        {notDelivered && (
           <span className={`${CHIP} bg-destructive/15 text-destructive`} data-review-loop-chip="failed" title={failed.get(carrier) ?? undefined}>
             Not delivered
           </span>
         )}
-        {!agent && !notDelivered && node.status && <span className={MUTED_CHIP} data-review-loop-chip="status" data-review-loop-status={node.status}>{SENT_STATUS_WORDS[node.status]}</span>}
-        {element.kind === 'thread' && node.state === 'resolved' && <span className={MUTED_CHIP} data-review-loop-chip="resolved">Resolved</span>}
       </>
     );
   }, [index, failed, loop, inText]);

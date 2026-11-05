@@ -46,7 +46,7 @@
  * person's next replies in it go on their own); and an agent's reply the
  * person has not seen yet is New.
  */
-import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type ComponentProps, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { isInboxCommentThreadFolded, isInboxSubThread } from '@plannotator/core/inbox-comment-threads';
 import type { TextPassage } from '@plannotator/core/passage';
 import type { InboxAnnotationRecord } from '@plannotator/core/inbox-types';
@@ -274,6 +274,20 @@ export function SentChips({
       )}
     </>
   );
+}
+
+/**
+ * A card's state in a comments panel, where a thread is a card because there is no text to put its box in (an HTML
+ * page, the plan diff, the Markdown edit mode; the Inbox's code, HTML, image and video files): what a box's head says,
+ * by the same chips. `annotation`: a thread's (its kind; none for a reply). The card says Deletion in its own type word
+ * and Unanchored in its own chip, so neither is said twice here.
+ */
+export function SentCardChips({
+  annotation,
+  ...chips
+}: { annotation?: { type?: unknown; text?: unknown; isQuickLabel?: unknown } } & Omit<ComponentProps<typeof SentChips>, 'kind' | 'unanchored'>) {
+  const kind = annotation ? commentKind(annotation) : undefined;
+  return <SentChips {...chips} kind={kind?.kind === 'deletion' ? undefined : kind} />;
 }
 
 /** A draft's Send: it goes alone, at once; disabled while it goes, and again only when it did not. The boxes' own, and a host's card. */

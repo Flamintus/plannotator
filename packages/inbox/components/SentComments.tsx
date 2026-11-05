@@ -82,7 +82,7 @@ import {
 import type { TextPassage } from '@plannotator/core/passage';
 import type { InboxAnnotationRecord, InboxCommentReplyRecord } from '@plannotator/core/inbox-types';
 import type { Annotation, Block } from '@plannotator/ui/types';
-import { SentChips, SentSendButton, sentThreadSlots, useSentThreadsView, type ReplyInput, type SubThreadSave } from '@plannotator/ui/components/inbox-thread/SentThreads';
+import { SentCardChips, SentSendButton, sentThreadSlots, useSentThreadsView, type ReplyInput, type SubThreadSave } from '@plannotator/ui/components/inbox-thread/SentThreads';
 import type { PassageToolbarOptions } from '@plannotator/ui/components/PassageToolbar';
 import { passageCommentFields } from '@plannotator/ui/utils/passageSelection';
 import { SentListLine } from '@plannotator/ui/components/inbox-thread/CommentListMeta';
@@ -499,19 +499,36 @@ export function useSentFileComments(input: {
   }, [sentRecords, sent?.rounds, sent?.replyRounds]);
 
   const statuses = sent?.tree.statuses;
-  /** A sent card: its round, what became of it (comment sends) and Resolved, after the card's own header. */
+  /**
+   * A card's state after its own header, as a box's head says it (ui's `SentCardChips`): a draft's Not sent; a sent
+   * one's kind (a thread's), its round, what became of it (comment sends), Live and ✓ Resolved.
+   */
   const withSentRound = (header: ((annotation: Annotation) => ReactNode) | undefined) =>
-    sentIds.size === 0 || flat
+    !sent || flat
       ? header
       : (annotation: Annotation) => {
           const own = header?.(annotation) ?? null;
+          if (draftIds.has(annotation.id)) {
+            return (
+              <>
+                {own}
+                <SentCardChips draft />
+              </>
+            );
+          }
           const round = rounds.get(annotation.id);
           if (round === undefined) return own;
+          const record = sentById.get(annotation.id);
           return (
             <>
               {own}
-              {/* What a box's head says, in the same chips. */}
-              <SentChips round={round} status={statuses?.get(annotation.id)} resolved={resolvedIds.has(annotation.id)} />
+              <SentCardChips
+                annotation={record && !isInboxCommentReply(record) ? annotation : undefined}
+                round={round}
+                status={statuses?.get(annotation.id)}
+                live={sent?.tree.live?.has(annotation.id)}
+                resolved={resolvedIds.has(annotation.id)}
+              />
             </>
           );
         };
