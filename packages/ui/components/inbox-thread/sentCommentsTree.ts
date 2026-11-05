@@ -10,7 +10,7 @@
  * under (`Viewer`'s `belowBlock`).
  */
 
-import type { InboxCommentThreadNode, InboxCommentThreadView } from '@plannotator/core/inbox-comment-sends';
+import type { InboxCommentSendStatus, InboxCommentThreadNode, InboxCommentThreadView } from '@plannotator/core/inbox-comment-sends';
 import type { TextPassage } from '@plannotator/core/passage';
 import type { InboxAnnotationRecord } from '@plannotator/core/inbox-types';
 
@@ -38,6 +38,12 @@ export interface SentCommentsTree {
   openBelow: ReadonlySet<string>;
   /** The passages to mark in each message's words. */
   passages: ReadonlyMap<string, readonly TextPassage[]>;
+  /** What became of each element a comment send carried (a thread's comment, the person's reply), by id. Absent: none drawn. */
+  statuses?: ReadonlyMap<string, InboxCommentSendStatus>;
+  /** The threads a send reached at once: the person's next replies in them go on their own. Absent: none. */
+  live?: ReadonlySet<string>;
+  /** The agents' replies the person has not seen yet, by id, marked New. Absent: none. */
+  fresh?: ReadonlySet<string>;
 }
 
 /** What the window draws of a thread's comments beyond the records themselves (`sentCommentsParts`). */
@@ -50,6 +56,10 @@ export interface SentCommentsParts {
   passages: Map<string, TextPassage[]>;
   /** Each sent reply's round, by id: the person's, its send's; an agent's, the round under way when it wrote. */
   replyRounds: Map<string, number>;
+  /** What became of each element a comment send carried, by id: a thread's (its comment's), and the person's sent replies'. */
+  statuses: Map<string, InboxCommentSendStatus>;
+  /** The live threads, by id: a send reached them at once. */
+  live: Set<string>;
 }
 
 /**
@@ -60,7 +70,7 @@ export interface SentCommentsParts {
  */
 export function sentCommentsParts(view: InboxCommentThreadView, records: readonly InboxAnnotationRecord[]): SentCommentsParts {
   const byId = new Map(records.map((record) => [record.id, record]));
-  const parts: SentCommentsParts = { replies: new Map(), subThreads: new Map(), passages: new Map(), replyRounds: new Map() };
+  const parts: SentCommentsParts = { replies: new Map(), subThreads: new Map(), passages: new Map(), replyRounds: new Map(), statuses: new Map(), live: new Set() };
   const subThreadsOn = (host: string, subs: readonly InboxCommentThreadNode[]) => {
     const list = subs.flatMap((sub) => byId.get(sub.id) ?? []);
     if (list.length > 0) parts.subThreads.set(host, list);
@@ -69,6 +79,8 @@ export function sentCommentsParts(view: InboxCommentThreadView, records: readonl
     for (const sub of subs) walk(sub);
   };
   const walk = (node: InboxCommentThreadNode) => {
+    if (node.status) parts.statuses.set(node.id, node.status);
+    if (node.live) parts.live.add(node.id);
     if (node.replies.length > 0) {
       parts.replies.set(
         node.id,
@@ -77,6 +89,7 @@ export function sentCommentsParts(view: InboxCommentThreadView, records: readonl
     }
     for (const reply of node.replies) {
       if (!reply.draft) parts.replyRounds.set(reply.id, reply.round);
+      if (reply.status) parts.statuses.set(reply.id, reply.status);
       subThreadsOn(reply.id, reply.sub_threads);
     }
     subThreadsOn(node.id, node.sub_threads);

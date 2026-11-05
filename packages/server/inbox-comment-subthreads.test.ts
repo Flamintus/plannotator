@@ -178,7 +178,7 @@ test("once sent it is a thread of its own: read_thread gives the words its passa
   expect(((await nested.json()) as { annotation: InboxAnnotationRecord }).annotation).toMatchObject({ parent: "s1", message_id: sent.message_id });
 });
 
-test("it resolves on its own: its parent resolved, it stays open and goes again each round with the words its passage is in", async () => {
+test("it resolves on its own: its parent resolved, it stays open and the next Finish names it, not its parent", async () => {
   const { project, dataDir } = world();
   const server = await start(dataDir, true);
   const client = await agent(server);
@@ -189,14 +189,13 @@ test("it resolves on its own: its parent resolved, it stays open and goes again 
 
   expect((await post(server, "/api/inbox/annotations/c-msg/resolve", { resolved: true })).status).toBe(200);
   expect(await state()).toMatchObject({ "c-msg": "resolved", s1: "open" });
-  // The next round: the agent wrote, the person answers; the open sub-thread goes again, its resolved parent does not.
+  // The next round: the agent wrote; the person's Finish names the open sub-thread again, never its resolved parent.
   await call(client, "send_message", { project_path: project, body: "Thinking.", reply_to: carried.id, ...SESSION });
-  const round3 = await send(server, client, sent.thread_id, "r-3", []);
-  const section = round3.body.slice(round3.body.indexOf("# Feedback on comments still open"));
-  expect(section).toContain(`on a passage of reply ${steps} under comment c-msg`);
-  expect(section).toContain(`In: "${STEPS}"`);
-  expect(section).toContain("(id s1)");
-  expect(section).not.toContain("(id c-msg)");
+  const finish = await post(server, `/api/inbox/threads/${sent.thread_id}/comment-sends`, { mode: "round", idempotency_key: "f-3" });
+  expect(finish.status).toBe(200);
+  const named = ((await finish.json()) as { sends: { comments: string[] }[] }).sends.flatMap((s) => s.comments);
+  expect(named).toContain("s1");
+  expect(named).not.toContain("c-msg");
 
   // Resolving the sub-thread leaves its parent as it is.
   expect((await post(server, "/api/inbox/annotations/c-msg/resolve", { resolved: false })).status).toBe(200);

@@ -2866,9 +2866,11 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         resolve(json({ commands: commands(), ...askWaits() }));
       };
       const timer = setTimeout(finish, waitMs);
+      // The command is worded a microtask after the line that wakes it, once the write that made it is whole: the
+      // person's words and a comment send riding them (a Finish round with words) are written in one turn.
       const unsubscribe = store.subscribe((line) => {
-        if (line.kind === "message" && line.record.author.kind === "person" && store.pendingReplies(session, { tags }).length > 0) finish();
-        if (line.kind === "comment_send" && store.pendingWakeItems(session, { tags, sends: persistentCommentsOn() }).some((item) => item.sends.length > 0)) finish();
+        if (line.kind === "message" && line.record.author.kind === "person" && store.pendingReplies(session, { tags }).length > 0) queueMicrotask(finish);
+        if (line.kind === "comment_send" && store.pendingWakeItems(session, { tags, sends: persistentCommentsOn() }).some((item) => item.sends.length > 0)) queueMicrotask(finish);
       });
       const stopAskWaits = ask.onWaits((waiting) => {
         if (waiting === session) finish();
@@ -4536,6 +4538,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
             // attachments on the reply, exactly as compose's become a thread's.
             // A replay answers the reply it wrote before anything is copied
             // (its uploads are gone by then); the rest checks the message first.
+            // The person's Finish round riding this reply (comment sends, experimental): checked before anything is written.
+            const finish = commentSends.finishRequest(body.finish_round);
             const uploads = body.uploads === undefined || body.uploads === null ? [] : body.uploads;
             if (!Array.isArray(uploads)) throw new InboxError("validation_error", "uploads: a list of upload ids.", { field: "uploads" });
             const replayKey = typeof body.idempotency_key === "string" ? body.idempotency_key.trim() : "";
@@ -4554,8 +4558,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
                 idempotency_key: body.idempotency_key as string,
                 feedback: typeof body.feedback === "string" ? body.feedback : undefined,
                 annotation_ids: body.annotation_ids as never,
-                // Comments still open from earlier rounds go again (experimental "persistent-comments").
-                carry_open_comments: persistentCommentsOn(),
+                // Comments still open from earlier rounds go again with a reply that carries comments itself (experimental
+                // "persistent-comments"): a linked machine's Send, whose comments travel in its replies and which no Finish
+                // names; with comment sends a Send carries none (a guided review's go with its verdict) and a Finish names them.
+                carry_open_comments: persistentCommentsOn() && Array.isArray(body.annotation_ids) && body.annotation_ids.some((id) => typeof id === "string" && !!store.annotation(id) && !store.annotation(id)!.guide),
                 // A verdict on a review (Approve / Send feedback in the review's header): only while Code review is on.
                 ...(body.review_verdict !== undefined && body.review_verdict !== null
                   ? codeReviewOn()
@@ -4578,6 +4584,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
               }
               throw error;
             }
+            // Written in this same turn as the reply, so the wake that hands the words out hands the Finish with them.
+            const finished = commentSends.finishWith(result.reply, finish);
             // The Send that carried the reply box's draft: its words go (a replay too, since the first one sent them)
             // while it is the draft those words were saved as (`updated_at`), with the files this Send carried (a file
             // it did not carry stays, as a draft of files only); or it goes whole while it holds exactly those words
@@ -4603,6 +4611,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
               questions: store.questionsOf(messageId),
               reply: result.reply,
               replayed: result.replayed,
+              ...(finished ?? {}),
             });
           }
           case "reask": {

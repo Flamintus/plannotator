@@ -13,7 +13,12 @@
  *    never reaches the page (the Inbox's Send listens on the window), a save
  *    the host refused keeps the words, Escape closes;
  *  - words selected in a sent message open a comment on that passage, saved
- *    with the message, the passage and its offset.
+ *    with the message, the passage and its offset;
+ *  - with comment sends: a draft (a comment, a reply under one, a sub-thread)
+ *    has Send, which calls the host with its id and stays disabled once it
+ *    went (pressed again only when it did not); a sent element shows its
+ *    status, a live thread says so, an agent's reply not seen yet is New;
+ *    without `onSend` a draft has no Send.
  *
  * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
@@ -27,7 +32,7 @@ import type { SentCommentsTree } from './sentCommentsTree';
 const hasDom = typeof document !== 'undefined';
 const parts = (hasDom ? await import('./SentThreads') : {}) as typeof import('./SentThreads');
 
-type Actions = Pick<ComponentProps<typeof parts.SentThreads>, 'onOpen' | 'onResolve' | 'onReply' | 'onSubThread'>;
+type Actions = Pick<ComponentProps<typeof parts.SentThreads>, 'onOpen' | 'onResolve' | 'onReply' | 'onSubThread' | 'onSend'>;
 
 let root: Root | null = null;
 let host: HTMLElement | null = null;
@@ -200,6 +205,66 @@ describe.skipIf(!hasDom)('SentThreads', () => {
     } finally {
       window.removeEventListener('keydown', listen);
     }
+  });
+
+  test('with comment sends: each draft has Send, which goes once; a sent element says what became of it, a live thread and a new reply say so', async () => {
+    const draft = record('c3', 'Lyon first.', 'every store', { sent_reply_id: null });
+    const draftSub = record('s2', 'Which three?', 'three steps', { parent: 'r1', quote_offset: REPLY.indexOf('three steps'), sent_reply_id: null });
+    const tree: SentCommentsTree = {
+      ...TREE,
+      replies: new Map([
+        [
+          'c1',
+          [
+            ...TREE.replies.get('c1')!,
+            { id: 'p1', who: 'You', round: 2, text: 'And the pager?', at: '2026-11-05T10:03:00.000Z', draft: false },
+            { id: 'p2', who: 'You', round: undefined, text: 'And the lead?', at: '2026-11-05T10:04:00.000Z', draft: true },
+          ],
+        ],
+      ]),
+      subThreads: new Map([['r1', [sub, draftSub]]]),
+      statuses: new Map([
+        ['c1', 'replied'],
+        ['p1', 'working'],
+      ]),
+      live: new Set(['c1']),
+      fresh: new Set(['r1']),
+    };
+    // Without onSend, a draft has nothing to press.
+    await render([comment, draft], tree);
+    expect(document.querySelector('[data-sent-send]')).toBeNull();
+    await act(async () => root!.unmount());
+    root = null;
+    host?.remove();
+
+    const sent: string[] = [];
+    const answers = [false, true, true, true];
+    await render([comment, draft], tree, {
+      onSend: async (id) => {
+        sent.push(id);
+        return answers.shift()!;
+      },
+    });
+    // What became of each sent element (status words pinned on purpose: they are the decision's), the live thread, the new reply.
+    expect(box('c1')!.querySelector(':scope > .ib-sentb-head [data-sent-status="replied"]')!.textContent).toBe('Replied');
+    expect(box('c1')!.querySelector('[data-sent-reply="p1"] [data-sent-status="working"]')!.textContent).toBe('Working');
+    expect(box('c1')!.querySelector(':scope > .ib-sentb-head [data-sent-live]')).not.toBeNull();
+    expect(box('c1')!.querySelector('[data-sent-reply="r1"]')!.hasAttribute('data-sent-new')).toBe(true);
+    expect(box('c1')!.querySelector('[data-sent-reply="p1"]')!.hasAttribute('data-sent-new')).toBe(false);
+    // Sent things have no Send: only the three drafts (the comment, the reply, the sub-thread).
+    expect([...document.querySelectorAll('[data-sent-send]')].map((b) => b.getAttribute('data-sent-send')).sort()).toEqual(['c3', 'p2', 's2']);
+    expect(box('c3')!.hasAttribute('data-sent-draft')).toBe(true);
+    expect(box('c3')!.querySelector('[data-sent-reply-to], [data-sent-resolve]')).toBeNull();
+
+    // A refused Send can be pressed again; one that went stays disabled until the host draws it sent.
+    const press = async (id: string) => click(document.querySelector(`[data-sent-send="${id}"]`));
+    await press('c3');
+    expect(document.querySelector<HTMLButtonElement>('[data-sent-send="c3"]')!.disabled).toBe(false);
+    await press('c3');
+    expect(document.querySelector<HTMLButtonElement>('[data-sent-send="c3"]')!.disabled).toBe(true);
+    await press('p2');
+    await press('s2');
+    expect(sent).toEqual(['c3', 'c3', 'p2', 's2']);
   });
 
   test("words selected in a sent message open a comment on that passage under it, saved with the message, the passage and its offset", async () => {

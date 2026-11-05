@@ -326,7 +326,9 @@ export interface InboxReplyInput {
   /**
    * Send the person's comments still open from earlier rounds to the reply's
    * session again, after the feedback (experimental "persistent-comments":
-   * the reply route sets it while the switch is on; inbox-comment-threads.ts).
+   * the reply route sets it while the switch is on for a reply that carries
+   * comments itself, as a linked machine's Send does; with comment sends a
+   * Finish names them instead; inbox-comment-threads.ts).
    */
   carry_open_comments?: boolean;
   /**
