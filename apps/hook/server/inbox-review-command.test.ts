@@ -6,8 +6,9 @@
  * What can regress: the drop landing as another session's, stdout carrying
  * more than the address (a caller opens or prints it), `--open` opening
  * nothing or another address, a refusal read as a success, a relative file
- * path resolved elsewhere than the shell's folder, and the transcript read
- * out of order (a turn split into messages would no longer match). No
+ * path resolved elsewhere than the shell's folder, an Inbox started only to
+ * refuse, and the transcript read out of order (a turn split into messages
+ * would no longer match). No
  * process is spawned, no browser opens and no real transcript is read.
  */
 import { afterEach, describe, expect, test } from "bun:test";
@@ -59,7 +60,7 @@ async function world(options: { persistentComments?: boolean; live?: boolean } =
   const deps = (extra: Partial<ReviewCommandDeps> = {}): ReviewCommandDeps => ({
     cwd: project,
     env: ENV,
-    ensureRunning: async () => ({ port: server.port }) as Awaited<ReturnType<ReviewCommandDeps["ensureRunning"]>>,
+    running: async () => ({ port: server.port }) as Awaited<ReturnType<ReviewCommandDeps["running"]>>,
     openUrl: async (url) => {
       opened.push(url);
       return "opened";
@@ -98,7 +99,7 @@ describe("plannotator inbox review", () => {
     expect(root.attachments?.map((a) => [a.id, a.path])).toEqual([[params.get("file")!, join(w.project, "notes.md")]]);
   });
 
-  test("a refusal: exit 1, its code on stderr, nothing on stdout, nothing opened", async () => {
+  test("a refusal: exit 1, its code on stderr, nothing on stdout, nothing opened, no Inbox started", async () => {
     const off = await world({ persistentComments: false });
     expect(await runInboxReviewCommand(["--message", "-", "--open"], off.deps({ stdin: async () => "Done." }))).toBe(1);
     expect(off.err.join("")).toStartWith("persistent_comments_off: ");
@@ -109,12 +110,18 @@ describe("plannotator inbox review", () => {
     expect(await runInboxReviewCommand(["--message", "-"], gone.deps({ stdin: async () => "Done." }))).toBe(1);
     expect(gone.err.join("")).toStartWith("session_not_live: ");
     expect(gone.out).toEqual([]);
+
+    // No Inbox running: refused at once, none started (no session is connected to a new one yet).
+    const stopped = await world();
+    expect(await runInboxReviewCommand(["--message", "-"], stopped.deps({ running: async () => null, stdin: async () => "Done." }))).toBe(1);
+    expect(stopped.err.join("")).toStartWith("inbox_not_running: ");
+    expect(stopped.out).toEqual([]);
   });
 
   test("bad usage exits 2 before any call: no target, two targets, --message without -, an empty message, no session", async () => {
     const w = await world();
     let called = 0;
-    const deps = w.deps({ ensureRunning: async () => ((called += 1), { port: w.server.port }) as Awaited<ReturnType<ReviewCommandDeps["ensureRunning"]>>, stdin: async () => "  \n" });
+    const deps = w.deps({ running: async () => ((called += 1), { port: w.server.port }) as Awaited<ReturnType<ReviewCommandDeps["running"]>>, stdin: async () => "  \n" });
     for (const argv of [[], ["--message", "-", "--file", "notes.md"], ["--message", "hello"], ["--message", "-"]]) {
       expect(await runInboxReviewCommand(argv, deps)).toBe(2);
     }

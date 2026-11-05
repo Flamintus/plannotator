@@ -13,17 +13,19 @@
  *
  * - The session must be live (409 `session_not_live`, nothing written).
  * - One thread per session and target, taken up while open, new once resolved.
- * - A chat message is written as the session's agent's message, marked
- *   `imported` (the transcript's id, the words' sha256, whether the session's
- *   transcript has them, who dropped it). The same id and words, or without
- *   an id the same words as the last one dropped there, write nothing and
- *   answer the message already there (`created: false`).
- * - A file is attached by path under a short message of the agent; already
- *   there, nothing is written.
- * - An idempotency_key used before answers what it answered.
+ * - A chat message is written as the session's agent's message (its name and
+ *   wake as its own messages show them), marked `imported` (the transcript's
+ *   id, the words' sha256, whether the session's transcript has them, who
+ *   dropped it). The same id and words, or the same words as the last one
+ *   dropped there when one of the two has no id, write nothing and answer
+ *   the message already there (`created: false`).
+ * - A file of this computer is attached by path under a short message of the
+ *   agent; already there, nothing is written. A device drops no file.
+ * - An idempotency_key used before answers what it answered (409
+ *   `idempotency_key_reused` for another target).
  * - The window's own route (same origin and serverSession), the owner's
  *   only; a process on this computer reaches it as the window's routes, with
- *   no Origin. The device door can call `deposit` with the device as `by`.
+ *   no Origin. The device door calls `route` with the device as `by`.
  * - It never opens a tab: `plannotator inbox review --open` does, for the
  *   person who asked.
  * - Off (the switch), 409 `persistent_comments_off` and nothing changes.
@@ -36,6 +38,7 @@ import {
   INBOX_HOST_NAMES,
   inboxReviewDuplicate,
   inboxReviewReplay,
+  inboxReviewSameTarget,
   inboxReviewTargetUrl,
   inboxReviewThreadKey,
   inboxReviewThreadOf,
@@ -48,6 +51,7 @@ import {
   type InboxImportedBy,
   type InboxMessage,
   type InboxProject,
+  type InboxReviewKey,
   type InboxReviewTarget,
 } from "@plannotator/core/inbox-types";
 import { checkServerSession, INBOX_SERVER_SESSION_MISMATCH_ERROR, serverSessionMismatchBody } from "@plannotator/core/server-session";
@@ -70,6 +74,8 @@ export interface InboxReviewDeposit {
   /** The window's address of the message, or of the file beside its thread. */
   url: string;
 }
+
+type ChatTarget = Extract<InboxReviewTarget, { kind: "chat_message" }>;
 
 const field = (name: string, message: string) => new InboxError("validation_error", `${name}: ${message}`, { field: name });
 
@@ -161,43 +167,54 @@ export function createInboxReviewTargets(options: {
     const ref = typeof body.session === "string" ? parseInboxSessionRef(body.session.trim()) : null;
     if (!ref) throw field("session", "<host>:<id> of a live session.");
     const target = targetOf(body.target);
-    // A replayed call answers what it answered, whatever the session's state now.
+    // A path names a file of this computer: a paired device's own files are not here.
+    if (target.kind === "file" && by.kind === "device") throw field("target.path", "a file is dropped from this computer only.");
+    const path = target.kind === "file" ? fileOf(target.path, body.project_path) : null;
+    const wanted: InboxReviewKey = path
+      ? { from: "file", path }
+      : { from: "transcript", host_message_id: (target as ChatTarget).host_message_id, sha256: createHash("sha256").update(inboxReviewWords((target as ChatTarget).text)).digest("hex") };
+    // A replayed call answers what it answered, whatever the session's state now; the key used for another target is refused.
     const replay = inboxReviewReplay(reviewRoots(ref.session).flatMap((root) => threadMessages(root.id)), ref.session, key);
+    if (replay && !inboxReviewSameTarget(replay.imported!, wanted)) {
+      throw new InboxError("idempotency_key_reused", "This idempotency_key was already used for another target.", { message_id: replay.id });
+    }
     if (replay) return answer(replay, false);
     const asked = live.composeTarget({ session: ref.session, ...(ref.host ? { host: ref.host } : {}) });
     if (!asked) throw new InboxError("session_not_live", "That session is not live: nothing was dropped.");
 
-    const path = target.kind === "file" ? fileOf(target.path, body.project_path) : null;
-    let imported: InboxImported =
-      target.kind === "file"
-        ? { from: "file", path: path!, by }
-        : { from: "transcript", host_message_id: target.host_message_id, sha256: createHash("sha256").update(inboxReviewWords(target.text)).digest("hex"), by };
+    let imported: InboxImported = wanted.from === "file" ? { from: "file", path: wanted.path, by } : { from: "transcript", host_message_id: wanted.host_message_id, sha256: wanted.sha256, by };
     const open = inboxReviewThreadOf(reviewRoots(asked.session), asked.session, inboxReviewThreadKey(imported));
-    const there = open
-      ? inboxReviewDuplicate(threadMessages(open.id), path ? { from: "file", path } : { from: "transcript", host_message_id: imported.host_message_id ?? null, sha256: imported.sha256! })
-      : null;
+    const there = open ? inboxReviewDuplicate(threadMessages(open.id), wanted) : null;
     if (there) return answer(there, false);
 
     const project = open ? store.project(open.project_id)! : await projectOf(asked.root, asked.session, body.project_path);
     let text: string;
     let attachments: Awaited<ReturnType<typeof recordInboxAttachments>> | undefined;
     if (path) {
-      attachments = await recordInboxAttachments(store.dir, [path], { base: project.root, at: now().toISOString() });
+      try {
+        attachments = await recordInboxAttachments(store.dir, [path], { base: project.root, at: now().toISOString() });
+      } catch (error) {
+        // The file's own refusal (its kind, its size), named by this route's field.
+        if (error instanceof InboxError && error.code === "validation_error") throw field("target.path", error.message.replace(/^attachments\[0\]: /, ""));
+        throw error;
+      }
       const inside = relative(project.root, path);
       text = `\`${inside && inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside) ? inside : path}\``;
     } else {
-      text = (target as Extract<InboxReviewTarget, { kind: "chat_message" }>).text;
+      text = (target as ChatTarget).text;
       const transcript = options.readHostMessages ? await options.readHostMessages(asked.host, asked.session).catch(() => null) : null;
-      imported = { ...imported, verified: inboxReviewVerified(text, imported.host_message_id ?? null, transcript) };
+      imported = { ...imported, verified: inboxReviewVerified(text, wanted.from === "transcript" ? wanted.host_message_id : null, transcript) };
     }
+    // As the session's own messages show it: its name, and whether its connection wakes it (a Codex thread too).
+    const own = store.latestAgentMessages().get(asked.session);
     const result = store.sendMessage({
       project_id: project.id,
-      author: { kind: "agent", host: asked.host, session: asked.session, name: INBOX_HOST_NAMES[asked.host] ?? null },
+      author: { kind: "agent", host: asked.host, session: asked.session, name: (own?.author.kind === "agent" ? own.author.name : null) ?? INBOX_HOST_NAMES[asked.host] ?? null },
       body: text,
       subject: attachments?.[0] ? `Review of ${attachments[0].name}` : "Review of the chat",
       idempotency_key: key,
       ...(attachments ? { attachments } : {}),
-      ...(options.wakes(asked.host, asked.session) ? { wakes: true } : {}),
+      ...(options.wakes(asked.host, asked.session) || own?.wakes === true ? { wakes: true } : {}),
       imported: { record: imported, thread_id: open?.id ?? null },
     });
     return answer(result.message, !result.replayed);
@@ -212,11 +229,13 @@ export function createInboxReviewTargets(options: {
   };
 
   /**
-   * The window's route; null when the path is not it. `owner`: this computer's
-   * owner asks (this computer, the owner's tailnet login): only they drop
-   * words in an agent's name.
+   * The route; null when the path is not it. `owner`: this computer's owner
+   * asks (this computer, the owner's tailnet login): only they drop words in
+   * an agent's name. `by`: who drops it, for a caller that knows (the device
+   * door); otherwise the window when the request has an Origin, else a
+   * process on this computer.
    */
-  const route = async (req: Request, url: URL, owner: boolean): Promise<Response | null> => {
+  const route = async (req: Request, url: URL, owner: boolean, by?: InboxImportedBy): Promise<Response | null> => {
     if (url.pathname !== INBOX_REVIEW_TARGETS_PATH) return null;
     if (req.method !== "POST") return json({ error: "Use POST." }, 405);
     if (!options.on()) return json({ error: "Review threads need sent comments kept in view (Settings → Capabilities → Experimental).", code: "persistent_comments_off" }, 409);
@@ -224,9 +243,8 @@ export function createInboxReviewTargets(options: {
     const body = await options.readBody(req);
     if (checkServerSession(body, options.serverSession) === "mismatch") return json(serverSessionMismatchBody(INBOX_SERVER_SESSION_MISMATCH_ERROR), 409);
     // A page sends its Origin on every POST; a process on this computer sends none.
-    const by: InboxImportedBy = req.headers.get("origin") !== null ? { kind: "window" } : { kind: "cli" };
-    return json(await deposit(body, by));
+    return json(await deposit(body, by ?? (req.headers.get("origin") !== null ? { kind: "window" } : { kind: "cli" })));
   };
 
-  return { route, deposit };
+  return { route };
 }

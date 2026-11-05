@@ -7,8 +7,9 @@
  * up again while it is open and new once the person resolved it. A chat
  * message is written as a message of that agent, so it takes comments and a
  * Send wakes that session; it is marked `imported`, so it is never the
- * session's default thread and never reads as the agent's answer (the row's
- * Sent, its unread count, a notification). A file is attached, by path, to a
+ * session's default thread and never reads as the agent's answer or activity
+ * (`isInboxAgentOwn`: the row's Sent and last word, its unread count, a
+ * notification, the session's last thread). A file is attached, by path, to a
  * short message of that agent.
  *
  * The rules are here, pure and browser-safe; the route is
@@ -62,6 +63,11 @@ export function isInboxImported(message: { author: { kind: string }; imported?: 
   return message.author.kind === "agent" && typeof message.imported === "object" && message.imported !== null;
 }
 
+/** An agent's message it sent itself: its answer, its activity, its last word (never what the person dropped). */
+export function isInboxAgentOwn<T extends { author: { kind: string }; imported?: unknown }>(message: T): message is T & { author: Extract<T["author"], { kind: "agent" }> } {
+  return message.author.kind === "agent" && !isInboxImported(message);
+}
+
 /**
  * The words of a text as the fingerprint and the transcript check compare
  * them: one space for each run of white space, none at the ends. Two clients
@@ -90,16 +96,23 @@ export function inboxReviewThreadOf<T extends ReviewMessage>(roots: readonly T[]
   return null;
 }
 
+/** A target as these rules compare it: a chat message by its host id and words, a file by its realpath. */
+export type InboxReviewKey = { from: "transcript"; host_message_id: string | null; sha256: string } | { from: "file"; path: string };
+
+/** Whether a dropped message is that very target (an idempotency key used again for it, and not for another). */
+export function inboxReviewSameTarget(imported: InboxImported, target: InboxReviewKey): boolean {
+  if (target.from === "file") return imported.from === "file" && imported.path === target.path;
+  return imported.from === "transcript" && imported.sha256 === target.sha256 && (imported.host_message_id ?? null) === target.host_message_id;
+}
+
 /**
  * What is already in the open review thread for this target, so nothing is
- * written: a chat message with the same host id and words; without a host id,
- * the last one dropped when its words are the same; a file, its message.
- * `messages` in thread order.
+ * written: a chat message with the same host id and words; the last one
+ * dropped when its words are the same and one of the two has no host id (two
+ * ids that differ are two messages); a file, its message. `messages` in
+ * thread order.
  */
-export function inboxReviewDuplicate<T extends ReviewMessage>(
-  messages: readonly T[],
-  target: { from: "transcript"; host_message_id: string | null; sha256: string } | { from: "file"; path: string },
-): T | null {
+export function inboxReviewDuplicate<T extends ReviewMessage>(messages: readonly T[], target: InboxReviewKey): T | null {
   const dropped = messages.filter(isInboxImported);
   if (target.from === "file") return dropped.find((m) => m.imported!.from === "file" && m.imported!.path === target.path) ?? null;
   const chat = dropped.filter((m) => m.imported!.from === "transcript");
@@ -108,7 +121,7 @@ export function inboxReviewDuplicate<T extends ReviewMessage>(
     if (same) return same;
   }
   const last = chat.at(-1);
-  return last && last.imported!.sha256 === target.sha256 ? last : null;
+  return last && last.imported!.sha256 === target.sha256 && (!target.host_message_id || !last.imported!.host_message_id) ? last : null;
 }
 
 /** A drop already answered for this idempotency key, in the session's review threads. */

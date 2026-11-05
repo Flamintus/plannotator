@@ -9,7 +9,8 @@
  * reads it (`inboxCallerOf`), or `--session <host>:<id>`. stdout: the
  * window's address of the thread, and nothing on failure. `--open` opens it
  * in the browser, as `plannotator inbox --open` does; the Inbox itself never
- * opens a tab.
+ * opens a tab. A stopped Inbox is not started: its sessions are not
+ * connected yet, so the drop would be refused anyway (`inbox_not_running`).
  *
  * Also here: what the Inbox reads of a session's transcript to check a
  * dropped chat message (`readInboxHostMessages`, Claude Code only), passed to
@@ -18,7 +19,7 @@
 
 import { isAbsolute, resolve } from "node:path";
 import type { InboxHostMessage } from "@plannotator/core/inbox-types";
-import type { InboxRegistryEntry } from "@plannotator/shared/inbox/registry";
+import { inboxStatus, type InboxRegistryEntry } from "@plannotator/shared/inbox/registry";
 import { hasHelpFlag } from "./cli";
 import { inboxCallerOf } from "./inbox-call-command";
 import { inboxSessionProjectFromEnv } from "./inbox-mcp-shim";
@@ -32,15 +33,17 @@ export const INBOX_REVIEW_USAGE = [
   "  plannotator inbox review --message - [--session <host>:<id>] [--open]",
   "  plannotator inbox review --file <path> [--session <host>:<id>] [--open]",
   "",
-  "Puts a message of this agent session's chat (its text on stdin), or a file, in the",
-  "session's review thread in the Plannotator Inbox, for the person to comment on there.",
-  "The same message or file again answers the thread it is already in.",
+  "When the person asks to review your chat message or a file in their Inbox: puts the",
+  "message (its text on stdin) or the file (a path from here) in one of your session's review",
+  "threads (one for the chat, one per file), for them to comment on there. It tells them",
+  "nothing: to write to the person, use send_message. The same message or file again writes",
+  "nothing and prints where it already is.",
   "",
   "--session <host>:<id>  The agent session it is for. Default: the session this shell names.",
   "--open                 Also open the thread in the browser.",
   "",
   "Needs Settings → Capabilities → Experimental → \"Comments stay after Send\", and the session",
-  "connected to the Inbox. stdout is the thread's address, and nothing on failure.",
+  "connected to a running Inbox. stdout is its address in the Inbox, and nothing on failure.",
   "Exit 0 ok, 1 refused or no Inbox (<code>: <message> on stderr), 2 bad usage.",
 ].join("\n");
 
@@ -79,7 +82,8 @@ export function parseReviewCommand(argv: readonly string[]): ParsedReviewCommand
 export interface ReviewCommandDeps {
   cwd: string;
   env: Record<string, string | undefined>;
-  ensureRunning: () => Promise<InboxRegistryEntry>;
+  /** The running Inbox, or null when none runs (it is not started). */
+  running: () => Promise<InboxRegistryEntry | null>;
   /** Opens the thread for `--open`: `remote` when nothing could open it here (an SSH session). */
   openUrl: (url: string) => Promise<"opened" | "none" | "remote" | "failed">;
   /** Inside an agent Plannotator's Ask AI started (`isAskAiChild`): the Inbox is off there. */
@@ -90,6 +94,12 @@ export interface ReviewCommandDeps {
   err?: (text: string) => void;
   /** Tests: how long one request may take. */
   timeoutMs?: number;
+}
+
+/** The Inbox of `dataDir` when it runs; null otherwise (a stopped Inbox is not started: no session is connected to it yet). */
+export async function runningInbox(dataDir: string): Promise<InboxRegistryEntry | null> {
+  const status = await inboxStatus(dataDir);
+  return status.state === "running" ? status.entry : null;
 }
 
 /** Run `plannotator inbox review …`; resolves to the exit code. */
@@ -128,12 +138,8 @@ export async function runInboxReviewCommand(argv: readonly string[], deps: Revie
   const projectPath = project && project.session === caller.caller.session ? project.folder : deps.cwd;
   const body = JSON.stringify({ session, project_path: projectPath, target, idempotency_key: crypto.randomUUID() });
 
-  let entry: InboxRegistryEntry;
-  try {
-    entry = await deps.ensureRunning();
-  } catch (error) {
-    return refused("inbox_not_running", `Plannotator Inbox is not running: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  const entry = await deps.running().catch(() => null);
+  if (!entry) return refused("inbox_not_running", "Plannotator Inbox is not running: nothing was dropped (plannotator inbox --open starts it).");
   let status: number;
   let answer: Record<string, unknown>;
   try {
@@ -171,7 +177,7 @@ export async function readInboxHostMessages(host: string, session: string, proje
   if (host !== "claude-code") return null;
   const log = findClaudeSessionLogById(session, projectsDir);
   if (!log) return null;
-  return getRecentRenderedMessages(log, TRANSCRIPT_MESSAGES)
+  return getRecentRenderedMessages(log, TRANSCRIPT_MESSAGES, { activeBranchOnly: true })
     .reverse()
     .map((message) => ({ id: message.messageId, text: message.text }));
 }

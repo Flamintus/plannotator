@@ -21,6 +21,7 @@ import {
   inboxStepsProgress,
   inboxTidySessionLine,
   isInboxNote,
+  isInboxImported,
   type InboxCard,
   type InboxCardColumn,
   type InboxMessage,
@@ -170,8 +171,8 @@ export function inboxTidyPlan(store: InboxStore, options: InboxTidyOptions): Inb
     const messages = store.threadMessageIds(threadId).map((id) => store.message(id)!).filter(Boolean);
     const reasked = store.reaskListedIds(threadId);
 
-    // The person wrote last and the session it went to has had it a while without writing back.
-    const real = messages.filter((m) => !isInboxNote(m));
+    // The person wrote last and the session it went to has had it a while without writing back (a drop for review is not it writing).
+    const real = messages.filter((m) => !isInboxNote(m) && !isInboxImported(m));
     const last = real[real.length - 1];
     if (last && last.author.kind === "person" && now - Date.parse(last.created_at) >= INBOX_TIDY_PERSON_LAST_MS) {
       const to = store.recipientOf(last);

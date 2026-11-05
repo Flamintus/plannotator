@@ -128,7 +128,10 @@ describe("a chat message", () => {
     expect(message.imported).toMatchObject({ from: "transcript", host_message_id: "msg_01A", by: { kind: "cli" } });
     expect(message.imported!.sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(message.questions ?? []).toEqual([]);
-    expect(review.row).toMatchObject({ unseen: 0, section: "quiet", unread: false });
+    expect(review.row).toMatchObject({ unseen: 0, section: "quiet", unread: false, waiting_on_person: false, last_agent_at: null });
+    // Nor is it the session's activity: compose still names its own thread as its last.
+    const live = (await (await fetch(`${base(server)}/api/inbox/sessions`)).json()) as { projects: { sessions: { session: string; last_thread: { id: string } | null }[] }[] };
+    expect(live.projects.flatMap((group) => group.sessions).find((entry) => entry.session === SESSION)?.last_thread?.id).toBe(own.thread_id);
 
     // The agent's next send without a thread name joins its own thread, never the review thread.
     expect((await send(client, project, "Retry loop done.")).thread_id).toBe(own.thread_id);
@@ -153,9 +156,19 @@ describe("a chat message", () => {
     expect(next).toMatchObject({ created: true, thread_id: first.thread_id });
     expect(next.message_id).not.toBe(first.message_id);
 
-    // A retried call (the same key) answers what it answered.
-    const retried = (await drop(server, { kind: "chat_message", text: "Now capped at 30 seconds in all." }, { idempotency_key: `k-${keys}` })).body;
+    // A retried call (the same key) answers what it answered; the key used for another target is refused.
+    const key = `k-${keys}`;
+    const retried = (await drop(server, { kind: "chat_message", text: "Now capped at 30 seconds in all." }, { idempotency_key: key })).body;
     expect(retried).toMatchObject({ created: false, message_id: next.message_id });
+    const reused = await drop(server, { kind: "chat_message", text: "Other words." }, { idempotency_key: key });
+    expect(reused.status).toBe(409);
+    expect(reused.body.code).toBe("idempotency_key_reused");
+
+    // Another host id with the same words as the last one: the agent said them again, a new message.
+    const said = (await drop(server, { kind: "chat_message", text: "Same words.", host_message_id: "msg_02A" })).body;
+    const saidAgain = (await drop(server, { kind: "chat_message", text: "Same words.", host_message_id: "msg_02B" })).body;
+    expect(saidAgain.created).toBe(true);
+    expect(saidAgain.message_id).not.toBe(said.message_id);
 
     expect((await post(server, `/api/inbox/messages/${first.thread_id}/resolve`, { resolved: true })).status).toBe(200);
     const fresh = (await drop(server, { kind: "chat_message", text: "Now capped at 30 seconds in all." })).body;
@@ -176,6 +189,30 @@ describe("a chat message", () => {
     expect((await drop(server, { kind: "chat_message", text: TEXT })).body.verified).toBe(true);
     expect((await drop(server, { kind: "chat_message", text: "Words the agent never said." })).body.verified).toBe(false);
     expect(asked).toEqual([TAG, TAG]);
+  });
+  test("two first drops at once make one thread", async () => {
+    // A transcript read that takes a while: both drops are on their way before either writes.
+    const { server, project } = await setup({ readHostMessages: async () => (await Bun.sleep(100), null) });
+    await poll(server, project);
+    const [one, two] = await Promise.all([drop(server, { kind: "chat_message", text: TEXT }), drop(server, { kind: "chat_message", text: TEXT })]);
+    expect(two.body.thread_id).toBe(one.body.thread_id);
+    expect([one.body.created, two.body.created].sort()).toEqual([false, true]);
+    expect(await threadCount(server)).toBe(1);
+  });
+
+  test("a thread the person resolved while a drop was on its way: the drop starts a new one", async () => {
+    const { server, project } = await setup();
+    await poll(server, project);
+    const first = (await drop(server, { kind: "chat_message", text: TEXT })).body;
+    expect((await post(server, `/api/inbox/messages/${first.thread_id}/resolve`, { resolved: true })).status).toBe(200);
+    const root = server.store.message(first.thread_id)!;
+    const late = server.store.sendMessage({
+      project_id: root.project_id,
+      author: { kind: "agent", host: "claude-code", session: SESSION, name: "Claude Code" },
+      body: "Late words.",
+      imported: { record: { from: "transcript", sha256: "b".repeat(64), by: { kind: "cli" } }, thread_id: first.thread_id },
+    });
+    expect(late.message.thread_id).toBe(late.message.id);
   });
 });
 

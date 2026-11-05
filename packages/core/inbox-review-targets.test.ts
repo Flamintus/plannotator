@@ -46,6 +46,12 @@ describe("what is already there", () => {
     expect(inboxReviewDuplicate(thread, { from: "transcript", host_message_id: "m-1", sha256: "other" })).toBeNull();
   });
 
+  test("two host ids that differ are two messages, even with the same words", () => {
+    expect(inboxReviewDuplicate(thread, { from: "transcript", host_message_id: "m-4", sha256: "three" })).toBeNull();
+    // The last one was dropped without an id: the same words with one are that message.
+    expect(inboxReviewDuplicate([...thread, drop("msg_4", chat("four"))], { from: "transcript", host_message_id: "m-4", sha256: "four" })?.id).toBe("msg_4");
+  });
+
   test("without a host id, only the last one dropped, by its words", () => {
     expect(inboxReviewDuplicate(thread, { from: "transcript", host_message_id: null, sha256: "three" })?.id).toBe("msg_3");
     // The same words as an earlier drop are dropped again: the agent said them again.

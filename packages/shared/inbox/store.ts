@@ -86,6 +86,7 @@ import {
   inboxThreadNameKey,
   isInboxNote,
   isInboxImported,
+  isInboxAgentOwn,
   type InboxImported,
   isInboxActionReport,
   inboxActionInDraft,
@@ -1019,11 +1020,11 @@ export class InboxStore {
     return this.newestOpen(projectId, roots);
   }
 
-  /** The review thread a drop goes in (null: a new one), refused when it is no open thread's root. */
+  /** The review thread a drop goes in: a new one when there is none or the person resolved it meanwhile; refused when it is no thread's root. */
   private importedThread(threadId: string | null): string | null {
     if (threadId === null) return null;
-    if (this.messages.get(threadId)?.thread_id !== threadId || this.isResolved(threadId)) throw new InboxError("thread_not_found", `No open thread ${threadId}.`);
-    return threadId;
+    if (this.messages.get(threadId)?.thread_id !== threadId) throw new InboxError("thread_not_found", `No thread ${threadId}.`);
+    return this.isResolved(threadId) ? null : threadId;
   }
 
   /**
@@ -1771,8 +1772,8 @@ export class InboxStore {
     if (!root || root.thread_id !== threadId) return null;
     // The note carrying a 👍 is not a message of the thread as the person sees it.
     const messages = this.threadMessages(threadId).filter((m) => !isAckNote(m));
-    // A Tidy note never moves the row: its time and author are the message before it.
-    const last = [...messages].reverse().find((m) => !m.tidy) ?? root;
+    // A Tidy note never moves the row: its time and author are the message before it. Nor does a drop for review.
+    const last = [...messages].reverse().find((m) => !m.tidy && !isInboxImported(m)) ?? root;
     // The Inbox's own notes are not the person's reply: the last word is the last other message's.
     const lastWord = lastNonNote(messages) ?? root;
     const questions = messages.flatMap((m) => this.questionsOf(m.id));
@@ -1788,7 +1789,7 @@ export class InboxStore {
       resolved_at: root.resolved_at,
       questions: summarizeInboxQuestions(questions),
       // A standing Mark read means nothing here waits on the person.
-      waiting_on_person: root.resolved_at === null && lastWord.author.kind === "agent" && this.readAt(root, messages) === null,
+      waiting_on_person: root.resolved_at === null && isInboxAgentOwn(lastWord) && this.readAt(root, messages) === null,
     };
   }
 
@@ -1828,7 +1829,7 @@ export class InboxStore {
       // set-aside note, a late Undo's reopened note) are not.
       // An action item's report (written by the Inbox after the Undo window) is not a look either.
       if (message.author.kind === "person" && !isInboxNote(message) && !isInboxActionReport(message)) lastPersonSeq = seqOf(message);
-      if (message.author.kind === "agent") lastAgentAt = message.created_at;
+      if (isInboxAgentOwn(message)) lastAgentAt = message.created_at;
       if (waitingSince === null || (askingStates && message.author.kind === "agent")) {
         const questions = this.questionsOf(message.id);
         if (waitingSince === null && questions.some((q) => q.state === "open" && !q.orphaned)) waitingSince = message.created_at;
@@ -1838,7 +1839,7 @@ export class InboxStore {
     // A reply of the person's is a look at everything before it.
     const seenSeq = Math.max(root.person_seen_seq ?? 0, lastPersonSeq);
     // What the person dropped for review is not news to them.
-    const unseen = messages.filter((m) => m.author.kind === "agent" && !isInboxImported(m) && seqOf(m) > seenSeq).length;
+    const unseen = messages.filter((m) => isInboxAgentOwn(m) && seqOf(m) > seenSeq).length;
     // A reply that tags agents is read for each recipient by its own delivery:
     // it stays Sent until every session a connection wakes has it (an agent
     // that only reads the Inbox never holds it there).
@@ -6301,7 +6302,7 @@ export class InboxStore {
   latestAgentMessages(): Map<string, InboxMessage> {
     const latest = new Map<string, { message: InboxMessage; seq: number }>();
     for (const message of this.messages.values()) {
-      if (message.author.kind !== "agent" || !message.author.session) continue;
+      if (!isInboxAgentOwn(message) || !message.author.session) continue;
       const seq = this.messageSeq.get(message.id) ?? 0;
       const known = latest.get(message.author.session);
       if (!known || known.seq < seq) latest.set(message.author.session, { message, seq });
@@ -6341,7 +6342,7 @@ export class InboxStore {
   lastThreadsBySession(): Map<string, { id: string; subject: string | null; at: string; project_id: string }> {
     const latest = new Map<string, { message: InboxMessage; seq: number }>();
     for (const message of this.messages.values()) {
-      if (message.author.kind !== "agent" || !message.author.session) continue;
+      if (!isInboxAgentOwn(message) || !message.author.session) continue;
       const seq = this.messageSeq.get(message.id) ?? 0;
       const known = latest.get(message.author.session);
       if (!known || known.seq < seq) latest.set(message.author.session, { message, seq });

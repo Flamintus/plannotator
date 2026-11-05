@@ -245,7 +245,7 @@ import { runShapeCommand, SHAPE_OFF_TEXT } from "./shape-command";
 import { runShapeOpen, runShapeServe } from "./shape-open";
 import { runInboxCallCommand } from "./inbox-call-command";
 import { runInboxStepsCommand } from "./inbox-steps-command";
-import { runInboxReviewCommand } from "./inbox-review-command";
+import { runInboxReviewCommand, runningInbox } from "./inbox-review-command";
 import { runFeedbackCommand } from "./feedback-command";
 import { formatInboxHelp } from "./inbox-help";
 import { INBOX_CARD_ACTION_ON } from "@plannotator/core/inbox-types";
@@ -418,7 +418,7 @@ const rawArgs = process.argv.slice(2);
         cwd: process.env.PLANNOTATOR_CWD || process.cwd(),
         env: process.env,
         askAiChild: isAskAiChild(process.env),
-        ensureRunning: () => ensureInboxRunning(reviewDataDir),
+        running: () => runningInbox(reviewDataDir),
         openUrl: (url) => openBrowserDetached(url, { isRemote: isRemoteSession() }),
       }),
     );
