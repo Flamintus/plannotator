@@ -35,8 +35,8 @@ function world() {
   return { project, dataDir: join(root, "data") };
 }
 
-async function start(dataDir: string, persistentComments = true): Promise<InboxServer> {
-  const server = await startInboxServer({ dataDir, persistentComments });
+async function start(dataDir: string, persistentComments = true, steps = false): Promise<InboxServer> {
+  const server = await startInboxServer({ dataDir, persistentComments, steps });
   servers.push(server);
   return server;
 }
@@ -97,8 +97,8 @@ async function messageCount(client: Client, threadId: string): Promise<number> {
   return (await call(client, "read_thread", { thread_id: threadId, format: "full", ...READER })).structured.thread.messages.length;
 }
 
-async function rowOf(server: InboxServer, threadId: string): Promise<InboxListRow> {
-  const model = (await (await fetch(url(server, "/api/inbox/threads"))).json()) as { sections: InboxListSection[] };
+async function rowOf(server: InboxServer, threadId: string, query = ""): Promise<InboxListRow> {
+  const model = (await (await fetch(url(server, `/api/inbox/threads${query}`))).json()) as { sections: InboxListSection[] };
   return model.sections.flatMap((s) => s.threads).find((r) => r.thread_id === threadId)!;
 }
 
@@ -280,6 +280,46 @@ test("on: replies sent alone are the round's: the round of the newest send the s
   const read = await call(client, "read_thread", { thread_id, ...READER });
   expect(read.text).toMatch(/^ {2}- reply rep_\w+ · round 1 · you: "Lyon first\."$/m);
   expect(read.text).toContain("round 1 still open");
+  // The person finishes round 1 and sends a comment of round 2: a reply before the agent read it is still round 1's, one after it round 2's.
+  expect((await post(server, `/api/inbox/threads/${thread_id}/comment-sends`, { mode: "round", idempotency_key: "f-1" })).status).toBe(200);
+  const sent = (await call(client, "read_thread", { thread_id, format: "full", ...READER })).structured.thread.messages[0].id as string;
+  expect((await post(server, `/api/inbox/messages/${sent}/annotations`, { annotation: words("c-3", "ship on Friday", "Not a Friday.") })).status).toBe(200);
+  expect((await post(server, `/api/inbox/threads/${thread_id}/comment-sends`, { mode: "now", comment_ids: ["c-3"], idempotency_key: "p-2" })).status).toBe(200);
+  await call(client, "send_message", alone([{ comment_id: "c-2", text: "Dropped it." }]));
+  await call(client, "read_thread", { thread_id, ...READER });
+  await call(client, "send_message", alone([{ comment_id: "c-3", text: "Moved to Tuesday." }]));
+  const comments = (await call(client, "read_thread", { thread_id, ...READER })).structured.comments as { id: string; round: number; replies: { round: number }[] }[];
+  expect(comments.map((c) => [c.id, c.round, c.replies.map((r) => r.round)])).toEqual([
+    ["c-1", 1, [1]],
+    ["c-2", 1, [1]],
+    ["c-3", 2, [2]],
+  ]);
+});
+
+test("on: replies sent alone answer a reply that carried comments as a message does: its round ends, the open ones go again", async () => {
+  const { project, dataDir } = world();
+  const server = await start(dataDir);
+  const client = await agent(server);
+  const sent = (await call(client, "send_message", { project_path: project, body: "The plan: ship on Friday, all stores at once, with a press release.", ...SESSION })).structured;
+  const reply = async (key: string, ids: string[]) => {
+    const messages = (await call(client, "read_thread", { thread_id: sent.thread_id, format: "full", agent_session: "ses_reader" })).structured.thread.messages;
+    const last = [...messages].reverse().find((m: { author: { kind: string } }) => m.author.kind === "agent");
+    const answer = await post(server, `/api/inbox/messages/${last.id}/reply`, { idempotency_key: key, feedback: "# Feedback", annotation_ids: ids });
+    expect(answer.status).toBe(200);
+    return ((await answer.json()) as { reply: { id: string; body: string } }).reply;
+  };
+  expect((await post(server, `/api/inbox/messages/${sent.message_id}/annotations`, { annotation: words("c-1", "all stores at once", "One store first.") })).status).toBe(200);
+  await reply("r-1", ["c-1"]);
+  await call(client, "send_message", alone([{ comment_id: "c-1", text: "Is Lyon fine?" }]));
+  expect((await post(server, `/api/inbox/messages/${sent.message_id}/annotations`, { annotation: words("c-2", "a press release", "No press release.") })).status).toBe(200);
+  const second = await reply("r-2", ["c-2"]);
+  const read = (await call(client, "read_thread", { thread_id: sent.thread_id, ...READER })).structured.comments;
+  expect(read.map((c: { id: string; round: number }) => [c.id, c.round])).toEqual([
+    ["c-1", 1],
+    ["c-2", 2],
+  ]);
+  // The session wrote since round 1: its open comment goes again with the next reply.
+  expect(second.body).toContain("(id c-1)");
 });
 
 test("on: replies sent alone make the row unread until a look passes them; Mark unread and Mark read count them", async () => {
@@ -329,4 +369,47 @@ test("on: replies sent alone hold across a restart, their call and the row's new
   // The key still answers the first call.
   const retried = await call(await agent(again), "send_message", alone([{ comment_id: "c-1", text: "Lyon first." }], { idempotency_key: "k-1" }));
   expect(retried.structured.replayed).toBe(true);
+});
+
+test("on: a reply alone into an archived thread brings it back, unread; a Mark read before it no longer stands", async () => {
+  const { project, dataDir } = world();
+  const server = await start(dataDir);
+  const client = await agent(server);
+  const { thread_id } = await sentNow(server, client, project);
+  expect((await post(server, `/api/inbox/threads/${thread_id}/read`, {})).status).toBe(200);
+  expect((await rowOf(server, thread_id)).read_at).not.toBeNull();
+  await call(client, "send_message", alone([{ comment_id: "c-1", text: "Lyon first." }]));
+  expect(await rowOf(server, thread_id)).toMatchObject({ section: "new", unread: true, read_at: null });
+  expect((await post(server, `/api/inbox/messages/${thread_id}/resolve`, { resolved: true })).status).toBe(200);
+  expect(await rowOf(server, thread_id, "?archived=exclude")).toBeUndefined();
+  await call(client, "send_message", alone([{ comment_id: "c-2", text: "No release." }]));
+  expect(await rowOf(server, thread_id, "?archived=exclude")).toMatchObject({ back_from_archive: true, unread: true });
+});
+
+test("on: without a key, the same words after the person wrote again are a new reply, and a retry keeps its own steps", async () => {
+  const { project, dataDir } = world();
+  const server = await start(dataDir, true, true);
+  const client = await agent(server);
+  const { thread_id } = await sentNow(server, client, project);
+  await call(client, "send_message", alone([{ comment_id: "c-1", text: "Done." }]));
+  // A retry that brings steps: nothing written, the steps saved.
+  const steps = [{ step: "Pilot in Lyon", status: "doing" }];
+  const retried = await call(client, "send_message", alone([{ comment_id: "c-1", text: "Done." }], { steps }));
+  expect([retried.structured.replayed, retried.text.includes("Steps saved")]).toEqual([true, true]);
+  // The person finishes the round, c-1 still open: the same words are the next round's answer.
+  expect((await post(server, `/api/inbox/threads/${thread_id}/comment-sends`, { mode: "round", idempotency_key: "f-1" })).status).toBe(200);
+  expect((await call(client, "send_message", alone([{ comment_id: "c-1", text: "Done." }]))).structured.replayed).toBe(false);
+  expect((await replies(server, thread_id)).map((r) => r.text)).toEqual(["Done.", "Done."]);
+});
+
+test("on: replies are counted by comment, and a message under a key replies sent alone have is refused", async () => {
+  const { project, dataDir } = world();
+  const server = await start(dataDir);
+  const client = await agent(server);
+  const { thread_id, message_id } = await sentNow(server, client, project);
+  const two = await call(client, "send_message", alone([{ comment_id: "c-1", text: "Lyon first." }, { comment_id: "c-1", text: "Then Nantes." }], { idempotency_key: "k-1" }));
+  expect(two.text).toStartWith("Replied under 1 comment ");
+  const refused = await raw(client, { body: "A word.", reply_to: message_id, idempotency_key: "k-1", comment_replies: [{ comment_id: "c-2", text: "No release." }], ...SESSION });
+  expect([refused.isError, refused.content[0]!.text.startsWith("idempotency_key_reused:")]).toEqual([true, true]);
+  expect(await messageCount(client, thread_id)).toBe(1);
 });

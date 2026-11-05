@@ -180,6 +180,7 @@ import {
   inboxCommentState,
   inboxCommentThreads,
   inboxCommentsToCarry,
+  inboxCommentWrites,
   inboxOpenCommentsFeedback,
   inboxQuoteOffset,
   inboxSubThreadAnnotation,
@@ -1506,7 +1507,8 @@ export class InboxStore {
     for (const id of this.threadMembers.get(threadId) ?? []) {
       if (this.messages.get(id)?.author.kind === "agent" && (this.messageSeq.get(id) ?? 0) > archiveSeq) return true;
     }
-    return false;
+    // Replies sent alone under comments, as a message would.
+    return this.repliesAloneSeqs(threadId).some((seq) => seq > archiveSeq);
   }
 
   /**
@@ -1843,7 +1845,8 @@ export class InboxStore {
     // A reply of the person's is a look at everything before it.
     const seenSeq = Math.max(root.person_seen_seq ?? 0, lastPersonSeq);
     // An agent's replies sent alone under comments are news as a message is, one per call.
-    const unseen = messages.filter((m) => m.author.kind === "agent" && seqOf(m) > seenSeq).length + this.repliesAloneSeqs(threadId).filter((seq) => seq > seenSeq).length;
+    const repliesAlone = this.repliesAloneSeqs(threadId);
+    const unseen = messages.filter((m) => m.author.kind === "agent" && seqOf(m) > seenSeq).length + repliesAlone.filter((seq) => seq > seenSeq).length;
     // A reply that tags agents is read for each recipient by its own delivery:
     // it stays Sent until every session a connection wakes has it (an agent
     // that only reads the Inbox never holds it there).
@@ -1887,7 +1890,7 @@ export class InboxStore {
     // the agent has not read), and goes back to the archive on its own once
     // handled. Derived; the thread stays resolved until the person acts.
     const archiveSeq = this.archiveSeq(threadId);
-    const agentAfterArchive = archiveSeq !== null && messages.some((m) => m.author.kind === "agent" && seqOf(m) > archiveSeq);
+    const agentAfterArchive = archiveSeq !== null && (messages.some((m) => m.author.kind === "agent" && seqOf(m) > archiveSeq) || repliesAlone.some((seq) => seq > archiveSeq));
     // Mark read on a came-back thread sends it back to the archive: while
     // that read stands, the person's reply before it no longer holds it out.
     const readAt = this.readAt(root, messages);
@@ -1900,6 +1903,7 @@ export class InboxStore {
     const backFromArchive =
       agentAfterArchive &&
       (messages.some((m) => m.author.kind === "agent" && seqOf(m) > archiveSeq! && seqOf(m) > seenSeq) ||
+        repliesAlone.some((seq) => seq > archiveSeq! && seq > seenSeq) ||
         summary.questions.open > 0 ||
         summary.questions.picked > 0 ||
         replyUnread);
@@ -2268,6 +2272,8 @@ export class InboxStore {
       if ((message.set_aside || isAckNote(message)) && message.author.kind === "person") continue;
       if ((this.messageSeq.get(message.id) ?? 0) > readSeq) return null;
     }
+    // Replies sent alone under comments end it too, as a message does.
+    if (this.repliesAloneSeqs(root.id).some((seq) => seq > readSeq)) return null;
     return root.person_read_at ?? null;
   }
 
@@ -5402,9 +5408,12 @@ export class InboxStore {
    */
   private openCommentsFeedback(message: InboxMessage, session: string): string {
     const messages = this.threadMessages(message.thread_id);
-    const threads = inboxCommentThreads(messages, this.sentAnnotations(message.thread_id), this.commentReplies(message.thread_id), this.commentSends(message.thread_id));
+    const replies = this.commentReplies(message.thread_id);
+    const threads = inboxCommentThreads(messages, this.sentAnnotations(message.thread_id), replies, this.commentSends(message.thread_id));
     const sentTo = (m: InboxMessage) => (m.reask ? null : (this.recipientOf(m)?.session ?? null));
-    const carried = inboxCommentsToCarry(messages, threads, session, sentTo).filter((t) => !this.commentCarrierClosedByArchive(t.reply_id));
+    // An agent's replies sent alone are its writing again too (inboxCommentWrites).
+    const writes = inboxCommentWrites(messages, replies);
+    const carried = inboxCommentsToCarry(writes, threads, session, (m) => ("call" in m ? null : sentTo(m))).filter((t) => !this.commentCarrierClosedByArchive(t.reply_id));
     return inboxOpenCommentsFeedback(carried, this.projectsById.get(message.project_id)?.root ?? "");
   }
 

@@ -382,8 +382,8 @@ export function useInboxNotifications(options: {
   const pending = useRef<{ messageId: string; key: string }[]>([]);
   /** New threads an agent started, waiting for the list read. */
   const pendingThreads = useRef<string[]>([]);
-  /** An agent's replies sent alone, by call (claim key `replies:<call>`), waiting for the list read. */
-  const pendingReplies = useRef(new Map<string, { threadId: string; author: InboxAuthor; count: number }>());
+  /** An agent's replies sent alone, by call (claim key `replies:<call>`), with the comments they are under, waiting for the list read. */
+  const pendingReplies = useRef(new Map<string, { threadId: string; author: InboxAuthor; comments: Set<string> }>());
   /** The threads of the current burst, with their project names and whether they ask. */
   const burst = useRef(new Map<string, { project: string; asks: boolean }>());
   /** When the last notice was raised, and whether the tab was in front then. */
@@ -499,9 +499,9 @@ export function useInboxNotifications(options: {
       // An agent's replies sent alone under comments (experimental "persistent-comments"): one item per call.
       const key = `replies:${event.call}`;
       if (counted.current.has(key)) return;
-      const entry = pendingReplies.current.get(key);
-      if (entry) entry.count += 1;
-      else pendingReplies.current.set(key, { threadId: event.thread_id, author: event.from, count: 1 });
+      const entry = pendingReplies.current.get(key) ?? { threadId: event.thread_id, author: event.from, comments: new Set<string>() };
+      entry.comments.add(event.re ?? event.id);
+      pendingReplies.current.set(key, entry);
     }
   }, []);
 
@@ -584,9 +584,12 @@ export function useInboxNotifications(options: {
       // The threads these items landed in, newest last, with the agent that wrote.
       const threads = new Map<string, NotifyItem>();
       for (const item of back) threads.set(item.threadId, item);
-      // Replies sent alone: a question in the same thread says more, and takes the notice (below).
-      for (const [key, { threadId, author, count }] of replied) {
-        if (snoozed.has(threadId)) continue;
+      // Replies sent alone: a question in the same thread says more, and takes the notice (below). A thread the list
+      // does not show (archived) raises none: the list is where the notice leads.
+      const listed = new Set(rowList.map((row) => row.thread_id));
+      for (const [key, { threadId, author, comments }] of replied) {
+        if (snoozed.has(threadId) || !listed.has(threadId)) continue;
+        const count = comments.size;
         const before = threads.get(threadId);
         threads.delete(threadId);
         threads.set(threadId, { threadId, author, asks: before?.asks ?? false, fresh: before?.fresh ?? false, keys: [...(before?.keys ?? []), key], replied: (before?.replied ?? 0) + count });

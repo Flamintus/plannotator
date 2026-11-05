@@ -109,10 +109,11 @@ export function sendComments(context: InboxCommentSendsContext, threadId: string
   const groups = inboxCommentSendRoutes(drafts, (id) => byId.get(id), wordsTo);
   const sent = store.sentAnnotations(threadId);
   const sends = store.commentSends(threadId);
-  const round = inboxCommentRoundNow(messages, sent, sends);
+  const replies = store.commentReplies(threadId);
+  const round = inboxCommentRoundNow(messages, sent, sends, replies);
   if (mode === "round") {
     // A Finish ends the round for every session the round's sends reached, and for the one the words go to, drafts or none.
-    const rounds = inboxCommentRounds(messages, sent, sends);
+    const rounds = inboxCommentRounds(messages, sent, sends, replies);
     const reached = [...sends.filter((send) => rounds.get(send.id) === round).map((send) => send.to), ...(wordsTo ? [wordsTo] : [])];
     for (const to of reached) {
       if (groups.some((group) => group.to?.session === to.session && group.to.host === to.host)) continue;

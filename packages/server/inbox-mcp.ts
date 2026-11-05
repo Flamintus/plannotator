@@ -35,7 +35,17 @@ import { lastContactOf, noteSessionRead, staleThreadOf, staleThreadText } from "
 import { INBOX_BODY_CUT_BYTES, INBOX_EARLIER_PERSON_BYTES, INBOX_THREAD_WINDOW, clip, shortTime, sizeText, windowedThread, windowedThreadText } from "./inbox-mcp-read";
 import { registerInboxSearchTool } from "./inbox-mcp-search";
 import { registerInboxCardTool } from "./inbox-mcp-cards";
-import { COMMENT_REPLIES_FIELD, commentSendsShown, planCommentReplies, threadComments, threadCommentsText, writeCommentReplies, writeCommentRepliesAlone } from "./inbox-mcp-comments";
+import {
+  checkCommentRepliesAlone,
+  COMMENT_REPLIES_FIELD,
+  commentRepliesAloneLine,
+  commentSendsShown,
+  planCommentReplies,
+  threadComments,
+  threadCommentsText,
+  writeCommentReplies,
+  writeCommentRepliesAlone,
+} from "./inbox-mcp-comments";
 export { COMMENT_REPLIES_DESCRIPTION } from "./inbox-mcp-comments";
 export { INBOX_BOARD_OFF_TEXT } from "./inbox-mcp-cards";
 import { checkStepsInput, INBOX_STEPS_OFF_TEXT, registerInboxStepsTool, rowSteps, STEPS_FIELD, stepsAgent, stepsProgressText, threadStepsText } from "./inbox-mcp-steps";
@@ -1039,7 +1049,7 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
         // Replies under comments are checked before anything is sent too, so a message never lands without them.
         // With no body they go alone: no message in the thread (the person is told of them all the same).
         const alone = context.persistentCommentsOn?.() === true && !input.body?.trim();
-        const replies = planCommentReplies(store, (input as { comment_replies?: { comment_id: string; text: string }[] }).comment_replies, input.reply_to, alone);
+        const replies = planCommentReplies(store, (input as { comment_replies?: { comment_id: string; text: string }[] }).comment_replies, input.reply_to, { alone, key: input.idempotency_key });
         // A replay (the same idempotency key) answers the first send and writes nothing: a list the session sent
         // since (the steps action) is never put back to this older one.
         const saveSteps = (threadId: string, replayed: boolean) => {
@@ -1048,19 +1058,13 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
           return record && record.steps.length > 0 ? ` Steps saved: ${stepsProgressText(record)}.` : " Steps cleared.";
         };
         if (alone) {
-          if (replies.length === 0) throw new InboxError("validation_error", "body: write the message, or send comment_replies alone.", { field: "body" });
-          for (const field of ["attachments", "supersedes", "done"] as const) {
-            if (input[field]?.length) throw new InboxError("validation_error", `${field}: goes with a message; write a body.`, { field });
-          }
+          checkCommentRepliesAlone(replies, input);
           const wakes = await senderWakes(context, ctx, input);
           const done = writeCommentRepliesAlone(store, replies, input);
-          const stepsLine = saveSteps(done.thread_id, done.replayed);
           const url = threadUrl(context.baseUrl(), done.thread_id);
-          const count = `${done.replies.length} comment${done.replies.length === 1 ? "" : "s"}`;
-          return ok(
-            `${done.replayed ? "Already replied" : "Replied"} under ${count} (thread ${done.thread_id}, ${url}); the person sees each under its comment, with nothing posted in the thread.${stepsLine} ${replyNextStepText(wakes, input.agent_host)}`,
-            { thread_id: done.thread_id, url, comment_replies: done.replies, replayed: done.replayed },
-          );
+          // Only a retry by its key keeps the first call's steps; a retry without a key may bring a list of its own.
+          const stepsLine = saveSteps(done.thread_id, done.replayed && done.keyed);
+          return ok(`${commentRepliesAloneLine(done, url)}${stepsLine} ${replyNextStepText(wakes, input.agent_host)}`, { thread_id: done.thread_id, url, comment_replies: done.replies, replayed: done.replayed });
         }
         const project = await sendProject(context, input);
         const wakes = await senderWakes(context, ctx, input);

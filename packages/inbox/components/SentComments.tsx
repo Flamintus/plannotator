@@ -151,7 +151,7 @@ export function useSentComments(input: {
   const sends = files?.comment_sends ?? NO_SENDS;
   const [written, setWritten] = useState(NO_WRITES);
   const records = useMemo(() => withSentWrites(listed, written), [listed, written]);
-  const rounds = useMemo(() => inboxCommentRounds(messages, records, sends), [messages, records, sends]);
+  const rounds = useMemo(() => inboxCommentRounds(messages, records, sends, agentReplies), [messages, records, sends, agentReplies]);
   // A reply newer than a resolution opens the comment again (inboxCommentState), the person's draft too.
   const lastReplies = useMemo(() => inboxCommentLastReplies([...records, ...drafts], agentReplies), [records, drafts, agentReplies]);
   // The threads: the comments and the sub-threads (a reply is part of its comment's thread).

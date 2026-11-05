@@ -431,5 +431,5 @@ export function inboxCommentThreadView(input: {
     if (host && reachesTop(node)) host.sub_threads.push(node);
     else top.push(node);
   }
-  return { v: INBOX_COMMENT_THREAD_VIEW_VERSION, round: inboxCommentRoundNow(input.messages, input.records, sends), threads: top };
+  return { v: INBOX_COMMENT_THREAD_VIEW_VERSION, round: inboxCommentRoundNow(input.messages, input.records, sends, agentReplies), threads: top };
 }

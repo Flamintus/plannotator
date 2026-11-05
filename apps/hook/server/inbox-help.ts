@@ -283,9 +283,9 @@ function toolBlock(name: InboxMcpToolName, steps = false, codeReview = false, co
   const args = guide.args.length > 0 ? [`Arguments: ${[...guide.args, ...extra].map(code).join(", ")}.`, ""] : [];
   const lines = [
     // Replies under comments may go alone, with no body.
-    ...(withReplies ? guide.lines.map((line) => line.replace(SEND_BODY_REQUIRED, `${SEND_BODY_REQUIRED}, unless the call carries only \`comment_replies\``)) : guide.lines),
+    ...(withReplies ? guide.lines.map((line) => line.replace(SEND_BODY_REQUIRED, `${SEND_BODY_REQUIRED}, unless \`comment_replies\` goes alone`)) : guide.lines),
     ...(withSteps ? ["- `steps`: your steps in the thread this message lands in, sent with it (see steps)."] : []),
-    ...(withReplies ? [`- \`comment_replies\`: ${COMMENT_REPLIES_DESCRIPTION} An id that names no sent comment of that thread refuses the whole send, naming the entry. Without a body, no message is written: \`reply_to\` may be left out (the comments name their thread), and \`attachments\`, \`supersedes\` and \`done\` are refused; a retry without an \`idempotency_key\` writes no reply you already left last under its comment, word for word. The result's \`comment_replies\` lists each reply's \`reply_id\` and \`comment_id\`; read_thread lists the replies under each comment.`] : []),
+    ...(withReplies ? [`- \`comment_replies\`: ${COMMENT_REPLIES_DESCRIPTION} An id that names no sent comment of that thread refuses the whole send, naming the entry. Without a body, no message is written: \`reply_to\` may be left out (the comments name their thread), and \`attachments\`, \`supersedes\` and \`done\` are refused; a retry without an \`idempotency_key\` writes no reply you already left last under its comment, word for word, unless the person wrote since. The result's \`comment_replies\` lists each reply's \`reply_id\` and \`comment_id\`; read_thread lists the replies under each comment.`] : []),
     ...(withReview ? [`- \`review\`: ${INBOX_REVIEW_FIELD_DESCRIPTION}`] : []),
   ];
   return [`### ${name}`, "", ...args, ...lines, ""];

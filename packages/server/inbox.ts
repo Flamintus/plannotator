@@ -2456,9 +2456,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         return { seq: line.seq, kind: line.kind, id: line.id, initiative: line.record };
       case "comment_reply":
         // An agent's reply under a sent comment (experimental "persistent-comments"): the open thread's files read it.
-        // With its message, silent (the message is the news). Sent alone (`call`), it is news itself: the row is unread
-        // and the window notifies once per call, naming the agent (`from`). A reader that does not know the kind skips it.
-        return { seq: line.seq, kind: line.kind, id: line.id, thread_id: line.record.thread_id, ...(line.record.call ? { call: line.record.call, from: line.record.from } : {}) };
+        // With its message, silent (the message is the news). Sent alone (`call`), it is news itself: the row is unread,
+        // and the window notifies once per call, naming the agent (`from`) and counting the comments (`re`).
+        // A reader that does not know the kind skips it.
+        return { seq: line.seq, kind: line.kind, id: line.id, thread_id: line.record.thread_id, ...(line.record.call ? { call: line.record.call, from: line.record.from, re: line.record.re } : {}) };
       case "comment_send":
         // The person's comments sent to a session (experimental "persistent-comments"): silent, as above.
         return { seq: line.seq, kind: line.kind, id: line.id, thread_id: line.record.thread_id };

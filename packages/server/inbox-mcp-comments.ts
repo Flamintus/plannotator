@@ -176,19 +176,22 @@ export const COMMENT_REPLIES_FIELD = z
  * comment), with words. A refusal names the entry. Replies sent alone
  * (`alone`, no body) need no reply_to: they land in their first comment's
  * thread, and a reply_to may also be a comment send's id (as a wake names
- * one), which names its thread.
+ * one), which names its thread. With a message, a `key` replies sent alone
+ * already have in that thread is refused, as the other way round
+ * (writeCommentRepliesAlone).
  */
 export function planCommentReplies(
   store: InboxStore,
   replies: readonly { comment_id: string; text: string }[] | undefined,
   replyTo: string | undefined,
-  alone = false,
+  options: { alone?: boolean; key?: string } = {},
 ): { comment: string; text: string }[] {
   if (!replies || replies.length === 0) return [];
+  const alone = options.alone === true;
   let thread = replyTo ? (store.message(replyTo)?.thread_id ?? (alone ? store.commentSend(replyTo)?.thread_id : undefined)) : undefined;
   if (!thread && (replyTo || !alone)) throw new InboxError("validation_error", "comment_replies: send with reply_to into the thread of the comments.", { field: "comment_replies" });
   const landsIn = replyTo ? "the one reply_to lands in" : "comment_replies[0]'s";
-  return replies.map((reply, index) => {
+  const planned = replies.map((reply, index) => {
     const field = `comment_replies[${index}]`;
     const text = inboxCommentReplyText(reply.text);
     if (text === null) throw new InboxError("validation_error", `${field}.text: your reply, 1 to ${INBOX_COMMENT_REPLY_TEXT_MAX} characters.`, { field });
@@ -205,6 +208,25 @@ export function planCommentReplies(
     }
     return { comment: comment.id, text };
   });
+  const key = options.key?.trim();
+  if (!alone && key && store.commentReplies(thread!).some((reply) => reply.call && reply.idempotency_key === key)) {
+    throw new InboxError("idempotency_key_reused", "This idempotency_key was already used for replies sent alone.");
+  }
+  return planned;
+}
+
+/** What goes only with a message: refused on a send of replies alone, before anything is written. */
+export function checkCommentRepliesAlone(planned: readonly unknown[], input: { attachments?: readonly string[]; supersedes?: readonly string[]; done?: readonly string[] }): void {
+  if (planned.length === 0) throw new InboxError("validation_error", "body: write the message, or send comment_replies alone.", { field: "body" });
+  for (const field of ["attachments", "supersedes", "done"] as const) {
+    if (input[field]?.length) throw new InboxError("validation_error", `${field}: goes with a message; write a body.`, { field });
+  }
+}
+
+/** The result's line for replies sent alone (writeCommentRepliesAlone), counted by comment. */
+export function commentRepliesAloneLine(done: { thread_id: string; replies: readonly { comment_id: string }[]; replayed: boolean }, url: string): string {
+  const comments = new Set(done.replies.map((reply) => reply.comment_id)).size;
+  return `${done.replayed ? "Already replied" : "Replied"} under ${comments} comment${comments === 1 ? "" : "s"} (thread ${done.thread_id}, ${url}); the person sees each under its comment, with nothing posted in the thread.`;
 }
 
 /** The agent session that writes a send_message's replies, as a reply's `from`. */
@@ -247,18 +269,20 @@ export function writeCommentReplies(
  * thread) answers with the replies the first call wrote and writes those it
  * did not get to; one with other replies, or under a key a message of the
  * thread already has, is refused. Without a key, a reply the same session
- * already left last under its comment, word for word, is not written again:
- * that is a retry whose answer was lost. `replayed`: nothing was written.
+ * already left last under its comment, word for word, with nothing from the
+ * person in the thread since (a message, a comment send), is not written
+ * again: that is a retry whose answer was lost. `replayed`: nothing was
+ * written; `keyed`: by the key (a retry that writes nothing else either).
  */
 export function writeCommentRepliesAlone(
   store: InboxStore,
   planned: readonly { comment: string; text: string }[],
   input: { idempotency_key?: string; agent_session?: string; agent_host?: string; agent_name?: string },
-): { thread_id: string; replies: { reply_id: string; comment_id: string }[]; replayed: boolean } {
+): { thread_id: string; replies: { reply_id: string; comment_id: string }[]; replayed: boolean; keyed: boolean } {
   const threadId = store.sentComment(planned[0]!.comment).thread_id;
   const from = replyAuthorOf(input);
   const key = input.idempotency_key?.trim() || null;
-  const answer = (replies: readonly InboxCommentReplyRecord[], replayed: boolean) => ({ thread_id: threadId, replies: replies.map((reply) => ({ reply_id: reply.id, comment_id: reply.re })), replayed });
+  const answer = (replies: readonly InboxCommentReplyRecord[], replayed: boolean) => ({ thread_id: threadId, replies: replies.map((reply) => ({ reply_id: reply.id, comment_id: reply.re })), replayed, keyed: key !== null });
   if (key) {
     if (store.thread(threadId)?.messages.some((message) => message.author.kind === "agent" && message.idempotency_key === key)) {
       throw new InboxError("idempotency_key_reused", "This idempotency_key was already used for a message.");
@@ -272,13 +296,16 @@ export function writeCommentRepliesAlone(
     return answer([...written, ...fresh], fresh.length === 0);
   }
   const messages = store.thread(threadId)?.messages ?? [];
-  const lastReply = new Map(inboxCommentThreads(messages, store.sentAnnotations(threadId), store.commentReplies(threadId), store.commentSends(threadId)).map((comment) => [comment.id, comment.replies.at(-1)]));
+  const sends = store.commentSends(threadId);
+  const lastReply = new Map(inboxCommentThreads(messages, store.sentAnnotations(threadId), store.commentReplies(threadId), sends).map((comment) => [comment.id, comment.replies.at(-1)]));
   const records = new Map(store.commentReplies(threadId).map((reply) => [reply.id, reply]));
+  // The person wrote since `at`: a new round, so the same words are an answer of their own.
+  const personSince = (at: string) => messages.some((message) => message.author.kind === "person" && message.created_at > at) || sends.some((send) => send.created_at > at);
   const call = inboxCommentReplyCallId();
   let wrote = false;
   const replies = planned.map(({ comment, text }) => {
     const last = lastReply.get(comment);
-    const repeated = last && last.author.kind === "agent" && sameAgent(last.author, from) && last.text === text ? records.get(last.id) : undefined;
+    const repeated = last && last.author.kind === "agent" && sameAgent(last.author, from) && last.text === text && !personSince(last.at) ? records.get(last.id) : undefined;
     if (repeated) return repeated;
     wrote = true;
     return store.replyToComment(comment, { text, from, call });
