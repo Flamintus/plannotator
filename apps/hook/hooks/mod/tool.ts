@@ -900,10 +900,11 @@ export function plannotatorCommandToToolInput(
  * The review loop (#1116, experimental "persistent-comments"): with a host
  * that carries the person's comments to the agent's session (the Claude Code
  * mod's session bridge), a review stays open from one round to the next, and
- * each send arrives as a message headed `Plannotator: notes.md (pn-3f2a9c) —
- * Round 2 done · 3 comments.` (`plannotatorSendOutcome`). The agent answers
- * under each comment by its id with `reply` and reads the threads with
- * `threads`; no action of the agent's resolves: only the person does. A host
+ * each send wakes the agent with one line headed `Plannotator: notes.md
+ * (pn-3f2a9c) — Round 2 done · 3 comments.` (`plannotatorSendOutcome`). The
+ * agent reads the round with `threads` and answers under each comment by its
+ * id with `reply`, with no message in chat; no action of the agent's
+ * resolves: only the person does. A host
  * that carries sends registers these two actions on top of its schema and
  * description (`plannotatorToolLoopInputSchema`,
  * `plannotatorToolLoopDescription`) and parses them with
@@ -934,7 +935,7 @@ export const PLANNOTATOR_TOOL_MAX_REPLY_TEXT = 10_000
 /** The action lines a host that carries sends adds to its description. */
 export const PLANNOTATOR_TOOL_LOOP_LINES: readonly string[] = [
   '- action "reply": answer the person\'s comments in a review opened in this conversation, under each comment\'s id, when a message from it asks you to: `session` is the review\'s id (pn-...), `replies` a list of { id, text }, one per comment: what you changed, your answer, or why you did not do it. Not in chat. Only the person resolves a comment.',
-  '- action "threads": a review\'s comments by id, with your replies and what is still open; `session` is its id (pn-...).',
+  '- action "threads": read a review: what the person sent that you have not answered yet, then every comment by id, with your replies and what is still open; `session` is its id (pn-...).',
 ]
 
 /** A description with the loop's action lines after the other actions' (before an option line such as tailscale's). */
@@ -1015,12 +1016,14 @@ export function parsePlannotatorToolLoopInput(value: unknown): PlannotatorToolLo
 }
 
 /**
- * How the agent answers a send it got from this host's tool, the last lines
- * of the send's text (`ReviewReplyHow` in packages/core/review-threads.ts).
+ * How the agent answers a send it got from this host's tool: the last lines
+ * of the send's text, and the sentence of the line the send wakes it with
+ * (`ReviewReplyHow` in packages/core/review-threads.ts).
  */
-export function plannotatorToolReplyHow(sessionId: string): { read: string; reply: string } {
+export function plannotatorToolReplyHow(sessionId: string): { read: string; reply: string; wake: string } {
   return {
     read: `The plannotator tool's "threads" action (session ${sessionId}) shows their words and your replies.`,
+    wake: `Read the round with the plannotator tool's "threads" action and answer under each id with its "reply" action (session ${sessionId}).`,
     reply: `Reply under each id in Plannotator, not in chat: call the plannotator tool with action "reply", session "${sessionId}" and replies [{ "id": …, "text": … }], one per comment: what you changed, your answer, or why you did not do it. Only the person resolves a comment.`,
   }
 }

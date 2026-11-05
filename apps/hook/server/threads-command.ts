@@ -9,10 +9,13 @@
  * - A client with no server of its own (a terminal client): `threads <action>
  *   [<json> | -]` writes the person's side (comments, replies, sub-threads,
  *   resolutions, sends, deliveries, the close on approval) and reads the view;
- *   `send` gives back the text to hand the agent, composed by the shared core
- *   with the CLI's way to answer (`reviewCliHow`); given a send's `id`, that
- *   send's text again, nothing written (a client that closed before handing it
- *   over). A Finish with nothing to carry writes no round (`empty`).
+ *   `send` gives back the text to hand the agent: one line, a round being no
+ *   message (`Plannotator: notes.md (file-…) — Round 2 done · 3 comments.`,
+ *   then how to read it with `threads --review` and answer with `reply`,
+ *   with no message in chat), the round itself read by the agent's
+ *   `threads --review`; given a send's `id`, that send's line again, nothing
+ *   written (a client that closed before handing it over). A Finish with
+ *   nothing to carry writes no round (`empty`).
  *
  * Unreleased (HIDDEN_SUBCOMMANDS): nothing calls them until a client does.
  * stdout carries the result only (one JSON value for a client's action); a
@@ -20,7 +23,8 @@
  */
 
 import { inboxAgentName } from "@plannotator/core/inbox-types";
-import { reviewAnchorPlace, reviewThreadViewText, type ReviewAnchor } from "@plannotator/core/review-threads";
+import { reviewShownPath, type ReviewAnchor, type ReviewSend } from "@plannotator/core/review-threads";
+import { plannotatorDecisionHeading, plannotatorSendOutcome } from "@plannotator/shared/plannotator-tool";
 import {
   ReviewJournalError,
   anchorReviewComment,
@@ -34,13 +38,15 @@ import {
   replyInReview,
   resolveReviewComment,
   reviewCliHow,
+  reviewJournalAgentRead,
   reviewJournalKey,
-  reviewJournalSendText,
   reviewJournalView,
+  reviewJournalWakeText,
   sendReviewComments,
   writeReviewComment,
   type ReviewCommentInput,
   type ReviewJournalRef,
+  type ReviewJournalState,
   type ReviewTarget,
 } from "@plannotator/shared/review-journal";
 import { resolve } from "node:path";
@@ -89,6 +95,25 @@ function targetLine(target: ReviewTarget | null): string {
   if (target.kind === "last") return `the last messages of ${target.host} session ${target.session}`;
   if (target.kind === "file") return target.path;
   return `plan ${target.slug} (${target.project})`;
+}
+
+/** How a review is named in its wake's heading: a file from the folder the client runs in, the last messages, the plan. */
+function wakeSubject(target: ReviewTarget | null, root: string): string {
+  if (!target) return "your work";
+  if (target.kind === "last") return "your last messages";
+  if (target.kind === "file") return reviewShownPath(target.path, root);
+  return "the plan";
+}
+
+/**
+ * The text a client hands the agent for a send: the line it wakes the agent
+ * with, headed as a host heads a send (`plannotatorDecisionHeading` with the
+ * review's key), the round read with `threads --review`.
+ */
+function sendWakeText(state: ReviewJournalState, send: ReviewSend, review: string, root: string): string {
+  const carried = state.comments.filter((record) => record.sent_reply_id === send.id).length;
+  const heading = plannotatorDecisionHeading(wakeSubject(state.target, root), review, plannotatorSendOutcome(send.mode, send.round, carried));
+  return `${heading} ${reviewJournalWakeText(state, [send.id], reviewCliHow(review))}`;
 }
 
 class Usage extends Error {}
@@ -145,9 +170,9 @@ export async function runThreadsCommand(argv: readonly string[], deps: ThreadsCo
     const state = readReviewJournal(deps.dataDir, { key });
     if (!state) throw new ReviewJournalError("not_found", `No review ${key}: \`plannotator threads\` lists the reviews.`);
     // What was sent: the person's drafts are theirs until a send carries them.
-    const view = reviewJournalView(state, { sent: true, agentName: inboxAgentName });
-    if (json) io.out(JSON.stringify({ review: key, target: state.target, ...view }));
-    else io.out(`Review ${key}, on ${targetLine(state.target)}\n${reviewThreadViewText(view, reviewAnchorPlace, deps.cwd)}`);
+    if (json) io.out(JSON.stringify({ review: key, target: state.target, ...reviewJournalView(state, { sent: true, agentName: inboxAgentName }) }));
+    // The sends the agent has not answered first (a send's wake is one line that points here), then every thread.
+    else io.out(`Review ${key}, on ${targetLine(state.target)}\n${reviewJournalAgentRead(state, { root: deps.cwd, how: reviewCliHow(key), agentName: inboxAgentName })}`);
     return 0;
   });
 }
@@ -254,7 +279,7 @@ async function clientAction(action: ThreadsAction, argv: readonly string[], deps
           const state = readReviewJournal(deps.dataDir, ref);
           const send = state?.sends.find((known) => known.id === args.id);
           if (!state || !send) throw new ReviewJournalError("not_found", `No send ${String(args.id)}.`);
-          return { review, send, replayed: true, text: reviewJournalSendText(state, [send.id], { root, how: reviewCliHow(review) }) };
+          return { review, send, replayed: true, text: sendWakeText(state, send, review, root) };
         }
         const ids = Array.isArray(args.ids) ? args.ids.filter((id): id is string => typeof id === "string") : undefined;
         const to = args.to as { host: string | null; session: string } | undefined;
@@ -267,7 +292,7 @@ async function clientAction(action: ThreadsAction, argv: readonly string[], deps
           refuse_empty: true,
         });
         const state = readReviewJournal(deps.dataDir, { key: review })!;
-        return { review, send: done.send, replayed: done.replayed, text: reviewJournalSendText(state, [done.send.id], { root, how: reviewCliHow(review) }) };
+        return { review, send: done.send, replayed: done.replayed, text: sendWakeText(state, done.send, review, root) };
       }
       case "delivered": {
         const ids = Array.isArray(args.sends) ? args.sends.filter((id): id is string => typeof id === "string") : [];

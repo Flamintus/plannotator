@@ -12,12 +12,15 @@
  *   screen keeps today's single decision.
  * - The page (`/api/threads`): reads the review (`v: 1` thread view), sends
  *   the person's comments (`now`, or the end of a round), resolves and
- *   reopens. A send is written to the journal, composed by the shared core
- *   with the way the agent answers (the `plannotator` tool when the host says
- *   its agent has it, else the CLI), and handed to the host; the host's
- *   report marks it delivered.
+ *   reopens. A send is written to the journal and handed to the host as one
+ *   line (a round is not a message): the shared core's wake, saying how the
+ *   agent reads the round and answers (the `plannotator` tool when the host
+ *   says its agent has it, else the CLI); the host's report marks it
+ *   delivered.
  * - The host (`/api/host/threads`, guarded like host control): the agent's
- *   replies under ids and its read of the threads, which mark the sends read;
+ *   replies under ids and its read of the threads, which mark the sends read
+ *   and carries what the sends it has not answered say (each comment with
+ *   the lines the page added under it, the round's words), then the threads;
  *   and for `last`, the agent's next messages, which join the picker's list
  *   (`/api/host/messages`).
  * - Live: a timer compares the journal's stamp and the host's state each
@@ -45,17 +48,18 @@ import {
   resolveReviewComment,
   retryReviewJournalWrite,
   reviewCliHow,
+  reviewJournalAgentRead,
   reviewJournalKey,
-  reviewJournalSendText,
   reviewJournalStamp,
   reviewJournalView,
+  reviewJournalWakeText,
   normalizeReviewTarget,
   sendReviewComments,
   writeReviewComment,
   type ReviewCommentInput,
   type ReviewTarget,
 } from "./review-journal";
-import { reviewAnchorPlace, reviewThreadViewText, type ReviewAgent, type ReviewReplyHow, type ReviewSend, type ReviewSendMode } from "@plannotator/core/review-threads";
+import type { ReviewAgent, ReviewComment, ReviewEntryDetail, ReviewReplyHow, ReviewSend, ReviewSendMode } from "@plannotator/core/review-threads";
 
 export const REVIEW_THREADS_PATH = "/api/threads";
 export const REVIEW_THREADS_SEND_PATH = "/api/threads/send";
@@ -192,6 +196,9 @@ export function createReviewLoop(options: ReviewLoopOptions): ReviewLoop {
   let used = false;
   /** Sends the host could not put in the session, until one is handed over again or delivered: the page shows them and may retry. */
   const failed = new Map<string, string | null>();
+  /** The lines the page added under each comment it sent (images, an element), by comment id: the agent's read of the round shows them; the journal does not keep them. */
+  const notes = new Map<string, string[]>();
+  const detail = (record: Pick<ReviewComment, "id">): ReviewEntryDetail => (notes.get(record.id)?.length ? { notes: notes.get(record.id)! } : {});
 
   const available = (): boolean => {
     const on = key !== null && options.carrier()?.ready === true;
@@ -271,19 +278,17 @@ export function createReviewLoop(options: ReviewLoopOptions): ReviewLoop {
     if (body.words !== undefined && typeof body.words !== "string") return { status: 400, body: { error: "words: a string." } };
     if (body.idempotency_key !== undefined && typeof body.idempotency_key !== "string") return { status: 400, body: { error: "idempotency_key: a string." } };
     const idempotencyKey = (body.idempotency_key as string | undefined)?.trim() || undefined;
-    // The lines a caller adds under a comment's heading (images, an element), by id: for this press's text only.
-    const notes = new Map<string, string[]>();
+    // The lines a caller adds under a comment's heading (images, an element), by id: kept for the agent's read of the round.
     const noteLines = (lines: unknown) => (Array.isArray(lines) ? lines.filter((line): line is string => typeof line === "string" && line.trim() !== "") : []);
     for (const raw of comments as unknown as SendCommentInput[]) {
       if (typeof raw.id === "string" && noteLines(raw.notes).length > 0) notes.set(raw.id, noteLines(raw.notes));
     }
-    const detail = (record: { id: string }) => (notes.get(record.id)?.length ? { notes: notes.get(record.id)! } : {});
     try {
       // A retry of the same press: nothing is written again, and a send not yet delivered is handed over again.
       const before = idempotencyKey ? readReviewJournal(dataDir, { key: key! }) : null;
       const replay = before?.sends.find((send) => send.idempotency_key === idempotencyKey);
       if (replay && before) {
-        if (!replay.delivery) deliver(replay, reviewJournalSendText(before, [replay.id], { root, how: how(), detail }), before.comments.filter((record) => record.sent_reply_id === replay.id).length);
+        if (!replay.delivery) deliver(replay, reviewJournalWakeText(before, [replay.id], how()), before.comments.filter((record) => record.sent_reply_id === replay.id).length);
         return { status: 200, body: { send: replay, replayed: true, ...state() } };
       }
       // The person's drafts this press carries.
@@ -305,7 +310,7 @@ export function createReviewLoop(options: ReviewLoopOptions): ReviewLoop {
         }),
       );
       const journal = readReviewJournal(dataDir, { key: key! })!;
-      const text = reviewJournalSendText(journal, [done.send.id], { root, how: how(), detail });
+      const text = reviewJournalWakeText(journal, [done.send.id], how());
       deliver(done.send, text, journal.comments.filter((record) => record.sent_reply_id === done.send.id).length);
       push();
       return { status: 200, body: { send: done.send, replayed: done.replayed, ...state() } };
@@ -364,7 +369,9 @@ export function createReviewLoop(options: ReviewLoopOptions): ReviewLoop {
         const journal = readReviewJournal(dataDir, { key });
         // What was sent: the person's drafts stay theirs until a send carries them.
         const view = reviewJournalView(journal, { sent: true, ...(options.agentName ? { agentName: options.agentName } : {}) });
-        return { status: 200, body: { review: key, round: view.round, text: reviewThreadViewText(view, reviewAnchorPlace, root), view } };
+        // The sends it has not answered first (a send's wake is one line that points here), then every thread.
+        const text = reviewJournalAgentRead(journal, { root, how: how(), detail, ...(options.agentName ? { agentName: options.agentName } : {}) });
+        return { status: 200, body: { review: key, round: view.round, text, view } };
       } catch (error) {
         return journalRefusal(error);
       }

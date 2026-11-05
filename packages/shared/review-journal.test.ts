@@ -12,11 +12,14 @@ import {
   removeReviewComment,
   replyInReview,
   resolveReviewComment,
+  reviewJournalAgentRead,
   reviewJournalDir,
   reviewJournalKey,
+  reviewJournalPendingSends,
   reviewJournalSendText,
   reviewJournalStamp,
   reviewJournalView,
+  reviewJournalWakeText,
   ReviewJournalError,
   sendReviewComments,
   writeReviewComment,
@@ -130,6 +133,33 @@ describe("the person's side", () => {
     expect(text).toContain("Still open, already sent to you (1): c1. READ.");
     expect(text.endsWith("REPLY.")).toBe(true);
     expect(refused(() => sendReviewComments(opts(), { target: { kind: "file", path: join(root, "a.md") } }, { mode: "round" }))).toBe("invalid");
+  });
+
+  test("a round is not a message: its wake is one line, and the agent's read carries what it has not answered before every thread", () => {
+    const how = { read: "READ.", reply: "REPLY.", wake: "WAKE." };
+    writeReviewComment(opts(), ref, { id: "c1", on: onMessage, text: "one" });
+    const first = sendReviewComments(opts(), ref, { mode: "now", ids: ["c1"] });
+    let state = readReviewJournal(dataDir, ref)!;
+    expect(reviewJournalWakeText(state, [first.send.id], how)).toStartWith("WAKE. Answer now");
+    expect(reviewJournalWakeText(state, [first.send.id], how)).not.toContain("one");
+    const read = reviewJournalAgentRead(state, { root, how, detail: (record) => ({ notes: [`notes of ${record.id}`] }) });
+    expect(read.indexOf("(id c1)\nnotes of c1\n> one")).toBeGreaterThan(-1);
+    expect(read).toContain("REPLY.");
+    expect(read.indexOf("(id c1)")).toBeLessThan(read.indexOf("- c1 (open"));
+    // Answered: the read is the threads alone, as before; the next round waits again.
+    replyInReview(opts(), ref, [{ id: "c1", text: "done" }]);
+    state = readReviewJournal(dataDir, ref)!;
+    expect(reviewJournalPendingSends(state)).toEqual([]);
+    expect(reviewJournalAgentRead(state, { root, how })).toStartWith("Round 1\n- c1 (open");
+    writeReviewComment(opts(), ref, { id: "c2", on: onMessage, text: "two" });
+    const finish = sendReviewComments(opts(), ref, { mode: "round" });
+    state = readReviewJournal(dataDir, ref)!;
+    expect(reviewJournalPendingSends(state).map((send) => send.id)).toEqual([finish.send.id]);
+    expect(reviewJournalAgentRead(state, { root, how })).not.toContain("(id c1)");
+    expect(reviewJournalAgentRead(null, { root, how })).toBe("Round 1: no comment yet.");
+    // A round with nothing to read, words included, says so.
+    expect(reviewJournalWakeText({ ...state, sends: [{ ...finish.send, comments: [], words: null }] }, [finish.send.id], how)).toStartWith("No comment is open");
+    expect(reviewJournalWakeText({ ...state, sends: [{ ...finish.send, comments: [], words: "Edits." }] }, [finish.send.id], how)).toStartWith("WAKE.");
   });
 
   test("a retried send writes nothing new; a send's own line lost leaves its drafts waiting", () => {

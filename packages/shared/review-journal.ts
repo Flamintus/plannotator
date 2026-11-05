@@ -40,9 +40,12 @@ import {
   reviewReplyId,
   reviewRoundNow,
   reviewSendId,
+  reviewAnchorPlace,
   reviewSendText,
+  reviewSendWakeText,
   reviewText,
   reviewThreadView,
+  reviewThreadViewText,
   reviewThreads,
   type ReviewAgent,
   type ReviewAgentReply,
@@ -849,10 +852,46 @@ export function reviewJournalSendText(state: ReviewJournalState, sendIds: readon
   return reviewSendText(REVIEW_COMMENT_READING, { sends, records: state.comments, agentReplies: state.replies, root: options.root, words, detail: options.detail, how: options.how });
 }
 
+/**
+ * The sends the agent has not answered yet: those written after its newest
+ * reply in the review (all of them before its first), oldest first.
+ */
+export function reviewJournalPendingSends(state: ReviewJournalState): ReviewSend[] {
+  const answered = state.replies.reduce<string>((newest, reply) => (reply.created_at > newest ? reply.created_at : newest), "");
+  return state.sends.filter((send) => send.created_at > answered).sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+}
+
+/**
+ * What an agent reads of a review (`plannotator threads --review`, the tool's
+ * `threads`): the sends it has not answered yet, as `reviewJournalSendText`
+ * composes them (the round's words, each comment, the threads still open, how
+ * to answer), then every thread that was sent. A send's wake is one line that
+ * points here (`reviewJournalWakeText`). With nothing waiting, the threads
+ * alone, as before.
+ */
+export function reviewJournalAgentRead(
+  state: ReviewJournalState | null,
+  options: { root: string; how: ReviewReplyHow; detail?: (record: ReviewComment) => ReviewEntryDetail; agentName?: (author: ReviewAgent) => string },
+): string {
+  const view = reviewThreadViewText(reviewJournalView(state, { sent: true, ...(options.agentName ? { agentName: options.agentName } : {}) }), reviewAnchorPlace, options.root);
+  const pending = state ? reviewJournalPendingSends(state) : [];
+  if (!state || pending.length === 0) return view;
+  const how = { ...options.how, read: "Their words and your replies are under Every thread, below." };
+  const sent = reviewJournalSendText(state, pending.map((send) => send.id), { root: options.root, how, ...(options.detail ? { detail: options.detail } : {}) });
+  return `${sent}\n\n# Every thread\n\n${view}`;
+}
+
+/** The line these sends wake the agent with, after its host's heading (`reviewSendWakeText`); what they carry is read with `threads`. */
+export function reviewJournalWakeText(state: ReviewJournalState, sendIds: readonly string[], how: ReviewReplyHow): string {
+  const sends = state.sends.filter((send) => sendIds.includes(send.id)).sort((a, b) => a.created_at.localeCompare(b.created_at));
+  return reviewSendWakeText({ sends, how: { wake: how.wake ?? how.read } });
+}
+
 /** How an agent answers a review through the CLI (`plannotator reply`, `plannotator threads`). */
 export function reviewCliHow(key: string): ReviewReplyHow {
   return {
     read: `\`plannotator threads --review ${key}\` shows their words and replies.`,
+    wake: `Read the round with \`plannotator threads --review ${key}\` and answer under each id with \`plannotator reply --review ${key} <id>\`.`,
     reply: [
       "Reply under each id in Plannotator, not in chat: what you changed, your answer, or why you did not do it. Only the person resolves a comment.",
       `    plannotator reply --review ${key} <id> <<'END'`,
