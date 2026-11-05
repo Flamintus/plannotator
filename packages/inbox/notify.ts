@@ -107,6 +107,8 @@ export function isNewAgentThread(message: InboxMessage, first: boolean | undefin
     message.id === message.thread_id &&
     message.author.kind === 'agent' &&
     message.started_by_person !== true &&
+    // A review thread the person dropped a message or a file into (inbox-review-targets.ts) is not news to them.
+    !message.imported &&
     message.resolved_at === null &&
     (message.person_seen_seq ?? null) === null &&
     (message.person_read_seq ?? null) === null &&

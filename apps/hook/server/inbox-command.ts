@@ -67,6 +67,7 @@ import { getCliVersion } from "./cli";
 import { inboxHostSessionFromEnv, inboxQwenShimContext, inboxSessionProjectFromEnv, inboxT3EntryIdle, runInboxMcpShim } from "./inbox-mcp-shim";
 import { runInboxLinkCommand } from "./inbox-link-command";
 import { runInboxProjectsCommand } from "./inbox-projects-command";
+import { readInboxHostMessages } from "./inbox-review-command";
 
 export const INBOX_LOG_FILE = "inbox.log";
 /** Set by a starter that holds the start lock for the detached Inbox it spawns. */
@@ -320,6 +321,8 @@ async function serveInbox(dataDir: string, open: boolean, htmlContent: string | 
       htmlContent,
       selfCommand: selfCommand(),
       publishTailnet: tailscale,
+      // A chat message dropped for review is checked against its session's transcript (inbox-review-command.ts).
+      readHostMessages: (host, session) => readInboxHostMessages(host, session),
       // Testing knob: how long a reply waits on a busy agent before it goes in by itself (default 5 minutes).
       ...autoSendAfterMsFromEnv(),
       // The stop route (uninstall --purge) ends the process.

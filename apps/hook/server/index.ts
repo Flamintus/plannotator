@@ -245,6 +245,7 @@ import { runShapeCommand, SHAPE_OFF_TEXT } from "./shape-command";
 import { runShapeOpen, runShapeServe } from "./shape-open";
 import { runInboxCallCommand } from "./inbox-call-command";
 import { runInboxStepsCommand } from "./inbox-steps-command";
+import { runInboxReviewCommand } from "./inbox-review-command";
 import { runFeedbackCommand } from "./feedback-command";
 import { formatInboxHelp } from "./inbox-help";
 import { INBOX_CARD_ACTION_ON } from "@plannotator/core/inbox-types";
@@ -403,6 +404,22 @@ const rawArgs = process.argv.slice(2);
         env: process.env,
         askAiChild: isAskAiChild(process.env),
         ensureRunning: () => ensureInboxRunning(stepsDataDir),
+      }),
+    );
+  }
+}
+// `plannotator inbox review (--message - | --file <path>)`: a review thread for this session (inbox-review-command.ts).
+{
+  const args = rawArgs;
+  if (args[0] === "inbox" && args[1] === "review") {
+    const reviewDataDir = getPlannotatorDataDir();
+    process.exit(
+      await runInboxReviewCommand(args.slice(2), {
+        cwd: process.env.PLANNOTATOR_CWD || process.cwd(),
+        env: process.env,
+        askAiChild: isAskAiChild(process.env),
+        ensureRunning: () => ensureInboxRunning(reviewDataDir),
+        openUrl: (url) => openBrowserDetached(url, { isRemote: isRemoteSession() }),
       }),
     );
   }

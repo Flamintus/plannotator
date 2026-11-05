@@ -22,6 +22,7 @@ import type { InboxSteps } from "./inbox-steps";
 import type { InboxInitiative } from "./inbox-initiatives";
 import type { InboxReviewVerdictRecord } from "./inbox-review";
 import type { InboxTidyMark } from "./inbox-tidy";
+import type { InboxImported } from "./inbox-review-targets";
 import type { InboxRowSnooze } from "./inbox-snooze";
 import { INBOX_CODEX_QUEUE_MIN_VERSION } from "./inbox-codex";
 import { INBOX_QWEN_WAKE_MIN_VERSION } from "./inbox-qwen";
@@ -46,6 +47,8 @@ export * from "./inbox-surface-bridge";
 export * from "./inbox-tidy";
 // Pull requests (code review in the Inbox, phase 2), the same way.
 export * from "./inbox-pulls";
+// Review targets (experimental "persistent-comments"), the same way.
+export * from "./inbox-review-targets";
 
 /** Every record and line carries this version. Fields are only ever added. */
 export const INBOX_RECORD_VERSION = 1 as const;
@@ -559,6 +562,11 @@ export interface InboxMessage {
    * the window never calls it ended. Absent otherwise and on older records.
    */
   wakes?: boolean;
+  /**
+   * On an agent's message the person dropped for review (`inbox-review-targets.ts`):
+   * a message of its chat, or a file's message. Never the agent's answer, never its default thread.
+   */
+  imported?: InboxImported;
   /**
    * On an agent's message: the earlier questions it said it supersedes
    * (send_message's `supersedes`, as sent: `<message id>` for every open

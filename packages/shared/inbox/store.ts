@@ -85,6 +85,8 @@ import {
   type InboxThreadNaming,
   inboxThreadNameKey,
   isInboxNote,
+  isInboxImported,
+  type InboxImported,
   isInboxActionReport,
   inboxActionInDraft,
   inboxAgentName,
@@ -268,6 +270,11 @@ export interface InboxSendInput {
    * told to have ended when it stops polling.
    */
   wakes?: boolean;
+  /**
+   * A message the person dropped for review (core inbox-review-targets.ts): written into `thread_id` (null: a new
+   * thread, no session's default one), its body never read for questions or action items. Routing is skipped.
+   */
+  imported?: { record: InboxImported; thread_id: string | null };
 }
 
 export interface InboxSendResult {
@@ -460,9 +467,9 @@ function refusalError(refusal: InboxAnswerRefusal): InboxError {
   }
 }
 
-/** A thread's last message, the Inbox's own notes read past (`isInboxNote`). */
+/** A thread's last message, the Inbox's own notes read past (`isInboxNote`), and what the person dropped for review (`isInboxImported`). */
 function lastNonNote(messages: readonly InboxMessage[]): InboxMessage | undefined {
-  for (let i = messages.length - 1; i >= 0; i--) if (!isInboxNote(messages[i]!)) return messages[i];
+  for (let i = messages.length - 1; i >= 0; i--) if (!isInboxNote(messages[i]!) && !isInboxImported(messages[i]!)) return messages[i];
   return undefined;
 }
 
@@ -969,7 +976,8 @@ export class InboxStore {
     const name = message.thread_name ?? null;
     if (name !== null) {
       this.indexName(message.project_id, name, message.id);
-    } else if (message.author.session) {
+    } else if (message.author.session && !isInboxImported(message)) {
+      // A review thread the person dropped is no session's default thread either: the agent's own sends stay apart.
       this.sessionThreads.set(`${message.project_id}\0${message.author.session}`, message.id);
     }
   }
@@ -1009,6 +1017,13 @@ export class InboxStore {
       .filter((rootId): rootId is string => rootId !== undefined)
       .sort((a, b) => (this.messageSeq.get(a) ?? 0) - (this.messageSeq.get(b) ?? 0));
     return this.newestOpen(projectId, roots);
+  }
+
+  /** The review thread a drop goes in (null: a new one), refused when it is no open thread's root. */
+  private importedThread(threadId: string | null): string | null {
+    if (threadId === null) return null;
+    if (this.messages.get(threadId)?.thread_id !== threadId || this.isResolved(threadId)) throw new InboxError("thread_not_found", `No open thread ${threadId}.`);
+    return threadId;
   }
 
   /**
@@ -1822,7 +1837,8 @@ export class InboxStore {
     }
     // A reply of the person's is a look at everything before it.
     const seenSeq = Math.max(root.person_seen_seq ?? 0, lastPersonSeq);
-    const unseen = messages.filter((m) => m.author.kind === "agent" && seqOf(m) > seenSeq).length;
+    // What the person dropped for review is not news to them.
+    const unseen = messages.filter((m) => m.author.kind === "agent" && !isInboxImported(m) && seqOf(m) > seenSeq).length;
     // A reply that tags agents is read for each recipient by its own delivery:
     // it stays Sent until every session a connection wakes has it (an agent
     // that only reads the Inbox never holds it there).
@@ -3487,7 +3503,7 @@ export class InboxStore {
       }
     }
 
-    if (!replyTo) threadId = this.routeThread(projectId, input.author.session, threadName);
+    if (!replyTo) threadId = input.imported ? this.importedThread(input.imported.thread_id) : this.routeThread(projectId, input.author.session, threadName);
     // A send across a combined project can land in the other folder's thread. Every message of a thread
     // stays in its root's project (deleting a thread reads one folder), so this one is written there, and
     // its relative files keep starting at the folder it came from.
@@ -3522,10 +3538,11 @@ export class InboxStore {
 
     const at = this.stamp();
     const id = inboxId("msg");
-    const parsed = parseInboxQuestionBlocks(body);
+    // A drop for review copies words the agent already said: it asks the person nothing.
+    const parsed = input.imported ? [] : parseInboxQuestionBlocks(body);
     // Action items (approval "inbox-next-actions"): `:::action` blocks, kept as
     // question records of kind "action", numbered on their own (A1, A2…).
-    const actions = parseInboxActionBlocks(body);
+    const actions = input.imported ? [] : parseInboxActionBlocks(body);
     // Checked before anything is written: one id that names no open question
     // of this thread refuses the whole send.
     const superseding = this.planSupersede(threadId, id, supersedes, parsed, actions);
@@ -3558,6 +3575,7 @@ export class InboxStore {
         ? { from_project: { name: input.from_project.name, root: input.from_project.root } }
         : {}),
       ...(input.wakes === true ? { wakes: true } : {}),
+      ...(input.imported ? { imported: input.imported.record } : {}),
       ...(replyThread !== null ? { reply_thread: replyThread } : {}),
       ...(naming ? { thread_naming: naming } : {}),
     };

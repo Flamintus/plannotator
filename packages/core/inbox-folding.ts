@@ -6,7 +6,7 @@
  * (components/Thread.tsx) draws what these decide.
  */
 
-import { isInboxActionReport, isInboxNote, type InboxMessageWire, type InboxQuestion, type InboxThread } from './inbox-types';
+import { isInboxActionReport, isInboxImported, isInboxNote, type InboxMessageWire, type InboxQuestion, type InboxThread } from './inbox-types';
 import { QUESTION_ANSWERS_HEADING, type QuestionAnswer } from './question-block';
 import { INBOX_STILL_OPEN_LINE, sliceText } from './inbox-questions';
 import { withoutInboxSkillsBlock } from './skill-reference-block';
@@ -48,12 +48,12 @@ export function isPersonLook(message: InboxMessageWire): boolean {
   return isPersonReply(message) && !isInboxActionReport(message);
 }
 
-/** The agent messages after the boundary: new since the person's last look. */
+/** The agent messages after the boundary: new since the person's last look (never what the person dropped for review). */
 export function newSinceLook(messages: readonly InboxMessageWire[], boundary: number | null): Set<string> {
   const out = new Set<string>();
   if (boundary === null) return out;
   for (const message of messages) {
-    if (message.author.kind === 'agent' && typeof message.seq === 'number' && message.seq > boundary) out.add(message.id);
+    if (message.author.kind === 'agent' && !isInboxImported(message) && typeof message.seq === 'number' && message.seq > boundary) out.add(message.id);
   }
   return out;
 }

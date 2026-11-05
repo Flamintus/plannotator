@@ -194,6 +194,8 @@ import {
   piSessionOutdated,
 } from "./inbox-restart";
 import { createInboxCompose, INBOX_UPLOAD_SWEEP_MS } from "./inbox-compose";
+import { createInboxReviewTargets } from "./inbox-review-targets";
+import type { InboxHostMessage } from "@plannotator/core/inbox-types";
 import { createInboxReplyDrafts } from "./inbox-reply-drafts";
 import { createInboxAsk } from "./inbox-ask";
 import type { InboxAskTimes } from "./inbox-ask-live";
@@ -424,6 +426,8 @@ export interface InboxServerOptions {
    * (packages/server/inbox-tailscale.ts). Default false.
    */
   publishTailnet?: boolean;
+  /** A session's transcript, to check a chat message dropped for review (inbox-review-targets.ts). Absent: never read. */
+  readHostMessages?: (host: string, session: string) => Promise<readonly InboxHostMessage[] | null>;
   /**
    * How "Open in" launches an attachment's app (packages/server/inbox-open-in.ts).
    * Default: this host's launcher. Tests pass a recording one, so no real app starts.
@@ -3121,6 +3125,19 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
 
   const tagsRoute = createInboxTagsRoute({ store, serverSession, live, json });
   const stepsRoute = createInboxStepsRoute({ store, serverSession, live, stepsOn, json });
+  // Review targets: a chat message or a file dropped in a review thread for a live session (experimental).
+  const reviewTargets = createInboxReviewTargets({
+    store,
+    serverSession,
+    live,
+    resolveProject,
+    readBody: (req) => readBody(req),
+    json,
+    baseUrl: () => baseUrl,
+    on: persistentCommentsOn,
+    wakes: (host, session) => BRIDGE_WAKING_HOSTS.has(host) && live.pollsNow(host, session),
+    ...(options.readHostMessages ? { readHostMessages: options.readHostMessages } : {}),
+  });
 
   // Compose: a new thread the person starts with a live agent, drafts and uploads (packages/server/inbox-compose.ts).
   const compose = createInboxCompose({
@@ -4024,6 +4041,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       // The composers' skill picker and the SKILL.md a Send pastes in (inbox-skills.ts): read routes.
       const skills = inboxSkillsRoute(req, url, { codeReview: codeReviewOn(), shape: shapeOn() });
       if (skills) return skills;
+      // Review targets (experimental): a chat message or a file dropped for a live session, the owner's only.
+      const reviewed = await reviewTargets.route(req, url, ownerOrLocal(req, via));
+      if (reviewed) return reviewed;
 
       // Compose: live sessions in every project, a new thread, Send to another session, drafts and uploads.
       const composed = await compose.route(req, url);
