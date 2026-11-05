@@ -22,12 +22,13 @@
  *
  * Sub-threads, as crit's: words selected in one message of a thread (the
  * comment, a reply, the agent's or the person's, or a sub-thread) offer ui's
- * selection toolbar, and Comment opens a box under that message, the passage
- * at its head. The comment is a draft until the next Send, then a thread of
- * its own, a box in the box under that message, its passage marked in the
- * message's words: replies, Resolve (its own, whatever its parent's) and
- * sub-threads, at any depth, at the same indent at each level. Like a reply,
- * a sub-thread is never painted on the file or the message.
+ * selection toolbar, and Comment opens a box under the block of that
+ * message's words the passage starts in, the passage at its head. The comment
+ * is a draft until the next Send, then a thread of its own, a box in the box
+ * under that block, its passage marked in the message's words: replies,
+ * Resolve (its own, whatever its parent's) and sub-threads, at any depth, at
+ * the same indent at each level. Like a reply, a sub-thread is never painted
+ * on the file or the message.
  *
  * The person resolves a thread, or opens it again, at its head (not on a
  * linked machine's thread: the device door does not forward it). A resolved

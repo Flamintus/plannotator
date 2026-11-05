@@ -14,9 +14,11 @@
  * At a box's head the passage and its round, Reply and Resolve; then its
  * messages: the comment, and the replies under it, each with who wrote it
  * and its round (a draft says Not sent). A sub-thread is a box in the box,
- * under the message whose passage it is on, its passage marked in that
- * message's words. A resolved thread folds to one "Resolved" line (a press
- * opens it to be read) only once nothing under it, at any depth, is open.
+ * in the message whose passage it is on, under the block (paragraph) of its
+ * words where the passage starts, as a thread sits under its block in the
+ * document; its passage marked in those words. A resolved thread folds to
+ * one "Resolved" line (a press opens it to be read) only once nothing under
+ * it, at any depth, is open.
  *
  * With comment sends (the host passes `onSend` and the tree's `statuses`,
  * `live` and `fresh`): a draft, the comment, a reply under one or a
@@ -26,7 +28,7 @@
  * person's next replies in it go on their own); and an agent's reply the
  * person has not seen yet is New.
  */
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { isInboxCommentThreadFolded, isInboxSubThread } from '@plannotator/core/inbox-comment-threads';
 import type { TextPassage } from '@plannotator/core/passage';
 import type { InboxAnnotationRecord } from '@plannotator/core/inbox-types';
@@ -34,11 +36,11 @@ import type { InboxCommentSendStatus } from '@plannotator/core/inbox-comment-sen
 import { useConfigValue } from '../../config';
 import { AnnotationType, type Annotation } from '../../types';
 import { PassageToolbar } from '../PassageToolbar';
-import { PASSAGE_BODY_ATTRIBUTE, passageRanges, selectedPassage, splitByRanges, type SelectedPassage } from '../../utils/passageSelection';
+import { PASSAGE_BODY_ATTRIBUTE, PASSAGE_PIECE_ATTRIBUTE, passageRanges, selectedPassage, splitByRanges, type SelectedPassage } from '../../utils/passageSelection';
 import { isCommentSubmitKey } from '../../utils/commentSubmitKey';
 import { Icon } from './icons';
 import { shortLabel } from './shortLabel';
-import type { SentCommentsTree, SentReplyRow, SentThreadRecord } from './sentCommentsTree';
+import { placeOnMessage, subThreadPassage, type SentCommentsTree, type SentReplyRow, type SentThreadRecord } from './sentCommentsTree';
 
 const NO_RECORDS: readonly SentThreadRecord[] = [];
 const NO_IDS: ReadonlySet<string> = new Set();
@@ -49,20 +51,41 @@ export type ReplyInput = { text: string; mentions?: readonly string[] };
 /** The person's sub-thread on a passage of a message, true once saved. */
 export type SubThreadSave = (parentId: string, passage: TextPassage, comment: ReplyInput) => Promise<boolean>;
 
-/** A message's words, with its open sub-threads' passages marked; `bodyOf`: words a passage can be selected in. */
-function Said({ text, bodyOf, passages, className = 'ib-sentc-said' }: { text: string; bodyOf?: string; passages?: readonly TextPassage[]; className?: string }) {
+/**
+ * A message's words, with its sub-threads' passages marked; `bodyOf`: words a passage can be selected in.
+ * `from` and `to`: the piece of them drawn here, when the message is drawn in pieces (`piece`), its sub-threads' boxes
+ * between its blocks (`placeOnMessage`).
+ */
+function Said({
+  text,
+  from = 0,
+  to = text.length,
+  piece = false,
+  bodyOf,
+  passages,
+  className = 'ib-sentc-said',
+}: {
+  text: string;
+  from?: number;
+  to?: number;
+  piece?: boolean;
+  bodyOf?: string;
+  passages?: readonly TextPassage[];
+  className?: string;
+}) {
   const ranges = useMemo(() => (passages && passages.length > 0 ? passageRanges(text, passages) : []), [text, passages]);
+  const words = from === 0 && to === text.length ? text : text.slice(from, to);
   return (
-    <p className={className} data-sent-body="" {...(bodyOf !== undefined ? { [PASSAGE_BODY_ATTRIBUTE]: bodyOf } : {})}>
+    <p className={className} data-sent-body="" {...(bodyOf !== undefined ? { [PASSAGE_BODY_ATTRIBUTE]: bodyOf } : {})} {...(piece ? { [PASSAGE_PIECE_ATTRIBUTE]: '' } : {})}>
       {ranges.length === 0
-        ? text
-        : splitByRanges(text, 0, ranges).map((piece, index) =>
-            piece.marked ? (
+        ? words
+        : splitByRanges(words, from, ranges).map((part, index) =>
+            part.marked ? (
               <mark key={index} className="ib-sentc-mark" data-passage-mark="">
-                {piece.text}
+                {part.text}
               </mark>
             ) : (
-              <span key={index}>{piece.text}</span>
+              <span key={index}>{part.text}</span>
             ),
           )}
     </p>
@@ -200,13 +223,14 @@ export function SentSendButton({ id, onSend }: { id: string; onSend: (id: string
  * passage was not found, at its end), each a box of its own, as crit's:
  * at its head the passage and the round, Reply and Resolve; then its
  * messages, the comment and each reply under it (who, round, words); a
- * sub-thread is a box in the box, under the message whose passage it is on,
+ * sub-thread is a box in the box, in the message whose passage it is on,
+ * under the block of its words the passage starts in (`placeOnMessage`),
  * at the same indent at each level, at any depth. A resolved thread folds to
  * one line ("Resolved", a press opens it to be read) only when nothing under
  * it, at any depth, is open; until then it stays unfolded, marked Resolved,
  * its open sub-threads in view. Reply opens a box at the thread's foot;
  * words selected in a sent message offer ui's selection toolbar, whose
- * Comment opens a box under that message with the passage at its head. A
+ * Comment opens a box under the passage's block with the passage at its head. A
  * draft goes with the next Send, or alone by its own Send (`onSend`).
  *
  * The records are any client's (`SentThreadRecord`): the Inbox's own, or the
@@ -313,19 +337,35 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, tree, view, a
         onCancel={() => setBox(null)}
       />
     ) : null;
-  /** The sub-threads on a message's words, each a box in this box, and the box commenting on a passage of them. */
-  const subThreadsOf = (messageId: string) => {
+  /**
+   * A message's words (`selectable`: a passage of them can be commented on), with the sub-threads on them, each a box
+   * in this box under the block of the words its passage starts in, as a thread sits under its block in the document,
+   * several on one block in their passages' order; the box commenting on a passage of them, under that passage's block,
+   * after the sub-threads there. A message whose sub-threads all sit under its last block is drawn whole, then them.
+   */
+  const saidWithSubThreads = (messageId: string, text: string, selectable: boolean) => {
     const list: readonly R[] = subThreads.get(messageId) ?? [];
     const composer = boxFor(messageId, true);
-    if (list.length === 0 && !composer) return null;
-    return (
-      <div className="ib-sentb-subs" data-sent-subthreads={messageId}>
-        {list.map((sub) => (
-          <SentThreadBox key={sub.id} record={sub} root={root} tree={tree} view={view} actions={actions} />
-        ))}
-        {composer}
-      </div>
-    );
+    const items: readonly (R | null)[] = composer ? [...list, null] : list;
+    const pieces = placeOnMessage(text, items, (item) => (item ? subThreadPassage(item) : box?.passage));
+    return pieces.map((piece, index) => {
+      const subs = piece.under.filter((item): item is R => item !== null);
+      const composerHere = piece.under.includes(null) ? composer : null;
+      // The last piece keeps its key, so what sits at the message's end stays as it is when a block above gets a box.
+      return (
+        <Fragment key={index === pieces.length - 1 ? 'end' : piece.to}>
+          <Said text={text} from={piece.from} to={piece.to} piece={pieces.length > 1} bodyOf={selectable ? messageId : undefined} passages={passages.get(messageId)} />
+          {(subs.length > 0 || composerHere) && (
+            <div className="ib-sentb-subs" data-sent-subthreads={messageId}>
+              {subs.map((sub) => (
+                <SentThreadBox key={sub.id} record={sub} root={root} tree={tree} view={view} actions={actions} />
+              ))}
+              {composerHere}
+            </div>
+          )}
+        </Fragment>
+      );
+    });
   };
   const replyBox = boxFor(id, false);
   // A sub-thread's passage is in the message just above it; a thread's first comment's is in the document, a press brings it into view.
@@ -395,10 +435,8 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, tree, view, a
       <div className="ib-sentb-msg" data-sent-message={id}>
         <div className="ib-sentb-meta">
           <span className="ib-sentc-who">You</span>
-          {roundChip}
         </div>
-        <Said text={annotation.text ?? ''} bodyOf={draft || !onSubThread ? undefined : id} passages={passages.get(id)} />
-        {subThreadsOf(id)}
+        {saidWithSubThreads(id, annotation.text ?? '', !draft && !!onSubThread)}
       </div>
       {(under.length > 0 || replyBox) && (
         <div className="ib-sentb-replies" data-sent-replies={id}>
@@ -412,13 +450,11 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, tree, view, a
             >
               <div className="ib-sentb-meta">
                 <span className="ib-sentc-who">{reply.who}</span>
-                {reply.draft ? <span className="ib-sentc-chip">Not sent</span> : reply.round !== undefined && <span className="ib-sentc-chip">Round {reply.round}</span>}
                 <SentStatusChip status={statuses?.get(reply.id)} />
                 {fresh?.has(reply.id) && <span className="ib-sentc-chip ib-sentb-new">New</span>}
                 {reply.draft && onSend && <SentSendButton id={reply.id} onSend={onSend} />}
               </div>
-              <Said text={reply.text} bodyOf={reply.draft || !onSubThread ? undefined : reply.id} passages={passages.get(reply.id)} />
-              {subThreadsOf(reply.id)}
+              {saidWithSubThreads(reply.id, reply.text, !reply.draft && !!onSubThread)}
             </div>
           ))}
           {replyBox && <div className="ib-sentb-boxrow">{replyBox}</div>}

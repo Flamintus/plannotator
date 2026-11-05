@@ -7807,9 +7807,10 @@ dialog.ib-zx .ib-listcol.ib-zx-list { position: relative; inset: auto; visibilit
 
 /* Comments that stay after Send (experimental "persistent-comments"; SentComments.tsx): each thread is a box right under
    the block its passage starts in (ui Viewer `belowBlock`), as crit's. At its head the passage and its round, Reply and
-   Resolve; then its messages, the comment and each reply (who, round, words); a sub-thread is a box in the box, under
-   the message whose passage it is on, at the same indent at each level. A resolved thread with nothing open under it
-   folds to one "Resolved" line; with an open sub-thread under it, it stays open, marked Resolved. */
+   Resolve; then its messages, the comment and each reply (who, round, words); a sub-thread is a box in the box, in the
+   message whose passage it is on, under the block of its words the passage starts in, at the same indent at each level.
+   A resolved thread with nothing open under it folds to one "Resolved" line; with an open sub-thread under it, it stays
+   open, marked Resolved. */
 .ib-sentb { display: grid; gap: 8px; margin: 6px 0 14px; font-size: var(--ib-fs-14, 14px); line-height: 1.5; color: var(--foreground); }
 .ib-sentb-lost { margin: 0; font-size: var(--ib-fs-12, 12px); color: var(--muted-foreground); }
 .ib-sentb-card { min-width: 0; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in oklch, var(--muted) 28%, var(--card)); overflow: hidden; }
@@ -7838,8 +7839,10 @@ button.ib-sentb-quote:hover, button.ib-sentb-quote:focus-visible { color: var(--
 .ib-sentb-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-bottom: 2px; font-size: var(--ib-fs-12, 12px); color: var(--muted-foreground); }
 .ib-sentc-who { flex: none; font-weight: 600; color: var(--foreground); }
 .ib-sentc-said { margin: 0; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-/* Sub-threads: boxes in the box, under the message they are on, at the same indent at each level. */
+/* Sub-threads: boxes in the box, under the block of the message's words their passage starts in, at the same indent at
+   each level; the words go on below them. */
 .ib-sentb-subs { display: grid; gap: 8px; margin: 8px 0 2px; padding-left: 12px; border-left: 2px solid var(--border); }
+.ib-sentb-subs:not(:last-child) { margin-bottom: 8px; }
 .ib-sentb-subs > .ib-sentb-card { background: var(--card); }
 .ib-sentb-subs > .ib-sentb-card .ib-sentb-subs > .ib-sentb-card { background: color-mix(in oklch, var(--muted) 28%, var(--card)); }
 /* The folded thread: one line, "Resolved", its passage and how much it holds; a press opens it to be read. */
@@ -7862,7 +7865,8 @@ button.ib-sentb-quote:hover, button.ib-sentb-quote:focus-visible { color: var(--
 .ib-sentb-new { background: color-mix(in oklab, var(--primary) 22%, var(--card)); color: var(--foreground); font-weight: 600; }
 .ib-sentb-live { background: color-mix(in oklab, var(--primary) 12%, var(--card)); color: var(--foreground); }
 /* An open sub-thread's passage, marked in the message's words; the box a reply or a comment on a passage is written in. */
-.ib-sentc-mark { background: color-mix(in oklab, var(--primary) 18%, transparent); color: inherit; border-radius: 2px; }
+.ib-sentc-mark { background: oklch(0.70 0.18 60 / 0.3); border-bottom: 2px solid var(--accent); color: inherit; border-radius: 2px; }
+.light .ib-sentc-mark { background: oklch(0.70 0.20 60 / 0.15); }
 .ib-sentc-boxquote { margin: 0; font-size: var(--ib-fs-12, 12px); color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ib-sentc-box { display: grid; gap: 4px; padding: 4px 6px; }
 .ib-sentb-boxrow > .ib-sentc-box { padding: 8px 12px; }
