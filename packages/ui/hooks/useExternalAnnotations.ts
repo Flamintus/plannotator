@@ -139,11 +139,26 @@ export function useExternalAnnotations<T extends { id: string; source?: string }
      * fallback does not.
      */
     onSessionClosed?: (event: ExternalSessionClosed) => void;
+    /**
+     * The review loop of this screen changed (`review-threads` on the stream,
+     * the body `GET /api/threads` answers; experimental "persistent-comments").
+     * Only the SSE stream carries it. Absent: the event is ignored, as before.
+     */
+    onReviewThreads?: (state: Extract<ExternalAnnotationEvent<T>, { type: 'review-threads' }>) => void;
+    /**
+     * The agent's next messages reached this `last` screen (`messages` on the
+     * stream). Only the SSE stream carries it. Absent: ignored, as before.
+     */
+    onMessages?: (messages: Extract<ExternalAnnotationEvent<T>, { type: 'messages' }>['messages']) => void;
   },
 ): UseExternalAnnotationsReturn<T> {
   const enabled = options?.enabled ?? true;
   const onSessionClosedRef = useRef(options?.onSessionClosed);
   onSessionClosedRef.current = options?.onSessionClosed;
+  const onReviewThreadsRef = useRef(options?.onReviewThreads);
+  onReviewThreadsRef.current = options?.onReviewThreads;
+  const onMessagesRef = useRef(options?.onMessages);
+  onMessagesRef.current = options?.onMessages;
   const [annotations, setAnnotations] = useState<T[]>([]);
   const versionRef = useRef(0);
   const fallbackRef = useRef(false);
@@ -200,6 +215,12 @@ export function useExternalAnnotations<T extends { id: string; source?: string }
             unsentAnnotations: typeof parsed.unsentAnnotations === 'number' ? parsed.unsentAnnotations : 0,
             by: parsed.by === 'session' ? 'session' : 'agent',
           });
+          break;
+        case 'review-threads':
+          onReviewThreadsRef.current?.(parsed);
+          break;
+        case 'messages':
+          if (Array.isArray(parsed.messages)) onMessagesRef.current?.(parsed.messages);
           break;
       }
     }

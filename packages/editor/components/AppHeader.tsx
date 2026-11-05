@@ -92,6 +92,10 @@ interface AppHeaderProps {
   /** `:::question` progress: the "N/M answered" chip beside the decision
    *  control. Absent (or total 0): no chip. */
   questionProgress?: { done: number; total: number; hasOpen: boolean; onJump: () => void };
+  /** The review loop's count, informative only ("Round 2 · 3 open"): the
+   *  round under way and the sent threads still open (experimental
+   *  "persistent-comments"). Absent: nothing. */
+  reviewRound?: { round: number; open: number };
   /** Plan review's decision control (#1057): the same DecisionControl as
    *  annotate, without the ghost Close (a plan review ends with a decision).
    *  App owns the spec and every handler; `menuFooter` carries the OpenCode
@@ -219,6 +223,7 @@ export const AppHeader = React.memo<AppHeaderProps>(({
   callbackShareUrlReady,
   canShareCurrentSession,
   questionProgress,
+  reviewRound,
   annotateDecision,
   planDecision,
   callbackConfig,
@@ -370,6 +375,11 @@ export const AppHeader = React.memo<AppHeaderProps>(({
 
         {!compactTouchLayout && isApiMode && (!linkedDocIsActive || annotateMode) && !archiveMode && !goalSetupMode && (
           <>
+            {reviewRound && (
+              <span data-review-loop-count="" className="mr-1 hidden whitespace-nowrap text-[11px] text-muted-foreground md:inline">
+                Round {reviewRound.round} · {reviewRound.open} open
+              </span>
+            )}
             {questionProgress && questionProgress.total > 0 && (
               <QuestionProgressChip
                 done={questionProgress.done}

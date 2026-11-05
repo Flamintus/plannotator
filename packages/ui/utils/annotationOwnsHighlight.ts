@@ -5,13 +5,19 @@ import { AnnotationType, type Annotation } from '../types';
  *  quoting raw markdown, and never a text highlight. */
 export const CHECKBOX_ANNOTATION_PREFIX = 'ann-checkbox-';
 
+/** Ids of comments on a passage of a comment card's words (a sub-thread,
+ *  `AnnotationPanel` `onCommentPassage`): their quote is the card's words,
+ *  not the document's, so they are never a text highlight. */
+export const PASSAGE_ANNOTATION_PREFIX = 'ann-passage-';
+
 /**
  * Whether an annotation is restored as a text highlight in the document view.
  *
  * Not: comments made in the plan diff view (`diffContext`, `blockId`
  * `diff-block-N`, drawn by the diff view), general comments, checkbox
- * toggles, answers to `:::question` blocks (drawn by the question card), and
- * comments on part of an image (`imageRegion`, drawn by the image viewer).
+ * toggles, answers to `:::question` blocks (drawn by the question card),
+ * comments on part of an image (`imageRegion`, drawn by the image viewer), and
+ * comments on a passage of a card's words (`PASSAGE_ANNOTATION_PREFIX`).
  * Restoring any of those through the highlighter finds no text, so it would
  * be reported unanchored and its `blockId` rewritten. Every caller that
  * re-applies a stored list filters with this, and the highlighter skips the
@@ -25,5 +31,6 @@ export function annotationOwnsHighlight(
     && !annotation.id.startsWith(CHECKBOX_ANNOTATION_PREFIX)
     && annotation.questionAnswer == null
     && annotation.imageRegion == null
-    && !annotation.id.startsWith(QUESTION_ANSWER_ANNOTATION_PREFIX);
+    && !annotation.id.startsWith(QUESTION_ANSWER_ANNOTATION_PREFIX)
+    && !annotation.id.startsWith(PASSAGE_ANNOTATION_PREFIX);
 }
