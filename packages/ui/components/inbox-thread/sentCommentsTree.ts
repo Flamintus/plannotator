@@ -8,11 +8,34 @@
  * (with `inboxCommentLastReplies`) and the messages with an open sub-thread under them from
  * `inboxOpenSubThreadPaths`; `placeThreads` names the block each thread goes
  * under (`Viewer`'s `belowBlock`).
+ *
+ * A host that keeps no records of its own (the screens' review loop, any
+ * client of the neutral thread view of `@plannotator/core/review-threads`)
+ * builds the same props from that view alone, with its own drafts beside it
+ * (`sentThreadsFromView`), so every web client draws the same boxes.
  */
 
-import type { InboxCommentSendStatus, InboxCommentThreadNode, InboxCommentThreadView } from '@plannotator/core/inbox-comment-sends';
+import type { InboxCommentSendStatus } from '@plannotator/core/inbox-comment-sends';
 import type { TextPassage } from '@plannotator/core/passage';
 import type { InboxAnnotationRecord } from '@plannotator/core/inbox-types';
+import type { ReviewThreadNode, ReviewThreadView } from '@plannotator/core/review-threads';
+
+/**
+ * What the boxes read of a thread's record, whichever client keeps it: the
+ * Inbox's `InboxAnnotationRecord`, or one a host builds from the neutral
+ * thread view (`sentThreadsFromView`).
+ */
+export interface SentThreadRecord {
+  id: string;
+  /** Its drawing data: the passage (`originalText`), its words (`text`), the block it starts in (`blockId`). */
+  annotation: Record<string, unknown>;
+  /** What carried it to the agent (its round is `SentCommentsTree.rounds`'); null while a draft. */
+  sent_reply_id: string | null;
+  /** A sub-thread: the message whose passage it is on. */
+  parent?: string;
+  /** Its words were not found where it was made. */
+  unanchored_at?: string | null;
+}
 
 /** One reply under a sent comment, as the list under a message draws it. */
 export interface SentReplyRow {
@@ -27,13 +50,13 @@ export interface SentReplyRow {
 }
 
 /** What the list under a message draws of the thread's comments, beyond its own rows. */
-export interface SentCommentsTree {
+export interface SentCommentsTree<R extends SentThreadRecord = InboxAnnotationRecord> {
   rounds: ReadonlyMap<string, number>;
   resolved: ReadonlySet<string>;
   /** The replies under each comment or sub-thread. */
   replies: ReadonlyMap<string, readonly SentReplyRow[]>;
   /** The sub-threads on each message (drafts too). */
-  subThreads: ReadonlyMap<string, readonly InboxAnnotationRecord[]>;
+  subThreads: ReadonlyMap<string, readonly R[]>;
   /** The messages with an open sub-thread under them. */
   openBelow: ReadonlySet<string>;
   /** The passages to mark in each message's words. */
@@ -47,11 +70,11 @@ export interface SentCommentsTree {
 }
 
 /** What the window draws of a thread's comments beyond the records themselves (`sentCommentsParts`). */
-export interface SentCommentsParts {
+export interface SentCommentsParts<R extends SentThreadRecord = InboxAnnotationRecord> {
   /** The replies under each comment or sub-thread, by its id, oldest first: the agents', the person's sent ones and their drafts. */
   replies: Map<string, SentReplyRow[]>;
   /** The sub-threads on each message (a comment, a reply or a sub-thread), by its id, as records: the sent ones, then the drafts. */
-  subThreads: Map<string, InboxAnnotationRecord[]>;
+  subThreads: Map<string, R[]>;
   /** The passages to mark in each message's words: its sub-threads still open (a draft too); a resolved one is not marked. */
   passages: Map<string, TextPassage[]>;
   /** Each sent reply's round, by id: the person's, its send's; an agent's, the round under way when it wrote. */
@@ -68,17 +91,17 @@ export interface SentCommentsParts {
  * drafts included): one assembly of the thread for the window, `read_thread`
  * and any other client. `records` gives each sub-thread's record back.
  */
-export function sentCommentsParts(view: InboxCommentThreadView, records: readonly InboxAnnotationRecord[]): SentCommentsParts {
+export function sentCommentsParts<R extends SentThreadRecord, A>(view: ReviewThreadView<A>, records: readonly R[]): SentCommentsParts<R> {
   const byId = new Map(records.map((record) => [record.id, record]));
-  const parts: SentCommentsParts = { replies: new Map(), subThreads: new Map(), passages: new Map(), replyRounds: new Map(), statuses: new Map(), live: new Set() };
-  const subThreadsOn = (host: string, subs: readonly InboxCommentThreadNode[]) => {
+  const parts: SentCommentsParts<R> = { replies: new Map(), subThreads: new Map(), passages: new Map(), replyRounds: new Map(), statuses: new Map(), live: new Set() };
+  const subThreadsOn = (host: string, subs: readonly ReviewThreadNode<A>[]) => {
     const list = subs.flatMap((sub) => byId.get(sub.id) ?? []);
     if (list.length > 0) parts.subThreads.set(host, list);
     const open = subs.filter((sub) => sub.state !== 'resolved').map((sub) => ({ quote: sub.quote, offset: sub.parent?.quote_offset ?? 0 }));
     if (open.length > 0) parts.passages.set(host, open);
     for (const sub of subs) walk(sub);
   };
-  const walk = (node: InboxCommentThreadNode) => {
+  const walk = (node: ReviewThreadNode<A>) => {
     if (node.status) parts.statuses.set(node.id, node.status);
     if (node.live) parts.live.add(node.id);
     if (node.replies.length > 0) {
@@ -105,13 +128,13 @@ export function sentCommentsParts(view: InboxCommentThreadView, records: readonl
  * given; a thread whose block is not drawn, or whose words were not found
  * (`unanchored`, or its kept `unanchored_at`), at the document's end.
  */
-export function placeThreads(
-  records: readonly InboxAnnotationRecord[],
+export function placeThreads<R extends SentThreadRecord>(
+  records: readonly R[],
   blockIds: ReadonlySet<string>,
   found: { moved?: ReadonlyMap<string, string>; unanchored?: ReadonlySet<string> } = {},
-): { byBlock: Map<string, InboxAnnotationRecord[]>; rest: InboxAnnotationRecord[] } {
-  const byBlock = new Map<string, InboxAnnotationRecord[]>();
-  const rest: InboxAnnotationRecord[] = [];
+): { byBlock: Map<string, R[]>; rest: R[] } {
+  const byBlock = new Map<string, R[]>();
+  const rest: R[] = [];
   for (const record of records) {
     const stored = record.annotation.blockId;
     const block = found.moved?.get(record.id) ?? (typeof stored === 'string' ? stored : '');
@@ -120,4 +143,84 @@ export function placeThreads(
     else byBlock.set(block, [...(byBlock.get(block) ?? []), record]);
   }
   return { byBlock, rest };
+}
+
+/** The person's drafts a host keeps beside the neutral thread view (its own, not in the view yet). */
+export interface SentViewDrafts {
+  /** The person's draft replies under each thread, by the thread's id, oldest first. */
+  replies?: ReadonlyMap<string, readonly SentReplyRow[]>;
+  /** The person's draft sub-threads on each message (a comment, a reply, a sub-thread), by its id. */
+  subThreads?: ReadonlyMap<string, readonly SentThreadRecord[]>;
+  /** The passages of those draft sub-threads, by the message they are on. */
+  passages?: ReadonlyMap<string, readonly TextPassage[]>;
+}
+
+/**
+ * The boxes' props from the neutral thread view alone (`reviewThreadView`,
+ * `GET /api/threads` of a screen, the journal's CLI), for a host that keeps
+ * no records of its own: the top-level threads in the view's order
+ * (`threads`, the drafts after what was sent), each sub-thread's record and
+ * the tree. `annotationOf` gives a thread's drawing data when the host holds
+ * it (its block, its passage as painted); else its quote and words from the
+ * view stand in. A resolved thread stays unfolded while something under it
+ * is open, a draft of the host's included, as in the Inbox. `person` names
+ * the person on their own replies.
+ */
+export function sentThreadsFromView<A>(
+  view: ReviewThreadView<A>,
+  options: {
+    annotationOf?: (id: string) => Record<string, unknown> | undefined;
+    drafts?: SentViewDrafts;
+    /** The agents' replies the person has not seen yet. */
+    fresh?: ReadonlySet<string>;
+    person?: string;
+  } = {},
+): { threads: SentThreadRecord[]; tree: SentCommentsTree<SentThreadRecord> } {
+  const { annotationOf, drafts = {}, fresh, person = 'You' } = options;
+  const recordOf = (node: ReviewThreadNode<A>): SentThreadRecord => ({
+    id: node.id,
+    annotation: annotationOf?.(node.id) ?? { originalText: node.quote, text: node.text },
+    sent_reply_id: node.draft ? null : node.reply_id,
+    ...(node.parent ? { parent: node.parent.id } : {}),
+    ...(node.unanchored ? { unanchored_at: 'unanchored' } : {}),
+  });
+  const rounds = new Map<string, number>();
+  const resolved = new Set<string>();
+  const openBelow = new Set<string>();
+  const replies = new Map<string, SentReplyRow[]>();
+  const subThreads = new Map<string, SentThreadRecord[]>();
+  const passages = new Map<string, TextPassage[]>();
+  const statuses = new Map<string, InboxCommentSendStatus>();
+  const live = new Set<string>();
+  /** Whether anything under a thread, at any depth, is open: a sub-thread open or a draft of the host's. */
+  const walk = (node: ReviewThreadNode<A>): boolean => {
+    if (!node.draft) rounds.set(node.reply_id, node.round);
+    if (node.state === 'resolved') resolved.add(node.id);
+    if (node.status) statuses.set(node.id, node.status);
+    if (node.live) live.add(node.id);
+    const own = drafts.replies?.get(node.id) ?? [];
+    const rows: SentReplyRow[] = node.replies.map((reply) => ({ id: reply.id, who: reply.author_name ?? person, round: reply.draft ? undefined : reply.round, text: reply.text, at: reply.at, draft: reply.draft }));
+    if (rows.length + own.length > 0) replies.set(node.id, [...rows, ...own]);
+    let open = own.length > 0;
+    const on = (message: string, subs: readonly ReviewThreadNode<A>[]) => {
+      const list = [...subs.map(recordOf), ...(drafts.subThreads?.get(message) ?? [])];
+      if (list.length > 0) subThreads.set(message, list);
+      if ((drafts.subThreads?.get(message)?.length ?? 0) > 0) open = true;
+      const marked = [...subs.filter((sub) => sub.state !== 'resolved').map((sub) => ({ quote: sub.quote, offset: sub.parent?.quote_offset ?? 0 })), ...(drafts.passages?.get(message) ?? [])];
+      if (marked.length > 0) passages.set(message, marked);
+      for (const sub of subs) if (walk(sub) || sub.state !== 'resolved') open = true;
+    };
+    for (const reply of node.replies) {
+      if (reply.status) statuses.set(reply.id, reply.status);
+      on(reply.id, reply.sub_threads);
+    }
+    on(node.id, node.sub_threads);
+    if (open) openBelow.add(node.id);
+    return open;
+  };
+  for (const node of view.threads) walk(node);
+  return {
+    threads: view.threads.map(recordOf),
+    tree: { rounds, resolved, replies, subThreads, openBelow, passages, statuses, live, ...(fresh ? { fresh } : {}) },
+  };
 }

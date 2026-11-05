@@ -38,9 +38,9 @@ import { PASSAGE_BODY_ATTRIBUTE, passageRanges, selectedPassage, splitByRanges, 
 import { isCommentSubmitKey } from '../../utils/commentSubmitKey';
 import { Icon } from './icons';
 import { shortLabel } from './shortLabel';
-import type { SentCommentsTree, SentReplyRow } from './sentCommentsTree';
+import type { SentCommentsTree, SentReplyRow, SentThreadRecord } from './sentCommentsTree';
 
-const NO_RECORDS: readonly InboxAnnotationRecord[] = [];
+const NO_RECORDS: readonly SentThreadRecord[] = [];
 const NO_IDS: ReadonlySet<string> = new Set();
 
 /** The person's reply under a comment, or comment on a passage, as the composer hands it. */
@@ -140,9 +140,9 @@ export function useSentThreadsView(offering: boolean, folded: ReadonlySet<string
  * What a group of threads does: bring a thread's passage into view (absent: its quote is words), and the person's
  * Resolve, Reply, comment on a passage and Send of one draft (each absent: none).
  */
-interface SentThreadsActions {
-  onOpen?: (record: InboxAnnotationRecord) => void;
-  onResolve?: (record: InboxAnnotationRecord, resolved: boolean) => void;
+interface SentThreadsActions<R extends SentThreadRecord = InboxAnnotationRecord> {
+  onOpen?: (record: R) => void;
+  onResolve?: (record: R, resolved: boolean) => void;
   onReply?: (commentId: string, reply: ReplyInput) => Promise<boolean>;
   onSubThread?: SubThreadSave;
   /** Send one draft (a comment, a reply under one, a sub-thread, by id) alone, at once, the round left open; true once it went. */
@@ -208,8 +208,13 @@ export function SentSendButton({ id, onSend }: { id: string; onSend: (id: string
  * words selected in a sent message offer ui's selection toolbar, whose
  * Comment opens a box under that message with the passage at its head. A
  * draft goes with the next Send, or alone by its own Send (`onSend`).
+ *
+ * The records are any client's (`SentThreadRecord`): the Inbox's own, or the
+ * ones a host builds from the neutral thread view (`sentThreadsFromView`).
+ * A resolved thread says so plainly: its passage's bar and its frame take
+ * the success colour, a "✓ Resolved" chip at its head, its words dimmed.
  */
-export function SentThreads({
+export function SentThreads<R extends SentThreadRecord = InboxAnnotationRecord>({
   group,
   records,
   tree,
@@ -219,11 +224,11 @@ export function SentThreads({
 }: {
   /** This group's key, inside its view's surface. */
   group: string;
-  records: readonly InboxAnnotationRecord[];
-  tree: SentCommentsTree;
+  records: readonly R[];
+  tree: SentCommentsTree<R>;
   view: SentThreadsView;
   lost?: boolean;
-} & SentThreadsActions) {
+} & SentThreadsActions<R>) {
   if (records.length === 0) return null;
   const key = `${view.surface}:${group}`;
   const { onSubThread } = actions;
@@ -250,7 +255,7 @@ export function SentThreads({
 }
 
 /** One thread (a comment, or a sub-thread; `root`: its thread's first comment), as a box. */
-function SentThreadBox({ record, root, tree, view, actions }: { record: InboxAnnotationRecord; root: InboxAnnotationRecord; tree: SentCommentsTree; view: SentThreadsView; actions: SentThreadsActions }) {
+function SentThreadBox<R extends SentThreadRecord>({ record, root, tree, view, actions }: { record: R; root: R; tree: SentCommentsTree<R>; view: SentThreadsView; actions: SentThreadsActions<R> }) {
   const { rounds, resolved, replies, subThreads, openBelow, passages, statuses, live, fresh } = tree;
   const { onOpen, onResolve, onReply, onSubThread, onSend } = actions;
   const { box, setBox } = view;
@@ -277,11 +282,11 @@ function SentThreadBox({ record, root, tree, view, actions }: { record: InboxAnn
       <div className="ib-sentb-card" {...marks}>
         <button type="button" className="ib-sentb-fold" aria-expanded={false} data-sent-unfold={id} onClick={() => view.toggleShown(id)}>
           <Icon name="chevR" size={12} />
-          <span className="ib-sentb-state">
+          <span className="ib-sentb-state" data-sent-resolved-chip="">
             <Icon name="check" size={12} />
             Resolved
           </span>
-          <span className="ib-sentb-fquote">“{shortLabel(quote)}”</span>
+          <span className="ib-sentb-fquote">{quote === '' && !isSub ? 'General comment' : `“${shortLabel(quote)}”`}</span>
           {roundChip}
           <span className="ib-sentb-count" data-sent-messages={1 + under.length} data-sent-subthreads={subs}>
             {plural(1 + under.length, 'message')}
@@ -308,7 +313,7 @@ function SentThreadBox({ record, root, tree, view, actions }: { record: InboxAnn
     ) : null;
   /** The sub-threads on a message's words, each a box in this box, and the box commenting on a passage of them. */
   const subThreadsOf = (messageId: string) => {
-    const list = subThreads.get(messageId) ?? NO_RECORDS;
+    const list: readonly R[] = subThreads.get(messageId) ?? [];
     const composer = boxFor(messageId, true);
     if (list.length === 0 && !composer) return null;
     return (
@@ -322,7 +327,8 @@ function SentThreadBox({ record, root, tree, view, actions }: { record: InboxAnn
   };
   const replyBox = boxFor(id, false);
   // A sub-thread's passage is in the message just above it; a thread's first comment's is in the document, a press brings it into view.
-  const quoteText = <span className="ib-sentb-qt">“{quote}”</span>;
+  // A comment on the whole document has no passage: its head says so.
+  const quoteText = quote === '' && !isSub ? <span className="ib-sentb-qt ib-sentb-general">General comment</span> : <span className="ib-sentb-qt">“{quote}”</span>;
   return (
     <div className="ib-sentb-card" {...marks} data-sent-draft={draft ? '' : undefined}>
       <div className="ib-sentb-head">
@@ -348,6 +354,7 @@ function SentThreadBox({ record, root, tree, view, actions }: { record: InboxAnn
           )}
           {isResolved && (
             <span className="ib-sentc-chip ib-sentb-resolved" data-sent-resolved-chip="">
+              <Icon name="check" size={11} />
               Resolved
             </span>
           )}
@@ -420,7 +427,7 @@ function SentThreadBox({ record, root, tree, view, actions }: { record: InboxAnn
 }
 
 /** The sub-threads under a thread, on its messages and theirs, at any depth (what its folded line counts). */
-function countSubThreads(id: string, replies: ReadonlyMap<string, readonly SentReplyRow[]>, subThreads: ReadonlyMap<string, readonly InboxAnnotationRecord[]>): number {
+function countSubThreads(id: string, replies: ReadonlyMap<string, readonly SentReplyRow[]>, subThreads: ReadonlyMap<string, readonly SentThreadRecord[]>): number {
   const seen = new Set<string>();
   const walk = (threadId: string) => {
     for (const messageId of [threadId, ...(replies.get(threadId) ?? []).map((reply) => reply.id)]) {

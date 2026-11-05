@@ -21,6 +21,8 @@ packages/ui/components/html-embed/HtmlEmbedBlock.test.tsx
 packages/ui/components/LazyBlockBoundary.test.tsx
 packages/ui/components/inbox-thread/SnoozeMenu.test.tsx
 packages/ui/components/inbox-thread/SentThreads.test.tsx
+packages/ui/components/inbox-thread/CommentListMeta.test.tsx
+packages/ui/components/CompletionOverlay.test.tsx
 packages/ui/components/Viewer.vimMode.integration.test.tsx
 packages/ui/components/CodeFilePopout.lineScroll.test.tsx
 packages/ui/components/CodeFilePopout.windowsPath.test.tsx

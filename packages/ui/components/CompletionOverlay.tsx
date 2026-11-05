@@ -1,3 +1,4 @@
+import { useEffect, useRef, type ReactNode } from 'react';
 import { useAutoClose } from '../hooks/useAutoClose';
 
 // ---------------------------------------------------------------------------
@@ -38,20 +39,118 @@ interface CompletionOverlayProps {
    * a platform review was just posted to. Omitted or empty renders nothing.
    */
   links?: ReadonlyArray<{ href: string; label: string }>;
+  /**
+   * The page stays under the message, as crit's review dialog does (the
+   * review loop, #1116): the message is a card over the page, and a press
+   * outside it, Escape, or "Back to the page" calls this; the host then
+   * unmounts the overlay. Absent: today's full-screen message, unchanged.
+   */
+  onDismiss?: () => void;
+  /** With `onDismiss`: the review goes on in this tab (a round was sent), so it never closes the tab by itself. */
+  reviewContinues?: boolean;
 }
 
-export function CompletionOverlay({ submitted, title, subtitle, agentLabel, links }: CompletionOverlayProps) {
-  const { state, enableAndStart } = useAutoClose(!!submitted);
+/** A press on the backdrop this soon after it opened is the rest of the click that opened it (crit's guard). */
+const BACKDROP_GUARD_MS = 600;
+
+/** The card over the page (with `onDismiss`): a press outside it or Escape takes it away. */
+function OverPage({ state, onDismiss, children }: { state: string; onDismiss: () => void; children: ReactNode }) {
+  const openedAt = useRef(Date.now());
+  const dismissRef = useRef(onDismiss);
+  dismissRef.current = onDismiss;
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      dismissRef.current();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, []);
+  return (
+    <div
+      className="fixed inset-0 z-[100] bg-background/70 backdrop-blur-[2px] flex items-center justify-center p-4"
+      data-completion-state={state}
+      data-completion-over-page=""
+      onClick={(event) => {
+        if (event.target === event.currentTarget && Date.now() - openedAt.current > BACKDROP_GUARD_MS) onDismiss();
+      }}
+    >
+      <div role="dialog" aria-modal="true" className="text-center space-y-6 max-w-md w-full px-8 py-8 rounded-xl border border-border bg-card shadow-xl">
+        {children}
+        <button
+          type="button"
+          data-completion-back=""
+          onClick={onDismiss}
+          className="text-sm font-medium text-primary underline-offset-4 hover:underline"
+        >
+          Back to the page
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function CompletionOverlay({ submitted, title, subtitle, agentLabel, links, onDismiss, reviewContinues = false }: CompletionOverlayProps) {
+  const { state, enableAndStart } = useAutoClose(!!submitted && !(onDismiss && reviewContinues));
 
   if (!submitted) return null;
 
-  const isApproved = submitted === 'approved';
-  const isDone = submitted === 'done';
-  const sentNothing = isDone || submitted === 'exited';
+  if (onDismiss) {
+    return (
+      <OverPage state={submitted} onDismiss={onDismiss}>
+        <CompletionBody
+          submitted={submitted}
+          title={title}
+          subtitle={subtitle}
+          agentLabel={agentLabel}
+          links={links}
+          state={state}
+          enableAndStart={enableAndStart}
+          reviewContinues={reviewContinues}
+        />
+      </OverPage>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-[100] bg-background flex items-center justify-center" data-completion-state={submitted}>
       <div className="text-center space-y-6 max-w-md px-8">
+        <CompletionBody
+          submitted={submitted}
+          title={title}
+          subtitle={subtitle}
+          agentLabel={agentLabel}
+          links={links}
+          state={state}
+          enableAndStart={enableAndStart}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** The message: its mark, its words, and what happens to the tab now. */
+function CompletionBody({
+  submitted,
+  title,
+  subtitle,
+  agentLabel,
+  links,
+  state,
+  enableAndStart,
+  reviewContinues = false,
+}: Omit<CompletionOverlayProps, 'onDismiss' | 'submitted'> & {
+  submitted: NonNullable<Exclude<CompletionOverlayProps['submitted'], false>>;
+  state: ReturnType<typeof useAutoClose>['state'];
+  enableAndStart: () => void;
+}) {
+  const isApproved = submitted === 'approved';
+  const isDone = submitted === 'done';
+  const sentNothing = isDone || submitted === 'exited';
+  return (
+    <>
         <div
           className={`mx-auto w-16 h-16 rounded-full flex items-center justify-center ${
             isApproved ? 'bg-success/20 text-success'
@@ -84,7 +183,11 @@ export function CompletionOverlay({ submitted, title, subtitle, agentLabel, link
         </div>
 
         <div className="pt-4 border-t border-border space-y-2">
-          {state.phase === 'counting' ? (
+          {reviewContinues ? (
+            <p className="text-sm text-muted-foreground" data-completion-continues="">
+              The review goes on in this tab: <span className="text-foreground font-medium">{agentLabel}</span> answers under each comment.
+            </p>
+          ) : state.phase === 'counting' ? (
             <>
               <p className="text-sm text-muted-foreground">
                 This tab will close in <span className="text-foreground font-medium">{state.remaining}</span> second
@@ -122,7 +225,6 @@ export function CompletionOverlay({ submitted, title, subtitle, agentLabel, link
             </>
           )}
         </div>
-      </div>
-    </div>
+    </>
   );
 }

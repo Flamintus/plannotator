@@ -143,10 +143,12 @@ describe.skipIf(!hasDom)('SentThreads', () => {
       replies: new Map([...TREE.replies, ['c2', [{ id: 'r2', who: 'You', round: 1, text: 'Monday it is.', at: '2026-11-05T10:02:00.000Z', draft: false }]]]),
     };
     await render([comment, done], tree, { onResolve: () => {} });
-    // c1 is resolved but its sub-thread is open: unfolded, marked Resolved, the sub-thread in view.
+    // c1 is resolved but its sub-thread is open: unfolded, marked Resolved (with its check), the sub-thread in view, open.
     expect(box('c1')!.hasAttribute('data-sent-folded')).toBe(false);
     expect(box('c1')!.hasAttribute('data-sent-resolved')).toBe(true);
+    expect(box('c1')!.querySelector(':scope > .ib-sentb-head [data-sent-resolved-chip] [data-icon="check"]')).not.toBeNull();
     expect(box('s1')).not.toBeNull();
+    expect(box('s1')!.querySelector('[data-sent-resolved-chip]')).toBeNull();
     // c2 has nothing open under it: one line, counting its messages, no message drawn.
     const line = box('c2')!;
     expect(line.hasAttribute('data-sent-folded')).toBe(true);
@@ -155,6 +157,7 @@ describe.skipIf(!hasDom)('SentThreads', () => {
     const count = line.querySelector('[data-sent-messages]')!;
     expect([count.getAttribute('data-sent-messages'), count.getAttribute('data-sent-subthreads')]).toEqual(['2', '0']);
     expect(line.querySelector('[data-sent-message], [data-sent-resolve]')).toBeNull();
+    expect(line.querySelector('[data-sent-resolved-chip]')?.textContent).toBe('Resolved');
 
     await click(unfold);
     expect(box('c2')!.hasAttribute('data-sent-folded')).toBe(false);
@@ -294,5 +297,16 @@ describe.skipIf(!hasDom)('SentThreads', () => {
     await click(composer.querySelector('[data-sent-reply-save]'));
     expect(saved).toEqual([['r1', { quote: 'three steps', offset: REPLY.indexOf('three steps') }, { text: 'Which three?' }]]);
     expect(box('c1')!.querySelector('[data-sent-passage-box]')).toBeNull();
+  });
+
+  test('a comment on the whole document (no passage) says so at its head and on its folded line', async () => {
+    const general = record('g1', 'Split this plan in two.', '');
+    await render([general], { ...TREE, replies: new Map(), subThreads: new Map(), openBelow: new Set() });
+    expect(box('g1')!.querySelector('.ib-sentb-head .ib-sentb-general')?.textContent).toBe('General comment');
+    await act(async () => root!.unmount());
+    root = null;
+    host?.remove();
+    await render([general], { ...TREE, resolved: new Set(['g1']), replies: new Map(), subThreads: new Map(), openBelow: new Set() });
+    expect(box('g1')!.querySelector('.ib-sentb-fquote')?.textContent).toBe('General comment');
   });
 });

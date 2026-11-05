@@ -85,6 +85,7 @@
     "components/inbox-thread/reask.ts",
     "components/inbox-thread/SentThreads.tsx",
     "components/inbox-thread/sentCommentsTree.ts",
+    "components/inbox-thread/CommentListMeta.tsx",
     "components/inbox-thread/shortLabel.ts"
   ]
 }
