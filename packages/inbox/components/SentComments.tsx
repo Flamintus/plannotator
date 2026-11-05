@@ -176,17 +176,18 @@ export function useSentComments(input: {
   /** The drafts comment sends carry (never a guided review's, which goes with the person's verdict). */
   const sendable = useMemo(() => (sendsOn ? drafts.filter(isInboxCommentSendable) : NO_RECORDS), [sendsOn, drafts]);
   // The sessions a send reached whose elements wait for an answer: their connection says whether they are in a turn (Working).
+  // Only what a send carried counts (a Finish's open threads, only named, never make it wait).
   const awaiting = useMemo(() => {
     if (!sendsOn) return NO_SESSIONS;
     const answered = inboxCommentLastReplies([], agentReplies);
-    const threadOf = new Map(records.map((record) => [record.id, record.re ?? record.id]));
+    const byId = new Map(records.map((record) => [record.id, record]));
     const out = new Set<string>();
     for (const send of sends) {
       const received = inboxCommentSendReceivedAt(send);
       if (received === null) continue;
       const waits = send.comments.some((id) => {
-        const thread = threadOf.get(id);
-        return thread !== undefined && !((answered.get(thread) ?? '') > received);
+        const record = byId.get(id);
+        return record?.sent_reply_id === send.id && !((answered.get(record.re ?? record.id) ?? '') > received);
       });
       if (waits) out.add(send.to.session);
     }

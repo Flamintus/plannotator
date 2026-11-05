@@ -504,6 +504,30 @@ describe.skipIf(!hasDom)('seen on sight in the thread pane', () => {
     expect(seen).toEqual([7]);
   });
 
+  test("comment sends: a reply sent alone the person was not shown never holds back the look of a message seen after it", async () => {
+    const at = '2026-10-12T17:40:00.000Z';
+    const comment = {
+      id: 'c1', project_id: PROJECT.id, thread_id: ROOT, message_id: ROOT, attachment_id: '', path: ROOT, version: 'current', message: { at: '2026-10-12T17:32:00.000Z' },
+      annotation: { id: 'c1', blockId: 'block-0', type: 'COMMENT', text: 'Which events?', originalText: 'refund webhook', startOffset: 4, endOffset: 18, createdA: 1 },
+      created_at: at, updated_at: at, removed_at: null, sent_reply_id: 'snd_1',
+    };
+    const send = { id: 'snd_1', project_id: PROJECT.id, thread_id: ROOT, batch: 'b1', to: { host: 'claude-code', session: 'ses_a' }, round: 1, mode: 'now', comments: ['c1'], with_message: null, idempotency_key: 'k', created_at: at, delivery: { at, host: 'claude-code', session: 'ses_a' } };
+    const reply = { id: 'rep_1', project_id: PROJECT.id, thread_id: ROOT, re: 'c1', from: AGENT, call: 'call_1', text: 'Refunds and disputes.', created_at: '2026-10-12T17:41:00.000Z', seq: 7 };
+    threadFiles = { serverSession: 's', attachments: [], annotations: [], sent_comments: [comment], comment_replies: [], comment_sends: [send] };
+    // The reply's row scrolled out of view above; A3 (seq 8) lands on screen after it.
+    boxes = { [ROOT]: { top: -600, height: 400 }, rep_1: { top: -400, height: 80 }, msg_A3: { top: 300, height: 200 } };
+    const seen: number[] = [];
+    const props = { onSeen: (through: number) => seen.push(through) };
+    await openThenArrive(props);
+    threadFiles = { ...threadFiles, comment_replies: [reply] };
+    act(() => root!.render(pane({ ...props, thread: thread(A3), filesChanged: 1 })));
+    await wait(60);
+    expect(document.querySelector('[data-sent-comment="c1"] [data-sent-reply="rep_1"]')?.hasAttribute('data-sent-new')).toBe(true);
+    await wait(SEEN_DWELL_MS + 200);
+    // A3 seen: the look goes to it, over the reply nobody was shown (a later look covers it, as before comment sends).
+    expect(seen).toEqual([8]);
+  });
+
   test('a message the person folds is not on screen and is not seen', async () => {
     boxes = { msg_A2: { top: 400, height: 200 } };
     const seen: number[] = [];

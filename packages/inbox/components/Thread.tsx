@@ -2251,6 +2251,8 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
   const sendStarts = useRef(0);
   /** The newest render's `send`: a Send that waited for the ended check goes on with the state of now, not of the press. */
   const latestSend = useRef<(options?: { despiteReplaced?: boolean; routed?: boolean; stayFull?: boolean; endedChecked?: ReadonlySet<string> }) => Promise<void>>(async () => {});
+  /** Finish round's key (comment sends): one per press, kept until a Finish went, so a retry answers what it wrote. */
+  const finishKey = useRef<string | null>(null);
   /** What the route choice is for: a reply, or a Re-ask (the same choice, its own words). */
   const [routeFor, setRouteFor] = useState<'reply' | 'reask'>('reply');
   const reaskRef = useRef<HTMLButtonElement>(null);
@@ -2631,17 +2633,25 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
   const replyArrivals = useMemo(() => {
     if (!onSeen || !sendsOn || seenThrough === null) return [];
     const onMessage = new Map(sentComments.records.map((record) => [record.id, record.message ? record.message_id : null]));
+    // The person's own reply is a look at everything before it, as for messages (unseenArrivals).
+    const floor = Math.max(seenThrough, ...thread.messages.filter(isPersonLook).map((m) => m.seq ?? 0));
     return sentComments.agentReplies
-      .filter((reply) => reply.call && typeof reply.seq === 'number' && reply.seq > seenThrough)
+      .filter((reply) => reply.call && typeof reply.seq === 'number' && reply.seq > floor)
       .filter((reply) => {
         const message = onMessage.get(reply.re);
         return !!message && !fold.folded.has(message) && !hiddenNow.has(message);
       })
       .map((reply) => ({ id: reply.id, seq: reply.seq! }));
-  }, [onSeen, sendsOn, seenThrough, sentComments.records, sentComments.agentReplies, fold.folded, hiddenNow]);
+  }, [onSeen, sendsOn, seenThrough, thread.messages, sentComments.records, sentComments.agentReplies, fold.folded, hiddenNow]);
   const replyCandidates = replyArrivals.filter((reply) => !sightedIds.has(reply.id)).map((reply) => reply.id);
-  /** Every arrival the look waits for, oldest first: it never passes one the person was not shown. */
+  /**
+   * The arrivals the look goes through, oldest first: the messages, which it never passes unseen, and the replies
+   * seen, which take it no further than a message not shown. A reply not seen holds nothing back: a later look
+   * covers it, as before.
+   */
   const lookArrivals = useMemo(() => (replyArrivals.length === 0 ? arrivals : [...arrivals, ...replyArrivals].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))), [arrivals, replyArrivals]);
+  const replyArrivalIds = useRef<ReadonlySet<string>>(NO_IDS);
+  replyArrivalIds.current = useMemo(() => new Set(replyArrivals.map((reply) => reply.id)), [replyArrivals]);
   /** A file over the thread: full screen, or where it cannot sit beside it (a phone, a stacked window). */
   const fileCovers = file !== null && shownFull;
   const arrivalsRef = useRef<readonly Pick<InboxMessageWire, 'id' | 'seq'>[]>(lookArrivals);
@@ -2654,8 +2664,8 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
       const ids = new Set(sightedRef.current).add(id);
       sightedRef.current = ids;
       setSighted({ threadId: thread.thread_id, ids });
-      // The look goes as far as every arrival up to it was seen, never past one that was not.
-      const through = lookThrough(arrivalsRef.current, ids);
+      // The look goes as far as every arrival up to it was seen, never past one that was not (a reply not seen aside).
+      const through = lookThrough(arrivalsRef.current.filter((arrival) => !replyArrivalIds.current.has(arrival.id) || ids.has(arrival.id)), ids);
       if (through !== null) onSeen?.(through);
     },
     [onSeen, thread.thread_id],
@@ -4111,6 +4121,8 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
           // The reply that carries the box's words: their draft goes with the Send (that draft, or one holding
           // exactly these words when the `updated_at` they were saved as is not known here).
           ...(last && sendClears ? { clear_draft: draftSavedAs ?? '' } : {}),
+          // Finish round with words (comment sends): the round's end is written with the reply carrying them.
+          ...(last && options.finish ? { finish_round: { idempotency_key: (finishKey.current ??= newUuid()) } } : {}),
           // Only a message an ended session of this Send asked goes to the session picked;
           // an answer to a live session's message still goes to that session.
           // The words aimed with the pill at a session that never wrote here go to it alone.
@@ -4126,20 +4138,24 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
       total = requests.length;
       /** The reply that handed the thread over (approval "inbox-tag-handoff"), for the toast's Undo. */
       let handedReply: InboxMessageWire | null = null;
-      /** The reply that carries the words (else the last one): a Finish round rides it. */
-      let wordsReply: string | null = null;
+      /** What became of a Finish round riding the last reply (comment sends). */
+      let finished: { comment_sends?: unknown; finish_refused?: { message: string } } | null = null;
       for (const request of requests) {
         if (request.input.words) wordsKey = request.input.idempotency_key;
         postingTo = request.input.to;
         const answer = await inboxApi.reply(request.messageId, request.input);
         const written = answer.reply as InboxMessageWire | null;
         if (written?.handoff && !answer.replayed) handedReply = written;
-        if (written && (request.input.words || wordsReply === null || !requests.some((r) => r.input.words))) wordsReply = written.id;
+        if (request.input.finish_round) finished = answer;
         went += 1;
       }
       done = true;
-      // Finish round with words (comment sends): the words went as Send sends them; the round's end rides their reply.
-      if (options.finish) await finishTheRound(wordsReply);
+      // Finish round with words (comment sends): the words went as Send sends them, the round's end with them.
+      if (finished?.finish_refused) setError(finished.finish_refused.message);
+      else if (finished?.comment_sends) {
+        finishKey.current = null;
+        announce('Round finished.');
+      }
       // Focus goes to the reply once it is in the thread (not to Reply: the box-close effect leaves it be).
       // From full screen's composer it stays in the card, which says the reply went.
       focusSent.current = !options.stayFull;
@@ -4280,34 +4296,25 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
 
   // ── Finish round (comment sends, experimental "persistent-comments") ──
   // Offered beside Send while a draft comment waits or a send went in the round under way: it sends every draft
-  // left and tells each session the round reached that it is finished (the threads still open named by id), with
-  // the words when there are some. One key per press, kept until it goes, so a retry answers what it wrote.
+  // left and tells each session the round reached that it is finished (the threads still open named by id). With
+  // words, picks or files, the Send goes as always and the round's end is written with its last reply
+  // (`finish_round`), so the wake that hands the words out hands the Finish with them.
   const finishOffered = sendsOn && !resolved && (sentComments.sendable.length > 0 || sentComments.count?.started === true);
   /** The header's count of the comment rounds, informative only ("Round 2 · 3 open"): once something was sent. */
   const roundWords = sentComments.count ? `Round ${sentComments.count.round} · ${sentComments.count.open} open` : null;
-  const finishKey = useRef<string | null>(null);
-  /** The round's end, riding the person's reply its words went in (`withMessage`), if any. True once it went. */
-  const finishTheRound = async (withMessage: string | null): Promise<boolean> => {
-    finishKey.current ??= newUuid();
-    try {
-      await inboxApi.sendComments(threadRef.current.thread_id, { mode: 'round', idempotency_key: finishKey.current, ...(withMessage ? { with_message: withMessage } : {}) });
-      finishKey.current = null;
-      announce('Round finished.');
-      return true;
-    } catch (cause) {
-      setError(cause instanceof InboxApiError ? cause.message : 'The round did not finish. Press Finish round again.');
-      return false;
-    }
-  };
   const finishRound = async () => {
     if (sending || voice.busy || checkingEnded.current) return;
-    // Words, picks, files or a guided review's comments too: they go first, as Send sends them, and the end rides them.
+    // Words, picks, files or a guided review's comments too: they go as Send sends them, the round's end with them.
     if (hasWords || waiting || draftKept || (box.open && replyUploads.length > 0) || draftPastes > 0 || skipping) return send({ finish: true });
     setSending(true);
     setError(null);
     try {
-      await finishTheRound(null);
+      await inboxApi.sendComments(threadRef.current.thread_id, { mode: 'round', idempotency_key: (finishKey.current ??= newUuid()) });
+      finishKey.current = null;
+      announce('Round finished.');
       await reloadFiles();
+    } catch (cause) {
+      setError(cause instanceof InboxApiError ? cause.message : 'The round did not finish. Press Finish round again.');
     } finally {
       setSending(false);
     }
@@ -4873,7 +4880,8 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
    */
   const [rowFit, setRowFit] = useState<{ level: number; max: OpenQuestionsLabelForm } | null>(null);
   const rowLevel = rowFit?.level ?? null;
-  const footStatusShown = waiting || draftKept;
+  // With comment sends a draft comment waits for its own Send or Finish round, not the words' Send: the note still says it.
+  const footStatusShown = waiting || draftKept || sentComments.sendable.length > 0;
   // What the foot shows in the list's place, in the order the foot draws them. A list opened then would show only later, by itself.
   const listHome = !resolved && !(guard && staleQuestions.length > 0) && newMessage?.kind !== 'compose' && (box.open || !(route.open && asking));
   // The list lives where it opened: another thread, another view, the box opening or closing, or anything taking the foot's place, takes it away.
@@ -4894,7 +4902,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
   // another session's list adds or drops its "+1".
   const replyKeyShown = useShortcutHintShown({ scope: inboxThreadShortcuts, action: 'reply' });
   const openItemsKeyShown = useShortcutHintShown({ scope: inboxThreadShortcuts, action: 'openItems' });
-  const footSig = [footStatusShown, draftKept, picksCount, records.length, unanswered.length, keepOpen, skipIds.size, openQShown, openQ.questions.length, openActions.length, phone, replyKeyShown, openItemsKeyShown, stepLists[0] ? stepsCount(stepLists[0]).text : '', stepLists.length].join('|');
+  const footSig = [footStatusShown, finishOffered, draftKept, picksCount, records.length, unanswered.length, keepOpen, skipIds.size, openQShown, openQ.questions.length, openActions.length, phone, replyKeyShown, openItemsKeyShown, stepLists[0] ? stepsCount(stepLists[0]).text : '', stepLists.length].join('|');
   const rowFittedFor = useRef('');
   const fitRowRef = useRef<(force?: boolean) => void>(() => {});
   fitRowRef.current = (force = false) => {
@@ -6307,7 +6315,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
                   Its route, door row and code stay; turn SHOW_NEW_MESSAGE_BUTTON on to bring it back. */}
               {SHOW_NEW_MESSAGE_BUTTON && !archived && <NewMessageButton live={live} mode={newMessage} onClick={() => void pressNewMessage()} />}
             </div>
-            {(waiting || draftKept) && (
+            {footStatusShown && (
               <div className="ib-footstatus" data-foot-status="">
                 <DraftFootNote
                   id={draftNoteId}

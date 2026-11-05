@@ -181,7 +181,13 @@ export function SentSendButton({ id, onSend }: { id: string; onSend: (id: string
       disabled={busy}
       onClick={async () => {
         setBusy(true);
-        if (!(await onSend(id))) setBusy(false);
+        let went = false;
+        try {
+          went = await onSend(id);
+        } finally {
+          // Not sent (refused, or the host threw): it can be pressed again.
+          if (!went) setBusy(false);
+        }
       }}
     >
       Send
