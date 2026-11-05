@@ -246,6 +246,7 @@ import { runShapeOpen, runShapeServe } from "./shape-open";
 import { runInboxCallCommand } from "./inbox-call-command";
 import { runInboxStepsCommand } from "./inbox-steps-command";
 import { runFeedbackCommand } from "./feedback-command";
+import { runReplyCommand, runThreadsCommand } from "./threads-command";
 import { formatInboxHelp } from "./inbox-help";
 import { INBOX_CARD_ACTION_ON } from "@plannotator/core/inbox-types";
 import { getPlannotatorDataDir, getUnusedPlannotatorDataDir } from "@plannotator/shared/data-dir";
@@ -414,6 +415,17 @@ const rawArgs = process.argv.slice(2);
   const args = rawArgs;
   if (args[0] === "feedback") {
     process.exit(await runFeedbackCommand(args.slice(1), { env: process.env, version: getCliVersion() ?? "dev" }));
+  }
+}
+// `plannotator threads` and `plannotator reply`: a review's comment threads,
+// read and written in its journal (threads-command.ts; unreleased,
+// HIDDEN_SUBCOMMANDS). Before the strict-annotate parse: they take their own
+// flags, JSON and help.
+{
+  const args = rawArgs;
+  if (args[0] === "threads" || args[0] === "reply") {
+    const deps = { dataDir: getPlannotatorDataDir(), cwd: process.env.PLANNOTATOR_CWD || process.cwd() };
+    process.exit(await (args[0] === "threads" ? runThreadsCommand : runReplyCommand)(args.slice(1), deps));
   }
 }
 // T3 Code (opt-in, unreleased; HIDDEN_SUBCOMMANDS): `t3` is the connection's

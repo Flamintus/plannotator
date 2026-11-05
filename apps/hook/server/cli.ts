@@ -249,7 +249,7 @@ export function formatTopLevelHelp(options: { board?: boolean } = {}): string {
  * `t3-hook`, the T3 Claude hook's settings helper, which only the installer
  * runs.
  */
-export const HIDDEN_SUBCOMMANDS: ReadonlySet<string> = new Set<string>(["t3-hook", "shape"]);
+export const HIDDEN_SUBCOMMANDS: ReadonlySet<string> = new Set<string>(["t3-hook", "shape", "threads", "reply"]);
 
 /**
  * `plannotator card …` (card-command.ts): the Board's card call from a shell,
@@ -362,6 +362,45 @@ export const FEEDBACK_COMMAND_USAGE = [
   "A short message typed by hand can also be given as words: plannotator feedback 'it works'",
   "",
   "Exit 0 sent, 1 not sent (the reason on stderr), 2 bad usage.",
+].join("\n");
+
+/**
+ * `plannotator threads` and `plannotator reply` (threads-command.ts): a
+ * review's comment threads from a shell, the review journal's CLI.
+ * Unreleased (HIDDEN_SUBCOMMANDS) until a client sends through it.
+ */
+export const THREADS_COMMAND_USAGE = [
+  "Usage:",
+  "  plannotator threads [--review <key>] [--json]",
+  "  plannotator reply --review <key> <id> [<reply> | -]",
+  "",
+  "The comment threads of a review in Plannotator: the person's comments, your",
+  "replies under them by id, and theirs.",
+  "",
+  "threads           The reviews with threads, newest first.",
+  "threads --review  That review's threads: each with its id, state, round and where",
+  "                  it is, then its replies and sub-threads, indented. --json prints",
+  "                  the thread view (v: 1) for a program.",
+  "reply             Your reply under the comment <id>: what you changed, your answer,",
+  "                  or why you did not do it. Give it after <id>, or on stdin with a",
+  "                  quoted heredoc so the shell changes nothing:",
+  "                    plannotator reply --review <key> <id> <<'END'",
+  "                    your reply",
+  "                    END",
+  "                  Only the person resolves a comment.",
+  "",
+  "A client writing the person's side (one JSON object, or - to read it from stdin,",
+  'naming the review by "review": <key> or "target": {kind: last|file|plan, ...}):',
+  "  plannotator threads <action> [<json> | -]",
+  "  view       the review's key and thread view",
+  "  comment    {text, on?, quote?, re?, parent?, quote_offset?, type?, id?}: a draft",
+  "  remove | resolve | reopen   {id}",
+  '  send       {mode: "now" | "round", ids?, to?, words?, idempotency_key?, root?}:',
+  "             the send, and the text to hand the agent",
+  "  delivered  {sends: [<id>]}      close  {} (the review is approved: its journal goes)",
+  "stdout is one JSON value.",
+  "",
+  "Exit 0 ok, 1 refused (<code>: <message> on stderr), 2 bad usage.",
 ].join("\n");
 
 /** `plannotator inbox projects …` (inbox-projects-command.ts): list, combine and undo, on the person's request. */
@@ -695,6 +734,8 @@ export const SUBCOMMAND_HELP: Record<string, string> = {
   card: CARD_COMMAND_USAGE,
   shape: SHAPE_COMMAND_USAGE,
   feedback: FEEDBACK_COMMAND_USAGE,
+  threads: THREADS_COMMAND_USAGE,
+  reply: THREADS_COMMAND_USAGE,
   "t3-hook": [
     "Usage:",
     "  plannotator t3-hook install --settings <settings.json> --executable <plannotator>",

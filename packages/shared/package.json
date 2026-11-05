@@ -45,6 +45,7 @@
     "./draft": "./draft.ts",
     "./review-draft": "./review-draft.ts",
     "./annotate-draft": "./annotate-draft.ts",
+    "./review-journal": "./review-journal.ts",
     "./annotate-history": "./annotate-history.ts",
     "./annotate-live-version": "./annotate-live-version.ts",
     "./feedback-archive": "./feedback-archive.ts",
