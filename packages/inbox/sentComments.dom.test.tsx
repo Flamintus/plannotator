@@ -241,7 +241,7 @@ test.skipIf(!hasDom)("resolved under the message, a sent comment leaves its word
   await until(() => row() === null && highlight() === null, 'the resolved comment folded away');
   const toggle = el.querySelector<HTMLButtonElement>('[data-sent-comments] [data-sent-resolved-toggle]')!;
   // The toggle names how many wait behind it.
-  expect(toggle.textContent).toContain('1');
+  expect(toggle.textContent).toMatch(/^1\D/);
   expect(typeof (await storedRecord(sent, 'res-msg-1'))?.resolved_at).toBe('string');
 
   act(() => toggle.click());
