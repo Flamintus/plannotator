@@ -11,6 +11,8 @@
     "./components/goal-setup/*": "./components/goal-setup/*.tsx",
     "./components/inbox-thread/*": "./components/inbox-thread/*.tsx",
     "./components/inbox-thread/reask": "./components/inbox-thread/reask.ts",
+    "./components/inbox-thread/sentCommentsTree": "./components/inbox-thread/sentCommentsTree.ts",
+    "./components/inbox-thread/shortLabel": "./components/inbox-thread/shortLabel.ts",
     "./components/ImageAnnotator": "./components/ImageAnnotator/index.tsx",
     "./components/html-viewer": "./components/html-viewer/index.ts",
     "./components/chat": "./components/chat/index.ts",
