@@ -7830,7 +7830,7 @@ button.ib-sentb-quote:hover, button.ib-sentb-quote:focus-visible { color: var(--
 /* Resolved reads at a glance (the bench, R4): the success colour on its chip ("✓ Resolved"), its frame and its passage's bar,
    where an open thread keeps the primary bar and the plain frame; its words quieter. Folded, the line's "✓ Resolved" too. */
 .ib-sentb-resolved { display: inline-flex; align-items: center; gap: 3px; background: color-mix(in oklab, var(--success, var(--primary)) 16%, var(--card)); color: var(--success, var(--foreground)); font-weight: 600; }
-.ib-sentb-card[data-sent-resolved] { border-color: color-mix(in oklab, var(--success, var(--primary)) 45%, var(--border)); }
+.ib-sentb-card[data-sent-resolved] { border-color: var(--success, var(--primary)); }
 .ib-sentb-card[data-sent-resolved] > .ib-sentb-head { background: color-mix(in oklch, var(--muted) 35%, var(--card)); }
 .ib-sentb-card[data-sent-resolved] > .ib-sentb-head .ib-sentb-quote { border-left-color: color-mix(in oklab, var(--success, var(--primary)) 70%, transparent); }
 /* A deletion (the person asks for the words to go, on the document or on a passage of a message): said at its head, its
