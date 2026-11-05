@@ -1155,6 +1155,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         codeReviewOn,
         // Sent comments: read_thread lists them, and send_message takes comment_replies, only while the person has them on (experimental).
         persistentCommentsOn,
+        shapeOn: () => shapeOn(),
         ...(options.mcpNow ? { now: options.mcpNow } : {}),
       }),
     { legacy: "stateless", maxRequestBodySize: INBOX_MAX_REQUEST_BYTES },

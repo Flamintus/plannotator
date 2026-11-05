@@ -982,9 +982,11 @@ export interface InboxReplyCommand {
    * Inbox made the command; the newest one's round and mode (`now`: the
    * round stays open; `round`: the person finished it); how many comments,
    * replies and sub-threads they carry. The body holds their text. Comments
-   * alone: the command's `id` is the oldest send's, which `reply_to` takes.
-   * With the person's words: the command is their message's, and the text
-   * follows the words. The wake adds `inboxCommentsWakeLine`. Sends waiting
+   * alone: the command's `id` is the oldest send's, which `reply_to` and
+   * read_thread's `message_id` take; the wake is `inboxCommentsOnlyWakeLine`
+   * and leaves the body out (a round is not a message: read_thread with that
+   * id shows it). With the person's words: the command is their message's,
+   * the text follows the words, and the wake adds `inboxCommentsWakeLine`. Sends waiting
    * in one thread go together only to a connection whose poll said it
    * returns `sends` with `delivered` (`INBOX_COMMENTS_POLL_FIELD`); any other
    * gets one send per command and settles it by the command's id. An older
@@ -1002,18 +1004,36 @@ export interface InboxReplyCommand {
  */
 export const INBOX_COMMENTS_POLL_FIELD = 'comments'
 
-/**
- * The line a wake that delivers comment sends carries (`comments`): the
- * person's comments on the agent's work, the round and whether it is still
- * open, and how to answer under each id. On comments alone it is the wake's
- * instruction line; under the person's words it follows the reply's.
- */
-export function inboxCommentsWakeLine(comments: { round?: unknown; mode?: unknown; count?: unknown }): string {
+/** What a wake says of comment sends: how many, and the round with whether it is still open. */
+function commentsWakeWhat(comments: { round?: unknown; mode?: unknown; count?: unknown }): string {
   const round = typeof comments.round === 'number' && Number.isInteger(comments.round) && comments.round > 0 ? ` ${comments.round}` : ''
   const count = typeof comments.count === 'number' && Number.isInteger(comments.count) && comments.count > 0 ? comments.count : 0
   const what = count === 1 ? 'a comment' : count > 1 ? `${count} comments` : 'comments'
   const state = comments.mode === 'round' ? `they finished round${round}` : `round${round} is still open, more may follow`
-  return `The person sent ${what} on your work from the Plannotator Inbox; ${state}. Answer under each id now: plannotator_inbox send_message with comment_replies, and reply_to set to the id in parentheses on the first line.`
+  return `The person sent ${what} on your work from the Plannotator Inbox; ${state}.`
+}
+
+/**
+ * The line a wake that delivers comment sends under the person's words
+ * carries (`comments`), after the reply's: the person's comments on the
+ * agent's work, the round and whether it is still open, and how to answer
+ * under each id. The comments follow the words in the body.
+ */
+export function inboxCommentsWakeLine(comments: { round?: unknown; mode?: unknown; count?: unknown }): string {
+  return `${commentsWakeWhat(comments)} Answer under each id now: plannotator_inbox send_message with comment_replies, and reply_to set to the id in parentheses on the first line.`
+}
+
+/**
+ * The instruction of a wake on comments alone (`comments`, the command's `id`
+ * being the oldest send's): a round is not a message, so the wake carries
+ * none of the comments, only the round, how many, how to read them
+ * (read_thread with that id shows what the sends carry) and to answer under
+ * each id with replies alone, then end the turn with no message in chat.
+ * `toolName` is the tool as the host registered it.
+ */
+export function inboxCommentsOnlyWakeLine(comments: { round?: unknown; mode?: unknown; count?: unknown }, id: string, toolName: string = INBOX_TOOL_NAME): string {
+  const tool = typeof toolName === 'string' && /^[A-Za-z0-9_.-]{1,128}$/.test(toolName.trim()) ? toolName.trim() : INBOX_TOOL_NAME
+  return `${commentsWakeWhat(comments)} Read them with ${tool} read_thread (message_id ${id}) and answer under each id with ${tool} send_message: comment_replies and no body. Then end your turn without a message in chat: the person reads your replies in the Inbox.`
 }
 
 /** A command's `comments`, when it reads as one: its sends' ids, round, mode and count. */
@@ -1348,7 +1368,7 @@ export function inboxWakeText(
   const steps = wakeSteps(command.steps)
   const closing = `${steps ? `\n\n${inboxStepsWakeLine(steps)}` : ''}\n\n${inboxWakeClosingLine(command.thread_id, toolName)}`
   const subject = (command.subject ?? '').replace(/\s+/g, ' ').trim() || (command.type === 'message' ? 'a message' : 'a reply')
-  // The person's comment sends: their line, the wake's instruction on comments alone (the command is the oldest send's).
+  // The person's comment sends: their line under the person's words (a reply's or a tag's); on comments alone, the wake's own instruction (the command is the oldest send's).
   const comments = wakeComments(command.comments)
   const commentsLine = comments ? `\n${inboxCommentsWakeLine(comments)}` : ''
   const commentsOnly = comments !== null && comments.sends.includes(command.id)
@@ -1370,7 +1390,8 @@ export function inboxWakeText(
     }
     return `Plannotator Inbox: ${subject} (${command.id})\n${INBOX_TAGGED_INSTRUCTION}\n${inboxTaggedLine(owner, command.id)}${commentsLine}\n\n${command.body}${closing}`
   }
-  if (commentsOnly) return `Plannotator Inbox: ${subject} (${command.id})${commentsLine}\n\n${command.body}${closing}`
+  // A round is not a message: the comments stay out of the wake, read_thread with the send's id shows them.
+  if (commentsOnly) return `Plannotator Inbox: ${subject} (${command.id})\n${inboxCommentsOnlyWakeLine(comments, command.id, toolName)}${closing}`
   const others = Array.isArray(command.also_tagged)
     ? command.also_tagged
         .filter((name) => typeof name === 'string' && name.trim() !== '')

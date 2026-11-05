@@ -258,6 +258,21 @@ export function commentSendReplyTarget(store: InboxStore, id: string | undefined
 }
 
 /**
+ * What read_thread shows first when its `message_id` is a comment send's id
+ * (a wake on comments alone names them by it and carries none of them: a
+ * round is not a message): that send and the later ones of its thread to the
+ * same session, as the wake used to carry them (`commentSendsText`: each
+ * entry with its lines and notes, the threads still open, the skills block).
+ * Null for any other id.
+ */
+export function commentSendReadText(context: InboxCommentSendDeliveryContext, id: string | undefined, reader: string | null): string | null {
+  const named = id && isInboxCommentSendId(id.trim()) ? context.store.commentSend(id.trim()) : null;
+  if (!named) return null;
+  const sends = context.store.commentSends(named.thread_id).filter((send) => send.to.session === named.to.session && send.created_at >= named.created_at);
+  return commentSendsText(context, sends, "", reader);
+}
+
+/**
  * Whether a comment send waiting alone goes to `session` through a
  * server-side wake of `host` (Codex, Qwen, T3): to its recipient when that
  * session's newest message in the thread woke, as a reply to it would; to a
