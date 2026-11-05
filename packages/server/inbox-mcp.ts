@@ -35,7 +35,7 @@ import { lastContactOf, noteSessionRead, staleThreadOf, staleThreadText } from "
 import { INBOX_BODY_CUT_BYTES, INBOX_EARLIER_PERSON_BYTES, INBOX_THREAD_WINDOW, clip, shortTime, sizeText, windowedThread, windowedThreadText } from "./inbox-mcp-read";
 import { registerInboxSearchTool } from "./inbox-mcp-search";
 import { registerInboxCardTool } from "./inbox-mcp-cards";
-import { COMMENT_REPLIES_FIELD, planCommentReplies, threadComments, threadCommentsText, writeCommentReplies } from "./inbox-mcp-comments";
+import { COMMENT_REPLIES_FIELD, commentSendsShown, planCommentReplies, threadComments, threadCommentsText, writeCommentReplies } from "./inbox-mcp-comments";
 export { COMMENT_REPLIES_DESCRIPTION } from "./inbox-mcp-comments";
 export { INBOX_BOARD_OFF_TEXT } from "./inbox-mcp-cards";
 import { checkStepsInput, INBOX_STEPS_OFF_TEXT, registerInboxStepsTool, rowSteps, STEPS_FIELD, stepsAgent, stepsProgressText, threadStepsText } from "./inbox-mcp-steps";
@@ -1122,36 +1122,50 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
             if (!guest) store.settleReadPast(threadId, reader);
             // The person's 👍 (settled acks) are read now too: the window says the agent saw it.
             if (!guest) store.markAcksSeen(threadId);
-            // What this session was owed here and no wake is left to settle.
-            if (reader) store.recordOwnRead(threadId, reader);
+            // What this session was owed here and no wake is left to settle (its comment sends too, while sent comments are in view).
+            if (reader) store.recordOwnRead(threadId, reader, undefined, context.persistentCommentsOn?.() === true);
             // This session has read the thread now (send_message's "not read since" line).
             noteSessionRead(store, reader, threadId, clock());
             // The full records, as before the window (tests, scripts, a jq over the result).
             const thread = store.agentThread(threadId, reader)!;
             const replies = thread.messages.filter((m) => m.author.kind === "person").length;
-            const sentComments = context.persistentCommentsOn?.() ? threadComments(store, threadId).comments : [];
+            const sentComments = context.persistentCommentsOn?.() ? threadComments(store, threadId) : { comments: [], sends: [] };
             return ok(
               `Thread ${threadId}${thread.subject ? ` (${thread.subject})` : ""}: ${thread.messages.length} message${thread.messages.length === 1 ? "" : "s"}, ${replies} from the person${thread.resolved_at ? ", resolved" : ""}.${naming?.line ?? ""}`,
-              { thread, url, ...(naming?.structured ?? {}), ...(sentComments.length > 0 ? { comments: sentComments } : {}) },
+              {
+                thread,
+                url,
+                ...(naming?.structured ?? {}),
+                ...(sentComments.comments.length > 0 ? { comments: sentComments.comments } : {}),
+                ...(sentComments.sends.length > 0 ? { comment_sends: sentComments.sends } : {}),
+              },
             );
           }
           // Built first, so a refused read (a bad expand, before or after) marks nothing read.
-          const { result, order, shown, readThrough } = windowedThread(store, threadId, { ...input, caller: input.agent_session?.trim() || null }, url);
+          const { result, order, shown, readThrough, range } = windowedThread(store, threadId, { ...input, caller: input.agent_session?.trim() || null }, url);
+          // With sent comments in view, the read covers the comment sends of its range too (experimental "persistent-comments").
+          const seen = context.persistentCommentsOn?.() ? new Set([...shown, ...commentSendsShown(store, threadId, range)]) : shown;
           if (!guest) {
             store.markAgentChecked(threadId, readThrough, undefined, reader);
             store.settleReadPast(threadId, reader, shown);
             store.markAcksSeen(threadId, shown);
           }
           // What this session was owed in the messages it was shown, and no wake is left to settle.
-          if (reader) store.recordOwnRead(threadId, reader, shown);
+          if (reader) store.recordOwnRead(threadId, reader, seen);
           noteSessionRead(store, reader, threadId, clock());
           // The thread's steps (approval "inbox-thread-steps"), the reader's own first: only while the person has steps on.
           const steps = context.stepsOn?.() ? threadStepsText(store, threadId, reader) : [];
           const lists = steps.length > 0 ? { steps: store.threadSteps(threadId).map(({ agent, steps: list, updated_at }) => ({ agent, steps: list, updated_at })) } : {};
           // The comments the person sent (experimental): a ranged read lists those its replies carried and the unanchored ones.
-          const sent = context.persistentCommentsOn?.() ? threadComments(store, threadId, input.after !== undefined || input.before !== undefined ? shown : null) : { comments: [], elsewhere: 0 };
+          const sent = context.persistentCommentsOn?.() ? threadComments(store, threadId, input.after !== undefined || input.before !== undefined ? seen : null) : { comments: [], elsewhere: 0, sends: [] };
           const header = [...steps, ...threadCommentsText(sent, result.thread.project.root, reader)];
-          return okComplete(windowedThreadText(result, order, naming?.line ?? "", header), { ...result, ...(naming?.structured ?? {}), ...lists, ...(sent.comments.length > 0 ? { comments: sent.comments } : {}) });
+          return okComplete(windowedThreadText(result, order, naming?.line ?? "", header), {
+            ...result,
+            ...(naming?.structured ?? {}),
+            ...lists,
+            ...(sent.comments.length > 0 ? { comments: sent.comments } : {}),
+            ...(sent.sends.length > 0 ? { comment_sends: sent.sends } : {}),
+          });
         }
         if (input.expand || input.before !== undefined || input.after !== undefined) {
           throw new InboxError("validation_error", "expand, before and after read one thread: pass thread_id (or message_id).");

@@ -10,7 +10,9 @@
  *    A sub-thread names the message whose passage it is on and gives the
  *    words around the passage, so the agent never has to look them up.
  *    Quotes, comments and replies are clipped: the person's reply that
- *    carried each one (`reply`) has it whole.
+ *    carried each one (`reply`) has it whole. A comment a comment send
+ *    carried (inbox-comment-sends.ts) names that send instead (`send`), and
+ *    the list says whether the round it went in is still open.
  *  - send_message's `comment_replies`: with its message, the agent's reply
  *    under each comment, by the comment's id, whoever wrote it. Nothing
  *    resolves or removes one: only the person does. A field, not an action
@@ -23,6 +25,7 @@
 import * as z from "zod";
 import { inboxStoredAgentName } from "@plannotator/core/inbox-format";
 import { inboxAgentName } from "@plannotator/core/inbox-types";
+import { isInboxCommentSendId, type InboxCommentSend } from "@plannotator/core/inbox-comment-sends";
 import {
   INBOX_COMMENT_REPLY_TEXT_MAX,
   inboxCommentReplyText,
@@ -43,16 +46,37 @@ export const INBOX_COMMENT_TEXT_CHARS = 400;
 export const INBOX_COMMENTS_SHOWN = 50;
 
 /**
- * The thread's sent comments, clipped, with the replies under them. A ranged
- * read (`replies`: its messages) keeps those its replies carried, those with
- * a reply that came with one of its messages, and every unanchored one, and
- * counts the others (`elsewhere`).
+ * The comment sends a read covers, by id: those written inside its range of
+ * seqs (`after`, `before`; every one without a bound), as its messages are.
  */
-export function threadComments(store: InboxStore, threadId: string, replies: ReadonlySet<string> | null = null): { comments: InboxCommentThread[]; elsewhere: number } {
+export function commentSendsShown(store: InboxStore, threadId: string, range: { after: number | null; before: number | null } = { after: null, before: null }): Set<string> {
+  const inRange = (seq: number) => (range.after === null || seq > range.after) && (range.before === null || seq < range.before);
+  return new Set(store.commentSends(threadId).filter((send) => inRange(store.commentSendCursor(send.id) ?? 0)).map((send) => send.id));
+}
+
+/** What read_thread says of a comment send: never its delivery, which is the person's to see. */
+export type InboxCommentSendRead = Pick<InboxCommentSend, "id" | "round" | "mode" | "to" | "comments" | "with_message" | "created_at">;
+
+/**
+ * The thread's sent comments, clipped, with the replies under them. A ranged
+ * read (`replies`: its messages and its comment sends, commentSendsShown)
+ * keeps those its replies or sends carried, those a Finish among its sends
+ * named, those with a reply that came with one of them, and every unanchored
+ * one, and counts the others (`elsewhere`). `sends`: the comment sends among
+ * them (all of the thread's for a read without a range).
+ */
+export function threadComments(
+  store: InboxStore,
+  threadId: string,
+  replies: ReadonlySet<string> | null = null,
+): { comments: InboxCommentThread[]; elsewhere: number; sends: InboxCommentSendRead[] } {
   const messages = store.thread(threadId)?.messages ?? [];
-  const all = inboxCommentThreads(messages, store.sentAnnotations(threadId), store.commentReplies(threadId));
+  const thread = store.commentSends(threadId);
+  const all = inboxCommentThreads(messages, store.sentAnnotations(threadId), store.commentReplies(threadId), thread);
+  const sends = thread.filter((send) => replies === null || replies.has(send.id));
+  const named = new Set(sends.flatMap((send) => send.comments));
   const comments = all
-    .filter((comment) => replies === null || replies.has(comment.reply_id) || comment.unanchored || comment.replies.some((reply) => replies.has(reply.message_id)))
+    .filter((comment) => replies === null || replies.has(comment.reply_id) || named.has(comment.id) || comment.unanchored || comment.replies.some((reply) => replies.has(reply.message_id)))
     .map((comment) => {
       // A sub-thread's parent: the words around the passage and its offset there (computed before the quote is clipped).
       const around = inboxSubThreadWindow(comment, INBOX_COMMENT_TEXT_CHARS);
@@ -64,7 +88,11 @@ export function threadComments(store: InboxStore, threadId: string, replies: Rea
         ...(comment.parent ? { parent: { ...comment.parent, ...(around !== null ? { text: around.text, quote_offset: around.offset } : {}) } } : {}),
       };
     });
-  return { comments, elsewhere: all.length - comments.length };
+  return {
+    comments,
+    elsewhere: all.length - comments.length,
+    sends: sends.map(({ id, round, mode, to, comments: carried, with_message, created_at }) => ({ id, round, mode, to, comments: carried, with_message, created_at })),
+  };
 }
 
 /** Who wrote a reply, as its reader reads it: the person, you (the reader's own session), or the agent by name. */
@@ -74,12 +102,23 @@ function replyAuthor(reply: InboxCommentReply, reader: string | null): string {
   return reply.author.session ? `${inboxAgentName(reply.author)} (${reply.author.session})` : inboxAgentName(reply.author);
 }
 
-/** The comments as lines of the transcript, each reply indented under its comment: none when the read has none to show. */
-export function threadCommentsText({ comments, elsewhere }: { comments: readonly InboxCommentThread[]; elsewhere: number }, root: string, reader: string | null = null): string[] {
+/**
+ * The comments as lines of the transcript, each reply indented under its
+ * comment: none when the read has none to show. After comment sends, the
+ * head says whether the round of the newest is still open (the person may
+ * send more) or finished.
+ */
+export function threadCommentsText(
+  { comments, elsewhere, sends = [] }: { comments: readonly InboxCommentThread[]; elsewhere: number; sends?: readonly Pick<InboxCommentSend, "round" | "mode">[] },
+  root: string,
+  reader: string | null = null,
+): string[] {
   if (comments.length === 0) return elsewhere > 0 ? [`Comments the person sent: ${elsewhere} from other rounds; read_thread without after or before lists them.`] : [];
   const shown = comments.slice(-INBOX_COMMENTS_SHOWN);
+  const newest = sends.at(-1);
   const notes = [
     ...(shown.length < comments.length ? [`the ${shown.length} newest of ${comments.length}; read_thread format: "full" lists every one`] : [`${comments.length}`]),
+    ...(newest ? [newest.mode === "now" ? `round ${newest.round} still open: the person may send more` : `round ${newest.round} finished`] : []),
     ...(elsewhere > 0 ? [`${elsewhere} more from other rounds: read_thread without after or before lists them`] : []),
   ];
   const head = `Comments the person sent (${notes.join("; ")}):`;
@@ -88,7 +127,7 @@ export function threadCommentsText({ comments, elsewhere }: { comments: readonly
     ...shown.flatMap((c) => [
       [
         `- ${c.id}`,
-        `round ${c.round} (reply ${c.reply_id})`,
+        `round ${c.round} (${isInboxCommentSendId(c.reply_id) ? "send" : "reply"} ${c.reply_id})`,
         c.state,
         inboxCommentThreadPlace(c, root),
         ...(c.parent?.text !== undefined ? [`in ${JSON.stringify(c.parent.text)}`] : []),

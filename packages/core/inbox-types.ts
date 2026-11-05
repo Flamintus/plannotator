@@ -20,6 +20,7 @@ import type { InboxDeliverNowBy, InboxRowDelivery } from "./inbox-delivery";
 import type { InboxCard } from "./inbox-cards";
 import type { InboxSteps } from "./inbox-steps";
 import type { InboxInitiative } from "./inbox-initiatives";
+import type { InboxCommentSend } from "./inbox-comment-sends";
 import type { InboxReviewVerdictRecord } from "./inbox-review";
 import type { InboxTidyMark } from "./inbox-tidy";
 import type { InboxRowSnooze } from "./inbox-snooze";
@@ -1561,10 +1562,11 @@ export interface InboxThread {
  * `card`: a Board card (approval "inbox-board"); `steps`: one agent session's
  * steps in a thread (approval "inbox-thread-steps"); `initiative`: a Board
  * initiative (approval "board-initiatives"); `comment_reply`: an agent's
- * reply under a sent comment (experimental "persistent-comments"). A reader
- * that does not know a kind skips its lines.
+ * reply under a sent comment, and `comment_send`: the person's comments sent
+ * to one session (experimental "persistent-comments"). A reader that does not
+ * know a kind skips its lines.
  */
-export type InboxRecordKind = "project" | "message" | "question" | "annotation" | "card" | "steps" | "initiative" | "comment_reply";
+export type InboxRecordKind = "project" | "message" | "question" | "annotation" | "card" | "steps" | "initiative" | "comment_reply" | "comment_send";
 
 /** One line of the store: a full snapshot of one record. */
 export type InboxLine =
@@ -1575,7 +1577,8 @@ export type InboxLine =
   | { v: 1; seq: number; at: string; kind: "card"; id: string; record: InboxCard }
   | { v: 1; seq: number; at: string; kind: "steps"; id: string; record: InboxSteps }
   | { v: 1; seq: number; at: string; kind: "initiative"; id: string; record: InboxInitiative }
-  | { v: 1; seq: number; at: string; kind: "comment_reply"; id: string; record: InboxCommentReplyRecord };
+  | { v: 1; seq: number; at: string; kind: "comment_reply"; id: string; record: InboxCommentReplyRecord }
+  | { v: 1; seq: number; at: string; kind: "comment_send"; id: string; record: InboxCommentSend };
 
 // ─────────────────────────────── Health ───────────────────────────────
 

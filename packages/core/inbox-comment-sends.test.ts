@@ -3,15 +3,19 @@ import type { InboxAnnotationRecord, InboxCommentReplyRecord } from './inbox-att
 import {
   INBOX_COMMENT_THREAD_VIEW_VERSION,
   inboxCommentDraftIsLive,
+  inboxCommentSendAddress,
   inboxCommentSendId,
+  inboxCommentSendRoutes,
   inboxCommentSendStatus,
   inboxCommentSendText,
   inboxCommentThreadView,
   inboxLiveCommentThreads,
   inboxOpenCommentsToName,
   isInboxCommentSendable,
+  inboxWordsMessage,
   isInboxCommentSendRecord,
   type InboxCommentSend,
+  type InboxCommentSendMessage,
 } from './inbox-comment-sends';
 import { INBOX_OPEN_COMMENTS_SENT, inboxCommentRoundNow, inboxCommentRounds, inboxCommentThreads } from './inbox-comment-threads';
 
@@ -423,5 +427,49 @@ describe('the stored record', () => {
     expect(isInboxCommentSendable(record('d2', { sent_reply_id: 'snd_1' }))).toBe(false);
     expect(isInboxCommentSendable(record('d3', { removed_at: at(2) }))).toBe(false);
     expect(isInboxCommentSendable(record('d4', { guide: { title: 'Review', file: 'a.ts', side: 'new', line_start: 1, line_end: 1 } }))).toBe(false);
+  });
+});
+
+describe('where a press goes', () => {
+  const by = (session: string, host = 'claude-code') => ({ kind: 'agent', host, session });
+  const handoff = (id: string, session: string, undone = false): InboxCommentSendMessage => ({
+    id,
+    author: { kind: 'person' },
+    to: { host: 'pi', session },
+    handoff: { undone_at: undone ? at(9) : null },
+  });
+
+  test("the words answer the newest agent message, or after a hand-off the new owner's (the hand-off itself until it writes); never the former owner", () => {
+    const opening: InboxCommentSendMessage = { id: 'm1', author: by('ses_a') };
+    const later: InboxCommentSendMessage = { id: 'm2', author: by('ses_a') };
+    expect(inboxWordsMessage([opening, later])?.id).toBe('m2');
+    expect(inboxWordsMessage([opening, handoff('h1', 'ses_b'), { id: 'm3', author: by('ses_a') }])?.id).toBe('h1');
+    expect(inboxWordsMessage([opening, handoff('h1', 'ses_b'), { id: 'm4', author: by('ses_b', 'pi') }, { id: 'm5', author: by('ses_a') }])?.id).toBe('m4');
+    expect(inboxWordsMessage([opening, handoff('h1', 'ses_b', true), { id: 'm6', author: by('ses_a') }])?.id).toBe('m6');
+    const started: InboxCommentSendMessage = { id: 'p1', author: { kind: 'person' }, to: { host: 'pi', session: 'ses_c' } };
+    expect(inboxWordsMessage([started])?.id).toBe('p1');
+    expect([inboxCommentSendAddress(started), inboxCommentSendAddress({ id: 'm7', author: { kind: 'agent', session: null } })]).toEqual([{ host: 'pi', session: 'ses_c' }, null]);
+  });
+
+  test("a comment on an agent's message goes to that message's session; a file's or a guided review's to the words' session, whose group is last", () => {
+    const messages = new Map<string, InboxCommentSendMessage>([
+      ['m1', { id: 'm1', author: by('ses_a') }],
+      ['m2', { id: 'm2', author: by('ses_b', 'pi') }],
+      ['m3', { id: 'm3', author: { kind: 'agent', session: null } }],
+    ]);
+    const words = { host: 'pi', session: 'ses_b' };
+    const drafts = [
+      record('file', { message: undefined, message_id: 'm1', attachment_id: 'att_1' }),
+      record('on-a', { message_id: 'm1' }),
+      record('reply-on-a', { message_id: 'm1', re: 'sent-on-a' }),
+      record('on-b', { message_id: 'm2' }),
+      record('no-session', { message_id: 'm3' }),
+    ];
+    const groups = inboxCommentSendRoutes(drafts, (id) => messages.get(id), words);
+    expect(groups.map((g) => [g.to?.session, g.drafts.map((d) => d.id)])).toEqual([
+      ['ses_a', ['on-a', 'reply-on-a']],
+      ['ses_b', ['file', 'on-b', 'no-session']],
+    ]);
+    expect(inboxCommentSendRoutes([record('file', { message: undefined })], () => undefined, null)).toEqual([{ to: null, drafts: [expect.objectContaining({ id: 'file' })] }]);
   });
 });

@@ -34,7 +34,7 @@ import { lstat, open, readlink, realpath } from "node:fs/promises";
 import { basename, dirname, relative as relativeTo, resolve as resolvePath, sep } from "node:path";
 import { htmlAssetPathRefused, isWithinDirectory } from "@plannotator/shared/html-assets-node";
 import { HTML_ASSET_DOCUMENT_CSP, htmlAssetDocumentHeaders, MAX_HTML_ASSET_DOCUMENT_BYTES, refusesHiddenHtmlAssetPath } from "@plannotator/shared/html-assets";
-import { INBOX_ANNOTATION_CURRENT, isInboxTextKind, readInboxAttachmentKind, type InboxAttachment } from "@plannotator/core/inbox-types";
+import { INBOX_ANNOTATION_CURRENT, isInboxTextKind, readInboxAttachmentKind, type InboxAnnotationRecord, type InboxAttachment } from "@plannotator/core/inbox-types";
 import {
   checkCurrent,
   inboxAttachmentState,
@@ -231,6 +231,10 @@ export interface InboxAttachmentRoutesContext {
    * person resolve one, reply under it or comment on a passage of it. Absent: off.
    */
   persistentCommentsOn?: () => boolean;
+  /** The person's reply just saved under a comment: under a live thread it goes on its own (inbox-comment-sends.ts). Absent: it stays a draft. */
+  liveCommentReply?: (record: InboxAnnotationRecord) => { annotation: InboxAnnotationRecord };
+  /** The same reply saved again once it went on its own: its answer again, or null (inbox-comment-sends.ts). */
+  liveCommentReplyAgain?: (commentId: string, annotation: Record<string, unknown>) => { annotation: InboxAnnotationRecord } | null;
 }
 
 type Version = "current" | "sent";
@@ -288,7 +292,7 @@ export function createInboxAttachmentRoutes(context: InboxAttachmentRoutesContex
         annotations: store.pendingAnnotations(threadId),
         // The comments a Send carried, kept in view, and the agents' replies under them (experimental; additive:
         // absent while off or from an older Inbox). The person's replies are comments: drafts, or sent, as above.
-        ...(context.persistentCommentsOn?.() ? { sent_comments: store.sentAnnotations(threadId), comment_replies: store.commentReplies(threadId) } : {}),
+        ...(context.persistentCommentsOn?.() ? { sent_comments: store.sentAnnotations(threadId), comment_replies: store.commentReplies(threadId), comment_sends: store.commentSends(threadId) } : {}),
       });
     }
 
@@ -611,7 +615,10 @@ export function createInboxAttachmentRoutes(context: InboxAttachmentRoutesContex
       const body = await guardedBody(req);
       if (body instanceof Response) return body;
       const annotation = body.annotation && typeof body.annotation === "object" && !Array.isArray(body.annotation) ? (body.annotation as Record<string, unknown>) : {};
-      return json({ annotation: store.saveCommentReply(reply[1]!, annotation) });
+      const again = context.liveCommentReplyAgain?.(reply[1]!, annotation);
+      if (again) return json(again);
+      const saved = store.saveCommentReply(reply[1]!, annotation);
+      return json(context.liveCommentReply?.(saved) ?? { annotation: saved });
     }
 
     // The person's sub-thread on a passage of a message of a comment thread, a draft the next Send carries (experimental "persistent-comments").

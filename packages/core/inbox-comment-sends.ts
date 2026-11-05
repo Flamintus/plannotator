@@ -168,6 +168,74 @@ export function inboxCommentDraftIsLive(draft: Pick<InboxAnnotationRecord, "re" 
   return draft.sent_reply_id === null && draft.removed_at === null && isInboxCommentReply(draft) && live.has(draft.re!);
 }
 
+/** The agent session a comment send goes to. */
+export type InboxCommentSendAddress = InboxCommentSend["to"];
+
+/** What routing a press needs of a message of the thread. */
+export interface InboxCommentSendMessage {
+  id: string;
+  author: { kind: string; host?: string | null; session?: string | null };
+  /** The person's message addressed to a session (a New message, a reply sent to another session, a hand-off). */
+  to?: { host: string | null; session: string } | null;
+  handoff?: { undone_at?: string | null } | null;
+}
+
+/**
+ * The agent session a message of the thread is for: an agent's, the session
+ * that wrote it; the person's, the session it is addressed to (`to`). Null
+ * when it names none.
+ */
+export function inboxCommentSendAddress(message: InboxCommentSendMessage): InboxCommentSendAddress | null {
+  if (message.author.kind === "agent") return message.author.session ? { host: message.author.host ?? null, session: message.author.session } : null;
+  return message.to ? { host: message.to.host ?? null, session: message.to.session } : null;
+}
+
+/**
+ * The message the person's words answer: the latest agent message, except in
+ * a thread handed to another session (approval "inbox-tag-handoff"): then the
+ * new owner's latest message after the hand-off, else the hand-off reply
+ * itself (a reply to it is addressed as it is, to the new owner). So the
+ * former owner writing again never takes the person's words back. With no
+ * agent message, the thread's first. The window's Send and a comment send
+ * read it alike.
+ */
+export function inboxWordsMessage<M extends InboxCommentSendMessage>(messages: readonly M[]): M | undefined {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const handoff = messages[index]!;
+    if (handoff.author.kind !== "person" || !handoff.handoff || handoff.handoff.undone_at || !handoff.to) continue;
+    const owner = handoff.to.session;
+    return messages.slice(index + 1).filter((m) => m.author.kind === "agent" && m.author.session === owner).at(-1) ?? handoff;
+  }
+  return messages.filter((m) => m.author.kind === "agent").at(-1) ?? messages[0];
+}
+
+/**
+ * Where the drafts of one press go, one group per agent session, as the
+ * window's Send routes the comments it carries (packages/inbox/sendTargets.ts
+ * `routeSendAnnotations`): a comment on an agent's message, and a reply or
+ * sub-thread under one (they keep its place), goes to the session that wrote
+ * that message; any other, on a file or a guided review, to the session the
+ * person's words go to (`words`), whose group comes last. A draft with
+ * nowhere to go is in a group whose `to` is null.
+ */
+export function inboxCommentSendRoutes<R extends Pick<InboxAnnotationRecord, "message" | "message_id">>(
+  drafts: readonly R[],
+  messageOf: (id: string) => InboxCommentSendMessage | undefined,
+  words: InboxCommentSendAddress | null,
+): { to: InboxCommentSendAddress | null; drafts: R[] }[] {
+  const keyOf = (to: InboxCommentSendAddress | null) => (to ? `${to.host ?? ""}\0${to.session}` : "");
+  const groups = new Map<string, { to: InboxCommentSendAddress | null; drafts: R[] }>();
+  for (const draft of drafts) {
+    const message = draft.message ? messageOf(draft.message_id) : undefined;
+    const to = (message?.author.kind === "agent" ? inboxCommentSendAddress(message) : null) ?? words;
+    const key = keyOf(to);
+    const group = groups.get(key) ?? groups.set(key, { to, drafts: [] }).get(key)!;
+    group.drafts.push(draft);
+  }
+  const last = groups.get(keyOf(words));
+  return last ? [...[...groups.values()].filter((group) => group !== last), last] : [...groups.values()];
+}
+
 /** What became of an element a send carried, as the person sees it: never words for the agent. */
 export type InboxCommentSendStatus = "pending" | "delivered" | "read" | "working" | "replied";
 

@@ -216,6 +216,7 @@ import { INBOX_PULL_OWNER_KEYS_MAX, inboxPullIsOpen } from "@plannotator/core/in
 import { isInboxBoardSeq, readInboxBoardSeen, writeInboxBoardSeen } from "@plannotator/shared/inbox/board-seen";
 import { createInboxTagsRoute } from "./inbox-tags";
 import { createInboxStepsRoute, inboxStepsStale } from "./inbox-steps";
+import { createInboxCommentSendRoutes } from "./inbox-comment-sends";
 import { createInboxDebugLog } from "./inbox-debug-log";
 import { createInboxDevices, DOOR_PREFIX } from "./inbox-devices";
 import { createInboxMachines, type InboxMachines, type MachineFrame, type MachineLinkTimings } from "./inbox-machines";
@@ -2457,6 +2458,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         // An agent's reply under a sent comment (experimental "persistent-comments"): the open thread's files read it.
         // Silent, never a notification or unread. A reader that does not know the kind skips it.
         return { seq: line.seq, kind: line.kind, id: line.id, thread_id: line.record.thread_id };
+      case "comment_send":
+        // The person's comments sent to a session (experimental "persistent-comments"): silent, as above.
+        return { seq: line.seq, kind: line.kind, id: line.id, thread_id: line.record.thread_id };
     }
   };
 
@@ -3121,6 +3125,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
 
   const tagsRoute = createInboxTagsRoute({ store, serverSession, live, json });
   const stepsRoute = createInboxStepsRoute({ store, serverSession, live, stepsOn, json });
+  // Comment sends (experimental "persistent-comments"): the person's comments as records of their own (packages/server/inbox-comment-sends.ts).
+  const commentSends = createInboxCommentSendRoutes({ store, serverSession, readBody: (req) => readBody(req), json, persistentCommentsOn, tagTargets: live.tagTargets });
 
   // Compose: a new thread the person starts with a live agent, drafts and uploads (packages/server/inbox-compose.ts).
   const compose = createInboxCompose({
@@ -4635,6 +4641,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       // Thread steps (approval "inbox-thread-steps"): a thread's lists with each session's presence (packages/server/inbox-steps.ts).
       const steps = stepsRoute.route(req, path);
       if (steps) return steps;
+      const sent = await commentSends.route(req, path);
+      if (sent) return sent;
 
       // #1813: an image a message's body shows, read from wherever it is on this
       // computer outside the home folder's hidden folders (packages/server/inbox-message-images.ts).
@@ -4727,7 +4735,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     return served(req, "local");
   };
 
-  attachmentRoutes = createInboxAttachmentRoutes({ store, serverSession, readBody, streamIdleMs: options.streamIdleMs, scheduleImageCapture: imageCapture.schedule, persistentCommentsOn });
+  attachmentRoutes = createInboxAttachmentRoutes({ store, serverSession, readBody, streamIdleMs: options.streamIdleMs, scheduleImageCapture: imageCapture.schedule, persistentCommentsOn, liveCommentReply: commentSends.liveReply, liveCommentReplyAgain: commentSends.liveReplyAgain });
   const started = startOnLoopback(fetch, previous?.port ?? null);
   server = started.server;
   portChanged = started.portChanged;
