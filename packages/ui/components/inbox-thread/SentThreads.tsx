@@ -40,6 +40,13 @@
  * its head ("Deletion", its passage struck through, as the document strikes
  * a deletion's words), on the document's threads too.
  *
+ * A comment the person can still change (a draft, a reply under a comment or
+ * a sub-thread not sent: the host's `canEdit`, the rule its list or panel
+ * offers Edit by) has Edit, at its box's head (and on its folded line) or on
+ * its reply's line: the reply's field, prefilled, takes the place of its
+ * words, and Save (the host's `onEdit`, its list's or panel's own save) or
+ * Cancel shows its words again.
+ *
  * With comment sends (the host passes `onSend` and the tree's `statuses`,
  * `live` and `fresh`): a draft, the comment, a reply under one or a
  * sub-thread, has Send, which sends it alone at once without ending the
@@ -115,10 +122,14 @@ function Said({
 /** The box open on a surface: a reply under a comment or sub-thread, or a comment on a passage of a message (`passage`). */
 type ListBox = { at: string; text: string; opened: number; passage?: TextPassage };
 
+/** A comment the person can still change, edited in its box (`at`, its id): the words in the field, prefilled with its own. */
+type EditBox = { at: string; text: string; opened: number };
+
 /**
  * What the person has open among one surface's threads (a thread's messages,
  * or a file's document): the one box (another opens in its place and keeps
- * the words), the passage offered for a comment (`offer`, with the group of
+ * the words), the comment edited in its box (`edit`, one at a time), the
+ * passage offered for a comment (`offer`, with the group of
  * threads its words are in), and the boxes folded or unfolded by hand, any
  * box at any depth (`isFolded`, `toggleFold`; `byDefault`: whether the box is
  * folded by default, a resolved thread with nothing open under it). `surface`
@@ -129,6 +140,8 @@ export interface SentThreadsView {
   surface: string;
   box: ListBox | null;
   setBox: Dispatch<SetStateAction<ListBox | null>>;
+  edit: EditBox | null;
+  setEdit: Dispatch<SetStateAction<EditBox | null>>;
   offer: { passage: SelectedPassage; group: string } | null;
   closeOffer: () => void;
   isFolded: (id: string, byDefault: boolean) => boolean;
@@ -150,6 +163,7 @@ const THREADS_ATTRIBUTE = 'data-sent-threads';
 export function useSentThreadsView(offering: boolean, folded: ReadonlySet<string>): SentThreadsView {
   const surface = useId();
   const [box, setBox] = useState<ListBox | null>(null);
+  const [edit, setEdit] = useState<EditBox | null>(null);
   // The boxes the person folded or unfolded by hand, each with its default then (folded or not).
   const [flips, setFlips] = useState<ReadonlyMap<string, boolean>>(NO_FLIPS);
   // The passage offered: one message's words inside a group of this surface's (the one way a passage is offered, ../PassageToolbar).
@@ -178,7 +192,7 @@ export function useSentThreadsView(offering: boolean, folded: ReadonlySet<string
       return next;
     });
   }, []);
-  return useMemo(() => ({ surface, box, setBox, offer, closeOffer, isFolded, toggleFold }), [surface, box, offer, closeOffer, isFolded, toggleFold]);
+  return useMemo(() => ({ surface, box, setBox, edit, setEdit, offer, closeOffer, isFolded, toggleFold }), [surface, box, edit, offer, closeOffer, isFolded, toggleFold]);
 }
 
 /**
@@ -194,6 +208,13 @@ interface SentThreadsActions<R extends SentThreadRecord = InboxAnnotationRecord>
   onSubThread?: SubThreadSave;
   /** Send one draft (a comment, a reply under one, a sub-thread, by id) alone, at once, the round left open; true once it went. */
   onSend?: (id: string) => Promise<boolean>;
+  /**
+   * Whether the person can still change a comment (a comment, a reply under one, a sub-thread, by id): the host's own
+   * rule, the one its list or panel offers Edit by (a draft, never what was sent). With `onEdit`, its box has Edit.
+   */
+  canEdit?: (id: string) => boolean;
+  /** Save a comment's new words by the host's own way (its list's or its panel's Edit); the box shows its words again after. */
+  onEdit?: (id: string, text: string) => void | Promise<unknown>;
 }
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
@@ -483,8 +504,8 @@ function BoxGroup<R extends SentThreadRecord>({
 /** One thread (a comment, or a sub-thread; `root`: its thread's first comment), as a box; `lost`: placed where it is because its passage was not found. */
 function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, view, actions, selected }: { record: R; root: R; lost: boolean } & BoxContext<R>) {
   const { rounds, resolved, replies, subThreads, openBelow, passages, statuses, live, fresh } = tree;
-  const { onOpen, onLook, onResolve, onReply, onSubThread, onSend } = actions;
-  const { box, setBox } = view;
+  const { onOpen, onLook, onResolve, onReply, onSubThread, onSend, canEdit, onEdit } = actions;
+  const { box, setBox, edit, setEdit } = view;
   const id = record.id;
   const annotation = record.annotation as unknown as Annotation;
   const quote = annotation.originalText ?? '';
@@ -530,10 +551,46 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
       unanchored={lost || typeof record.unanchored_at === 'string'}
     />
   );
-  // A draft's Send, at its head and on its folded line alike.
-  const send = draft && onSend && (
+  /** A comment of this box the person can still change (the host's rule) is being edited: the field in place of its words. */
+  const editable = (messageId: string) => !!onEdit && canEdit?.(messageId) === true;
+  const editing = (messageId: string) => edit?.at === messageId && editable(messageId);
+  /** Edit on a comment the person can still change (`open`: what opens its box first, on a folded line). */
+  const editButton = (messageId: string, text: string, open?: () => void) =>
+    editable(messageId) && !editing(messageId) ? (
+      <button
+        type="button"
+        className="ib-sentc-act ib-sentb-edit"
+        data-sent-edit={messageId}
+        onClick={() => {
+          open?.();
+          setEdit((current) => ({ at: messageId, text, opened: (current?.opened ?? 0) + 1 }));
+        }}
+      >
+        Edit
+      </button>
+    ) : null;
+  /** The field a comment's words are edited in, in their place: prefilled, the reply's field and keys; Save or Cancel shows its words again. */
+  const editField = (messageId: string) =>
+    edit && editing(messageId) ? (
+      <SentReplyBox
+        key={edit.opened}
+        edit
+        value={edit.text}
+        onChange={(text) => setEdit((current) => (current ? { ...current, text } : current))}
+        onSave={async (text) => {
+          const current = edit;
+          await onEdit!(messageId, text);
+          setEdit((open) => (open?.opened === current.opened ? null : open));
+        }}
+        onCancel={() => setEdit(null)}
+      />
+    ) : null;
+  // A draft's Edit and Send, at its head and on its folded line alike (Edit there opens the box at its words).
+  const headEdit = editButton(id, words, folded ? toggleFold : undefined);
+  const send = (headEdit || (draft && onSend)) && (
     <span className="ib-sentb-acts">
-      <SentSendButton id={id} onSend={onSend} />
+      {headEdit}
+      {draft && onSend && <SentSendButton id={id} onSend={onSend} />}
     </span>
   );
   if (held) {
@@ -642,13 +699,13 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
           </span>
         )}
       </div>
-      {/* A deletion with no words says it all at its head. */}
-      {!(deletion && words.trim() === '') && (
+      {/* A deletion with no words says it all at its head (unless its words are being written). */}
+      {(!(deletion && words.trim() === '') || editing(id)) && (
         <div className="ib-sentb-msg" data-sent-message={id}>
           <div className="ib-sentb-meta">
             <span className="ib-sentc-who">You</span>
           </div>
-          {saidWithSubThreads(id, words, !draft && !!onSubThread)}
+          {editField(id) ?? saidWithSubThreads(id, words, !draft && !!onSubThread)}
         </div>
       )}
       {(under.length > 0 || replyBox) && (
@@ -665,9 +722,10 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
                 <span className="ib-sentc-who">{reply.who}</span>
                 <SentStatusChip status={statuses?.get(reply.id)} />
                 {fresh?.has(reply.id) && <span className="ib-sentc-chip ib-sentb-new">New</span>}
+                {editButton(reply.id, reply.text)}
                 {reply.draft && onSend && <SentSendButton id={reply.id} onSend={onSend} />}
               </div>
-              {saidWithSubThreads(reply.id, reply.text, !reply.draft && !!onSubThread)}
+              {editField(reply.id) ?? saidWithSubThreads(reply.id, reply.text, !reply.draft && !!onSubThread)}
             </div>
           ))}
           {replyBox && <div className="ib-sentb-boxrow">{replyBox}</div>}
@@ -711,7 +769,8 @@ function heldUnder(
 
 /**
  * The box a reply, or a comment on a passage (`quote`, drawn at its head), is
- * written in under a message's comment: Reply or Comment (or the comment
+ * written in under a message's comment, and the one a comment's words are
+ * edited in, in their place (`edit`): Reply, Comment or Save (or the comment
  * composers' key, `isCommentSubmitKey`: ⌘/Ctrl+Enter, and Enter with "Enter
  * saves a comment") saves it as a draft; Escape or Cancel closes it. That key
  * here never reaches the thread's Send. The words are the list's, so a box
@@ -720,12 +779,14 @@ function heldUnder(
 function SentReplyBox({
   value,
   quote,
+  edit = false,
   onChange,
   onSave,
   onCancel,
 }: {
   value: string;
   quote?: string;
+  edit?: boolean;
   onChange: (text: string) => void;
   onSave: (text: string) => Promise<void>;
   onCancel: () => void;
@@ -746,15 +807,15 @@ function SentReplyBox({
     await onSave(words);
     setBusy(false);
   };
-  const label = quote === undefined ? 'Reply' : 'Comment on passage';
+  const label = edit ? 'Edit the comment' : quote === undefined ? 'Reply' : 'Comment on passage';
   return (
-    <div className="ib-sentc-box" data-sent-passage-box={quote === undefined ? undefined : ''}>
+    <div className="ib-sentc-box" data-sent-passage-box={quote === undefined ? undefined : ''} data-sent-edit-box={edit ? '' : undefined}>
       {quote !== undefined && <p className="ib-sentc-boxquote">“{shortLabel(quote)}”</p>}
       <textarea
         ref={area}
         className="ib-sentc-area"
         aria-label={label}
-        placeholder={quote === undefined ? 'Reply...' : 'Comment on this passage...'}
+        placeholder={edit ? undefined : quote === undefined ? 'Reply...' : 'Comment on this passage...'}
         rows={2}
         value={value}
         onChange={(event) => onChange(event.target.value)}
@@ -775,7 +836,7 @@ function SentReplyBox({
           Cancel
         </button>
         <button type="button" className="ib-btn ib-sm ib-pri" data-sent-reply-save="" disabled={busy || value.trim() === ''} onClick={() => void save()}>
-          {quote === undefined ? 'Reply' : 'Comment'}
+          {edit ? 'Save' : quote === undefined ? 'Reply' : 'Comment'}
         </button>
       </div>
     </div>

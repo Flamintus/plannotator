@@ -5655,6 +5655,7 @@ const App: React.FC = () => {
     sendNow: sendReviewDraftsNow,
     select: handleSelectAnnotation,
     reply: handleReplyToAnnotation,
+    edit: handleEditAnnotation,
     notify: (message) => toast.error(message),
     // The threads go under their passage wherever the viewer draws blocks; an HTML page keeps them in the panel.
     threadsInText: renderAs !== 'html' && !isEditingMarkdown && !isPlanDiffActive,

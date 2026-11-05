@@ -82,7 +82,7 @@ import {
 } from '@plannotator/core/inbox-comment-sends';
 import type { TextPassage } from '@plannotator/core/passage';
 import type { InboxAnnotationRecord, InboxCommentReplyRecord } from '@plannotator/core/inbox-types';
-import type { Annotation, Block } from '@plannotator/ui/types';
+import { AnnotationType, type Annotation, type Block } from '@plannotator/ui/types';
 import { SentCardChips, SentSendButton, sentThreadSlots, useSentThreadsView, type ReplyInput, type SubThreadSave } from '@plannotator/ui/components/inbox-thread/SentThreads';
 import type { PassageToolbarOptions } from '@plannotator/ui/components/PassageToolbar';
 import { passageCommentFields } from '@plannotator/ui/utils/passageSelection';
@@ -325,6 +325,8 @@ export function useSentComments(input: {
     }
   }, []);
   const fileRecords = useMemo(() => records.filter(isFileComment), [records]);
+  /** The thread's drafts by id: what the comments list edits (the rest was sent). */
+  const draftsById = useMemo(() => new Map(drafts.map((record) => [record.id, record])), [drafts]);
   const tree = useMemo<SentCommentsTree>(
     () => ({ rounds, resolved, replies, subThreads, openBelow, passages, statuses, live, fresh }),
     [rounds, resolved, replies, subThreads, openBelow, passages, statuses, live, fresh],
@@ -357,14 +359,22 @@ export function useSentComments(input: {
    * `belowBlocks`): each under the block its passage starts in, the ones
    * whose passage was not found at the end; `live`, a thread of this machine
    * the person can still answer: Resolve, Reply and comments on passages;
-   * `selected`, the comment the list is open at (its box is where the person is).
+   * `selected`, the comment the list is open at (its box is where the person is);
+   * `onEdit`, the list's Edit (Thread.tsx `editRecord`): a draft, which the list
+   * edits, has Edit in its box too, saved the same way.
    * Undefined: none on it.
    */
-  const slotsFor = (messageId: string, { live, onOpen, selected }: { live: boolean; onOpen: (record: InboxAnnotationRecord) => void; selected?: string | null }) => {
+  const slotsFor = (
+    messageId: string,
+    { live, onOpen, selected, onEdit }: { live: boolean; onOpen: (record: InboxAnnotationRecord) => void; selected?: string | null; onEdit?: (record: InboxAnnotationRecord, text: string) => Promise<void> },
+  ) => {
     const list = boxesByMessage.get(messageId);
     if (!list) return undefined;
     const actions = live && canResolve ? { onResolve: resolve, onReply: reply, onSubThread: subThread, ...(sendAction ? { onSend: sendAction } : {}) } : {};
-    return (blocks: readonly Block[]) => sentThreadSlots(list, blocks, { group: messageId, tree, view, onOpen, selected, passageToolbar: MESSAGE_TOOLBAR, ...actions });
+    const edit = onEdit
+      ? { canEdit: (id: string) => draftsById.has(id), onEdit: (id: string, text: string) => { const draft = draftsById.get(id); return draft ? onEdit(draft, text) : undefined; } }
+      : {};
+    return (blocks: readonly Block[]) => sentThreadSlots(list, blocks, { group: messageId, tree, view, onOpen, selected, passageToolbar: MESSAGE_TOOLBAR, ...edit, ...actions });
   };
   return {
     records,
@@ -434,6 +444,7 @@ export function useSentFileComments(input: {
   const sentById = useMemo(() => new Map((sentRecords ?? NO_RECORDS).map((r) => [r.id, r])), [sentRecords]);
   const sentIds = useMemo(() => new Set(sentById.keys()), [sentById]);
   const draftIds = useMemo(() => new Set(drafts.map((r) => r.id)), [drafts]);
+  const draftById = useMemo(() => new Map(drafts.map((r) => [r.id, r])), [drafts]);
   const resolvedIds = sent?.resolved ?? NO_IDS;
   const openBelow = sent?.openBelow ?? NO_IDS;
   /** The resolved ones that fold: nothing open under them. */
@@ -647,14 +658,21 @@ export function useSentFileComments(input: {
    * The threads on the document drawn (its blocks), for its viewer (`below`,
    * ui Viewer `belowBlock`) and after it (`after`: a comment on the whole
    * file, then the ones whose passage was not found); `selected`, the
-   * comment selected in the pane (its box is where the person is).
-   * Undefined: no sent comment here.
+   * comment selected in the pane (its box is where the person is);
+   * `onEdit`, the panel's Edit (AttachmentPane's `edit`): a draft whose card
+   * the panel edits (not read-only, never a deletion) has Edit in its box too,
+   * saved the same way. Undefined: no sent comment here.
    */
-  const slotsFor = (blocks: readonly Block[], selected?: string | null) => {
+  const slotsFor = (blocks: readonly Block[], { selected, onEdit }: { selected?: string | null; onEdit?: (id: string, text: string) => void } = {}) => {
     if (roots.length === 0) return undefined;
     const movedHere = moved.key === (view?.key ?? '') ? moved.blocks : undefined;
     const actions = live ? { onResolve, onReply: sent?.onReply, onSubThread, ...(onSend ? { onSend } : {}) } : {};
-    return sentThreadSlots(roots, blocks, { group: 'file', tree: sentTree, view: threadsView, selected, passageToolbar: FILE_TOOLBAR, ...actions }, { moved: movedHere });
+    const editable = (id: string) => {
+      const draft = draftById.get(id);
+      return !readOnly && !!draft && annotationOf(draft).type !== AnnotationType.DELETION;
+    };
+    const edit = onEdit ? { canEdit: editable, onEdit } : {};
+    return sentThreadSlots(roots, blocks, { group: 'file', tree: sentTree, view: threadsView, selected, passageToolbar: FILE_TOOLBAR, ...edit, ...actions }, { moved: movedHere });
   };
 
   return {

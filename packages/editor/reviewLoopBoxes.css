@@ -79,10 +79,11 @@ button.ib-sentb-quote:hover, button.ib-sentb-quote:focus-visible { color: var(--
 /* Resolve / Reopen and Reply, at a thread's head here and on a sent card's foot in the file's panel. */
 .ib-sentc-act { flex: none; padding: 2px 6px; border-radius: 6px; background: none; border: 0; color: var(--muted-foreground); font: inherit; font-size: var(--ib-fs-12, 12px); cursor: pointer; }
 .ib-sentc-act:hover, .ib-sentc-act:focus-visible { background: var(--muted); color: var(--foreground); }
-/* A draft's Send (comment sends): the one action of a draft, so it reads as one; on a reply row, at the row's end. */
+/* A draft's Send (comment sends): the one action of a draft, so it reads as one; on a reply row, at the row's end, after its Edit. */
 .ib-sentc-act.ib-sentb-send { color: var(--primary); font-weight: 600; }
 .ib-sentc-act.ib-sentb-send:disabled { opacity: 0.55; cursor: default; }
-.ib-sentb-meta > .ib-sentb-send { margin-left: auto; }
+.ib-sentb-meta > :is(.ib-sentb-edit, .ib-sentb-send) { margin-left: auto; }
+.ib-sentb-meta > .ib-sentb-edit + .ib-sentb-send { margin-left: 0; }
 /* An agent's reply the person has not seen yet, and a thread whose next replies go on their own. */
 .ib-sentb-new { background: color-mix(in oklab, var(--primary) 22%, var(--card)); color: var(--foreground); font-weight: 600; }
 .ib-sentb-live { background: color-mix(in oklab, var(--primary) 12%, var(--card)); color: var(--foreground); }
@@ -94,7 +95,8 @@ button.ib-sentb-quote:hover, button.ib-sentb-quote:focus-visible { color: var(--
 .ib-sentc-boxquote { margin: 0; font-size: var(--ib-fs-12, 12px); color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ib-sentc-box { display: grid; gap: 4px; padding: 4px 6px; }
 .ib-sentb-boxrow > .ib-sentc-box { padding: 8px 12px; }
-.ib-sentb-subs > .ib-sentc-box { padding: 0; }
+/* A comment's words edited in their place: the field where they were. */
+.ib-sentb-subs > .ib-sentc-box, .ib-sentb-msg > .ib-sentc-box { padding: 0; }
 .ib-sentc-area { width: 100%; resize: vertical; font: inherit; font-size: var(--ib-fs-13-5, 13.5px); padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--background); color: var(--foreground); }
 .ib-sentc-acts { display: flex; justify-content: flex-end; gap: 4px; }
 /* ── end of the copy ── */

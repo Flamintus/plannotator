@@ -102,6 +102,8 @@ export interface ReviewLoopPanelInput {
   select: (id: string) => void;
   /** Reply without the loop (a draft's card). */
   reply: (parentId: string, reply: Reply) => void;
+  /** The panel's Edit of the person's comment: a draft's box edits it the same way. */
+  edit: (id: string, updates: Partial<Annotation>) => void;
   /** Tells the person a write did not go. */
   notify: (message: string) => void;
   /** The document is drawn in blocks (the Markdown viewer): the threads are boxes under their passage and the panel a flat list. */
@@ -127,7 +129,7 @@ export interface ReviewLoopPanelProps {
 
 /** The panel's props under the loop; null while it is not available (the panel is today's). */
 export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanelProps | null {
-  const { loop, annotations, here, person, readOnly, addDraft, sendNow, select, reply, notify, blocks, selected = null } = input;
+  const { loop, annotations, here, person, readOnly, addDraft, sendNow, select, reply, edit, notify, blocks, selected = null } = input;
   const { index, state } = loop;
   const inText = input.threadsInText;
   const held = useMemo(() => new Map(annotations.map((annotation) => [annotation.id, annotation])), [annotations]);
@@ -249,6 +251,18 @@ export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanel
     lookAt(id);
   }, [loop, notify, lookAt]);
 
+  const cardParts = useCallback((annotation: Annotation): CardParts => {
+    const element = index.elements.get(annotation.id);
+    if (element && !element.node.draft) {
+      if (folded(element)) return { actions: false, quote: false, text: false, images: false, reply: false, passage: false };
+      // In the text, a sub-thread starts from a box: the list's card offers none.
+      return inText ? { actions: false, passage: false } : { actions: false };
+    }
+    // A draft: edited, removed and replied to as today; no sub-thread on its words until it is sent, and no reply
+    // under a sub-thread not sent yet (its reply would land under the thread it is on).
+    return isPassageAnnotation(annotation) ? { passage: false, reply: false } : { passage: false };
+  }, [index, folded, inText]);
+
   // ── In the text: the threads as boxes under their passage ──
   /** The review's thread view, while its threads are boxes in the text. */
   const textView = loop.available && inText ? (state?.view ?? null) : null;
@@ -335,9 +349,15 @@ export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanel
               const draft = held.get(id);
               return draft ? sendDrafts([draft]) : false;
             },
+            // What the panel's card offers Edit on (its actions, never a deletion's), edited in its box by the panel's own Edit.
+            canEdit: (id: string) => {
+              const annotation = held.get(id);
+              return !!annotation && annotation.type !== AnnotationType.DELETION && cardParts(annotation).actions !== false;
+            },
+            onEdit: (id: string, text: string) => edit(id, { text }),
           }),
     }),
-    [readOnly, onSelect, lookAt, resolveThread, onReply, onCommentPassage, held, sendDrafts],
+    [readOnly, onSelect, lookAt, resolveThread, onReply, onCommentPassage, held, sendDrafts, cardParts, edit],
   );
   const lastBlock = blocks.length > 0 ? blocks[blocks.length - 1]!.id : null;
   const belowBlock = useMemo(() => {
@@ -396,18 +416,6 @@ export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanel
       </SentListLine>
     );
   }, [index, readOnly, sendDrafts, failed, loop, resolveThread, notify, boxes]);
-
-  const cardParts = useCallback((annotation: Annotation): CardParts => {
-    const element = index.elements.get(annotation.id);
-    if (element && !element.node.draft) {
-      if (folded(element)) return { actions: false, quote: false, text: false, images: false, reply: false, passage: false };
-      // In the text, a sub-thread starts from a box: the list's card offers none.
-      return inText ? { actions: false, passage: false } : { actions: false };
-    }
-    // A draft: edited, removed and replied to as today; no sub-thread on its words until it is sent, and no reply
-    // under a sub-thread not sent yet (its reply would land under the thread it is on).
-    return isPassageAnnotation(annotation) ? { passage: false, reply: false } : { passage: false };
-  }, [index, folded, inText]);
 
   /** A card's state, as a box's head says it (ui's `SentCardChips`), plus the screens' own: New, Not delivered. */
   const renderCardHeader = useCallback((annotation: Annotation): React.ReactNode => {
