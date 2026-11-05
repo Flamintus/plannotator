@@ -8,14 +8,16 @@
  * "persistent-comments"), no Inbox running, this session not connected to it,
  * an Inbox too old, a CLI without the command, or any other refusal.
  *
- * Kept on the screen, never tried in the Inbox: a folder, a URL, several
- * words, any flag (`--gate`, `--markdown`, `--tailscale`, ...: screen
- * options), and `/plannotator-review`. A word that is not a file of the
- * session's folder is refused by the Inbox, and the screen then resolves it
- * its own way (a bare name found elsewhere in the project).
+ * Kept on the screen, never tried in the Inbox: `/plannotator-annotate`
+ * with a URL, several words, any flag (`--gate`, `--markdown`, ...: screen
+ * options) or a `~` path (the screen expands it; the mod knows no HOME);
+ * `/plannotator-last --tailscale`; `/plannotator-review`. A word that is not
+ * a file of the session's folder (a folder too) is refused by the Inbox, and
+ * the screen then resolves it its own way (a bare name found elsewhere in
+ * the project).
  *
  * The person's answer names the Inbox; the model gets one line of hidden
- * context saying where the comments will come from.
+ * context saying what is under review and where the comments will come from.
  */
 
 import type { ProcessResult } from './host'
@@ -24,8 +26,13 @@ import type { SessionKind } from './delivery'
 /** What a command drops in the Inbox: the newest assistant message (its text on stdin), or one file. */
 export type InboxReviewDrop = { kind: 'message' } | { kind: 'file'; path: string }
 
-/** One drop never holds the command longer: the screen opens instead. */
-export const INBOX_REVIEW_TIMEOUT_MS = 20_000
+/**
+ * The most a drop holds the command before the screen opens instead: past
+ * the CLI's own bound on its request (30 s, inbox-review-command.ts) and its
+ * start, so the CLI answers first (`inbox_no_answer`) and never opens the
+ * window after the screen did.
+ */
+export const INBOX_REVIEW_TIMEOUT_MS = 40_000
 
 /**
  * What `/plannotator-last` or `/plannotator-annotate` drops in the Inbox, or
@@ -36,7 +43,7 @@ export function inboxReviewDropOf(kind: SessionKind, words: readonly string[]): 
   if (kind === 'last') return words.includes('--tailscale') ? null : { kind: 'message' }
   if (kind !== 'annotate' || words.length !== 1) return null
   const word = words[0] as string
-  if (word === '' || word.startsWith('-') || /^[a-z][a-z0-9+.-]*:\/\//i.test(word)) return null
+  if (word === '' || word.startsWith('-') || word.startsWith('~') || /^[a-z][a-z0-9+.-]*:\/\//i.test(word)) return null
   // Claude Code's file mention (`@notes.md`): the `@` is not part of the name.
   const path = word.startsWith('@') && word.length > 1 ? word.slice(1) : word
   return { kind: 'file', path }
@@ -69,8 +76,12 @@ export function inboxReviewOpenedText(subject: string, url: string, note = ''): 
   return `Opened ${subject} in your Plannotator Inbox · ${url}${note ? `\n${note}` : ''}\nYour comments reach Claude from the Inbox when you send them.`
 }
 
-/** The hidden line the model gets: what is under review, where, and where the comments come from. */
-export function inboxReviewAgentLine(drop: InboxReviewDrop, subject: string, threadId: string | null): string {
-  const what = drop.kind === 'message' ? 'your last message' : subject
+/**
+ * The hidden line the model gets: what is under review (a file by the path
+ * the person typed, never a bare name that could be another file), where, and
+ * where the comments come from.
+ */
+export function inboxReviewAgentLine(drop: InboxReviewDrop, threadId: string | null): string {
+  const what = drop.kind === 'message' ? 'your last message' : drop.path
   return `The person is reviewing ${what} in their Plannotator Inbox${threadId ? ` (thread ${threadId})` : ''}; their comments will reach you from the Inbox.`
 }

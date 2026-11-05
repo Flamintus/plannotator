@@ -14,7 +14,9 @@ import { createInboxWorld, destroyInboxWorld, registry, removeStubbedHtml, start
 import { ClaudeSession } from './testing/claude-session'
 
 const SESSION_ID = '3f0c2a54-7d8e-4b61-9a0f-5e2c1d7b8a90'
-const ANSWER = 'The refund worker now retries a Stripe 409 three times with the same idempotency key.\n\nThen it alerts.'
+/** The answer's two text blocks after a tool call: one message of the transcript, two rows of the engine's conversation. */
+const PARTS = ['The refund worker now retries a Stripe 409 three times with the same idempotency key.', 'Then it alerts.']
+const ANSWER = PARTS.join('\n')
 
 let stubs: string[] = []
 const worlds: InboxWorld[] = []
@@ -47,18 +49,37 @@ function world(name: string, switchOn: boolean): InboxWorld {
   writeFileSync(
     join(transcripts, `${SESSION_ID}.jsonl`),
     line({ type: 'user', uuid: 'u1', parentUuid: null, message: { role: 'user', content: 'Fix the refund retries.' } }) +
-      line({ type: 'assistant', uuid: 'a1', parentUuid: 'u1', message: { id: 'msg_01', role: 'assistant', content: [{ type: 'text', text: ANSWER }] } }),
+      line({ type: 'assistant', uuid: 'a0', parentUuid: 'u1', message: { id: 'msg_00', role: 'assistant', content: [{ type: 'tool_use', id: 'tu_1', name: 'Read', input: {} }] } }) +
+      line({ type: 'user', uuid: 'u2', parentUuid: 'a0', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: 'ok' }] } }) +
+      line({ type: 'assistant', uuid: 'a1', parentUuid: 'u2', message: { id: 'msg_01', role: 'assistant', content: [{ type: 'text', text: PARTS[0] }] } }) +
+      line({ type: 'assistant', uuid: 'a2', parentUuid: 'a1', message: { id: 'msg_01', role: 'assistant', content: [{ type: 'text', text: PARTS[1] }] } }),
   )
   return w
+}
+
+/** The person starts the world's Inbox; it reads Claude Code transcripts from the world's HOME, whatever this machine sets. */
+function startWorldInbox(w: InboxWorld): void {
+  const saved = process.env.CLAUDE_CONFIG_DIR
+  process.env.CLAUDE_CONFIG_DIR = join(w.home, '.claude')
+  try {
+    startInbox(w)
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = saved
+  }
 }
 
 /** This session in its Claude Code process: the conversation the engine holds, and the screen's launch stood in. */
 async function open(w: InboxWorld): Promise<{ session: ClaudeSession; screens: string[][] }> {
   const session = await ClaudeSession.start({ env: worldEnv(w), cwd: w.project, store: new Map(), sessionId: SESSION_ID, dataDir: w.dataDir })
   sessions.push(session)
+  // As the engine maps the transcript above (Claude Code 2.1.318): a row per block, the tool result a user row.
   session.host.messages = async () => [
     { role: 'user', text: 'Fix the refund retries.' },
-    { role: 'assistant', text: ANSWER },
+    { role: 'assistant', text: '' },
+    { role: 'user', text: '' },
+    { role: 'assistant', text: PARTS[0]! },
+    { role: 'assistant', text: PARTS[1]! },
   ]
   const screens: string[][] = []
   const run = session.host.run
@@ -86,7 +107,7 @@ function addressOf(text: string): { url: string; thread: string; msg: string | n
 describe('the review commands through a real Inbox', () => {
   test("/plannotator-last lands the session's last message in its review thread, checked against its transcript; again, nothing new; the person's Send wakes the session", async () => {
     const w = world('last', true)
-    startInbox(w)
+    startWorldInbox(w)
     const { session, screens } = await open(w)
     await connected(session)
 
@@ -124,7 +145,7 @@ describe('the review commands through a real Inbox', () => {
 
   test('/plannotator-annotate: one file lands in a thread of its own; a folder keeps the screen', async () => {
     const w = world('annotate', true)
-    startInbox(w)
+    startWorldInbox(w)
     const { session, screens } = await open(w)
     await connected(session)
 
@@ -144,7 +165,7 @@ describe('the review commands through a real Inbox', () => {
 
   test('the switch off, or no Inbox running: the screen, and nothing lands in the Inbox', async () => {
     const off = world('switch-off', false)
-    startInbox(off)
+    startWorldInbox(off)
     const first = await open(off)
     await connected(first.session)
     const answer = await first.session.mod.answerCommand('last', '')

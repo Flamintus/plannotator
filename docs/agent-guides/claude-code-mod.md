@@ -38,7 +38,7 @@ closures; `controller.ts` (`PlannotatorMod`) is the per-session state machine;
 `launch.ts` (detached launcher, launch-directory layout, command table, copy),
 `delivery.ts` (turn vs log, 12 KB inline limit), `plan.ts` (ExitPlanMode
 decisions and deny copy), `turns.ts` and `bridge.ts` (Ask this session),
-`shell-words.ts` (argument splitting), `tool.ts` (the `plannotator` tool contract, a copy of `packages/shared/plannotator-tool.ts`), `take-over.ts` (agent-run Bash `plannotator` commands answered through the tool), `inbox.ts` and `inbox-contract.ts` (the Plannotator Inbox connection, below; the contract a copy of `packages/shared/inbox/connection.ts`). The mod is self-contained: a plugin
+`shell-words.ts` (argument splitting), `tool.ts` (the `plannotator` tool contract, a copy of `packages/shared/plannotator-tool.ts`), `take-over.ts` (agent-run Bash `plannotator` commands answered through the tool), `inbox.ts` and `inbox-contract.ts` (the Plannotator Inbox connection, below; the contract a copy of `packages/shared/inbox/connection.ts`), `review-in-inbox.ts` (the review commands through the Inbox, below). The mod is self-contained: a plugin
 installed from the marketplace is only `apps/hook/`, and a hooks module may
 import only its own files.
 
@@ -342,28 +342,37 @@ the CLI's tolerant annotate handoff (several unresolvable words) is shown to
 the user as that error, not handed to Claude.
 
 **Review in the Inbox (the fork's own branch, `review-in-inbox.ts`).** In a
-session connected to the Inbox (the `plannotator_inbox` tool registered),
-`/plannotator-last` and `/plannotator-annotate <one file>` first run
-`plannotator inbox review (--message - | --file <path>) --session
-claude-code:<id> --open` (`PLANNOTATOR_SESSION_TAG` set to the same session):
-the newest response on stdin (`recentAssistantTexts`, the text the screen
-shows; a leading `@` of a file mention dropped), so it lands in the session's
-review thread and the window opens on it. The answer is "Opened <subject> in
-your Plannotator Inbox · <url>", plus one line of hidden `context` for the model
-naming the thread and saying the comments come from the Inbox; no launch, no
-status line, and a Send there wakes the session like any Inbox reply. Anything
-but exit 0 with an address opens the screen as before, silently (one debug
-line): the experimental switch off (`persistent_comments_off`), no Inbox
+session connected to the Inbox (the `plannotator_inbox` tool registered) on a
+computer where an Inbox has run (`inbox/inbox.json`), `/plannotator-last` and
+`/plannotator-annotate <one file>` first run `plannotator inbox review
+(--message - | --file <path>) --session claude-code:<id> --open`, with
+`PLANNOTATOR_SESSION_TAG` naming the same session and `PLANNOTATOR_DATA_DIR`
+the mod's. `last` passes the newest response on stdin (`recentAssistantTexts`,
+the text the screen shows); annotate passes the word typed, without the `@` of
+a file mention. The target lands in the session's review thread and the window
+opens on it. The answer is "Opened <subject> in your Plannotator Inbox · <url>",
+plus one line of hidden `context` for the model naming what is under review
+(the file by the path typed), the thread, and that the comments come from the
+Inbox; no launch, no status line, and a Send there wakes the session like any
+Inbox reply. Anything but exit 0 with an address opens the screen as before,
+silently (one debug line): the experimental switch off
+(`persistent_comments_off`; the CLI's run costs about 0.3 s first), no Inbox
 running, the session not connected yet, an older Inbox or CLI, a folder or a
 missing file (the screen then resolves the word its own way), a run that
-fails or passes 20 s. Never tried: a URL, several words, any flag (screen
-options such as `--gate`, `--tailscale`), `/plannotator-review`, the
-`plannotator` tool and taken-over Bash runs. The Inbox gets only the newest
-message: the screen's picker of older ones is not offered there. `$.session.messages()`
-rows carry no message id, so none is passed; the Inbox checks the words
-against the transcript (`verified`), which matched at every point of 94 real
-transcripts (1278 points). Tests: `review-in-inbox.test.ts` (rules and every
-refusal over a memory host), `inbox-review.test.ts` (a real Inbox and CLI),
+fails or passes 40 s (past the CLI's own 30 s bound, so the CLI answers first).
+Never tried: `/plannotator-annotate` with a URL, several words, any flag
+(screen options such as `--gate`, `--markdown`) or a `~` path (the screen
+expands it; the mod has no HOME); `/plannotator-last --tailscale`;
+`/plannotator-review`; the `plannotator` tool and taken-over Bash runs. The
+Inbox gets only the newest message: the screen's picker of older ones is not
+offered there. `$.session.messages()` rows carry no message id, so none is
+passed; the Inbox checks the words against the transcript (`verified`). Known
+gap, as for `/plannotator-inbox`: typed while Claude works, the command the mod
+registers itself runs on the mid-turn path, which drops `context`, and the
+newest response is the one still being written. Tests:
+`review-in-inbox.test.ts` (rules and every refusal over a memory host),
+`inbox-review.test.ts` (a real Inbox and CLI: an answer split by a tool call
+and in two blocks, checked against its transcript), and
 `apps/hook/tests/register.test.ts` (the engine's `command.run` carries the
 context).
 

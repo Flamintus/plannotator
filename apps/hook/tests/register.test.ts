@@ -289,6 +289,8 @@ describe('register', () => {
   test('/plannotator-last and /plannotator-annotate <one file>, taken by the Inbox: its address, one line of context for the model, no screen', async ($: any, on: any) => {
     const drops: { argv: string[]; stdin?: string }[] = []
     const w = world(on, {
+      // An Inbox has run here (its registry); the drop's answer is the CLI's.
+      files: new Map([['/home/me/.plannotator', ''], ['/home/me/.plannotator/inbox/inbox.json', JSON.stringify({ v: 1, pid: 1, port: 5150, token: 't'.repeat(40), serverSession: 'srv-1', url: 'http://127.0.0.1:5150' })]]),
       run: (argv, _files, init) => {
         if (argv[1] !== 'inbox' || argv[2] !== 'review') return undefined
         drops.push({ argv, ...(init?.stdin !== undefined ? { stdin: init.stdin } : {}) })

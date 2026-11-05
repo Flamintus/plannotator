@@ -10,7 +10,7 @@
 import { BRIDGE_HOST, BRIDGE_MODES, bridgeBaseUrl, createBridge, type BridgeEnd, type BridgeHandle } from './bridge'
 import { deliveryFor, legacyResult, parseHostResult, type HostResultRecord, type SessionKind } from './delivery'
 import type { Host, HttpResult } from './host'
-import { InboxLink, inboxSessionProjectEnvValue, sessionProjectFolder } from './inbox'
+import { InboxLink, inboxRegistryPathOf, inboxSessionProjectEnvValue, sessionProjectFolder } from './inbox'
 import { inboxCommandBriefing, type InboxToolInfo } from './inbox-contract'
 import {
   aliveArgv,
@@ -912,6 +912,8 @@ export class PlannotatorMod {
     if (!this.inbox) return null
     const drop = inboxReviewDropOf(kind, wordsOf(rawArgs))
     if (!drop) return null
+    // No Inbox ever ran here: no process to start for a sure refusal.
+    if (!(await this.host.exists(inboxRegistryPathOf(this.session.dataDir)).catch(() => false))) return null
     let stdin: string | undefined
     if (drop.kind === 'message') {
       stdin = recentAssistantTexts(await this.host.messages(), 1)[0]
@@ -933,7 +935,7 @@ export class PlannotatorMod {
     const subject = subjectFor(kind, drop.kind === 'file' ? [drop.path] : rawArgs)
     return {
       text: inboxReviewOpenedText(subject, outcome.url, outcome.note),
-      context: [inboxReviewAgentLine(drop, subject, outcome.threadId)],
+      context: [inboxReviewAgentLine(drop, outcome.threadId)],
     }
   }
 

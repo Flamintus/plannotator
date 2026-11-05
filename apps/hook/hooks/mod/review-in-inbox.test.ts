@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { PlannotatorMod } from './controller'
 import type { ProcessResult } from './host'
+import { inboxRegistryPathOf } from './inbox'
 import { fakeHost, type FakeHost } from './testing/fake-host'
 
 // `/plannotator-last` and `/plannotator-annotate <one file>` through the
@@ -8,8 +9,9 @@ import { fakeHost, type FakeHost } from './testing/fake-host'
 // the wrong session or with the wrong text; the screen opening as well as the
 // Inbox; the screen not opening when the Inbox refuses (each refusal, an older
 // CLI, a run that fails); a folder, a URL, several words or a flag sent to the
-// Inbox; a session with no Inbox connection asking it at all; the model not
-// told where the comments come from. Against a real Inbox: inbox-review.test.ts.
+// Inbox; a session with no Inbox connection, or a computer where no Inbox ever
+// ran, asking it at all; the model not told what is under review and where the
+// comments come from. Against a real Inbox: inbox-review.test.ts.
 
 const SESSION = { sessionId: 'session-1', dataDir: '/data', interactive: true }
 /** A session connected to the Inbox (the tool registered at session start). */
@@ -47,6 +49,8 @@ function world(drop: (run: Run) => ProcessResult) {
     { role: 'assistant', text: 'Part two: retry with the same key.' },
     { role: 'assistant', text: 'Part three: alert after five.' },
   ]
+  // An Inbox has run on this computer.
+  host.files.set(inboxRegistryPathOf(SESSION.dataDir), '{}')
   const screens = () => host.runs.filter((call) => call.argv[3] === 'plannotator-launch').map((call) => call.argv.slice(5))
   return { host, reviews, screens }
 }
@@ -89,7 +93,8 @@ describe('the review commands through the Inbox', () => {
       expect(w.reviews.map((review) => review.argv)).toEqual([['plannotator', 'inbox', 'review', '--file', path, '--session', 'claude-code:session-1', '--open']])
       expect(w.reviews[0]?.stdin).toBeUndefined()
       expect(answer.text).toContain(DROPPED)
-      expect(answer.context?.[0]).toContain(path.split('/').pop()!)
+      // The path as typed, never a bare name that could be another file.
+      expect(answer.context?.[0]).toContain(path)
       expect(w.screens()).toEqual([])
     }
   })
@@ -140,6 +145,7 @@ describe('the review commands through the Inbox', () => {
       ['annotate', 'notes.md --gate'],
       ['annotate', '--markdown notes.md'],
       ['annotate', '--help'],
+      ['annotate', '~/notes.md'],
       ['annotate', ''],
       ['review', ''],
       ['review', 'notes.md'],
@@ -156,33 +162,36 @@ describe('the review commands through the Inbox', () => {
     }
   })
 
-  test('a session with no Inbox connection (the inbox tool off) never asks the Inbox: nothing would wake it', async () => {
-    const w = world(taken)
-    const mod = new PlannotatorMod(w.host, SESSION)
-
-    const answer = await mod.answerCommand('last', '')
-
-    expect(w.reviews).toEqual([])
-    expect(w.screens()).toEqual([['plannotator', 'annotate-last', '--stdin']])
+  test('a session with no Inbox connection (the inbox tool off), or a computer where no Inbox ever ran, never asks the Inbox', async () => {
+    const off = world(taken)
+    const answer = await new PlannotatorMod(off.host, SESSION).answerCommand('last', '')
+    expect(off.reviews).toEqual([])
+    expect(off.screens()).toEqual([['plannotator', 'annotate-last', '--stdin']])
     expect(answer.context).toBeUndefined()
+
+    const never = world(taken)
+    never.host.files.delete(inboxRegistryPathOf(SESSION.dataDir))
+    await new PlannotatorMod(never.host, CONNECTED).answerCommand('annotate', 'notes.md')
+    expect(never.reviews).toEqual([])
+    expect(never.screens()).toEqual([['plannotator', 'annotate', 'notes.md']])
   })
 
-  test('no assistant message yet: the screen\'s answer, no drop', async () => {
+  test("no assistant message yet: the screen's own answer, no drop", async () => {
     const w = world(taken)
     w.host.transcript = [{ role: 'user', text: 'hi' }]
-    const mod = new PlannotatorMod(w.host, CONNECTED)
 
-    const answer = await mod.answerCommand('last', '')
+    const answer = await new PlannotatorMod(w.host, CONNECTED).answerCommand('last', '')
 
     expect(w.reviews).toEqual([])
-    expect(answer.text).toBe('There is no assistant message to annotate yet.')
+    expect(answer).toEqual({ text: await new PlannotatorMod(w.host, SESSION).runCommand('last', '') })
   })
 
-  test("a remote session's note from the CLI (no browser opened) reaches the person", async () => {
-    const w = world(() => ({ exitCode: 0, stdout: `${DROPPED}\n`, stderr: 'No browser opened: this is a remote session. Forward the port.\n' }))
+  test("what the CLI says beside the address (a remote session's no browser) reaches the person", async () => {
+    const NOTE = 'cli-note-sentinel'
+    const w = world(() => ({ exitCode: 0, stdout: `${DROPPED}\n`, stderr: `${NOTE}\n` }))
     const answer = await new PlannotatorMod(w.host, CONNECTED).answerCommand('last', '')
 
     expect(answer.text).toContain(DROPPED)
-    expect(answer.text).toContain('No browser opened')
+    expect(answer.text).toContain(NOTE)
   })
 })
