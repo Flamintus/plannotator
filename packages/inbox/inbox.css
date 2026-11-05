@@ -7828,13 +7828,13 @@ dialog.ib-zx .ib-listcol.ib-zx-list { position: relative; inset: auto; visibilit
 .ib-sentc-who { flex: none; font-weight: 600; }
 .ib-sentc-said { margin: 0; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 /* A comment's own words, under its row: whole, so a passage of them can be selected (a sub-thread). */
-.ib-sentc-item > .ib-sentc-said { padding: 0 6px 4px; font-size: 0.9em; }
+.ib-sentc-item > .ib-sentc-said { padding: 0 6px 4px; font-size: var(--ib-fs-12-5, 12.5px); }
 .ib-sentc-reply > .ib-sentc-said { flex: 1 1 12em; }
 /* Sub-threads: the comments on a passage of a message, under it, at the same indent at each level; the passage of an
    open one is marked in the message's words. */
-.ib-sentc-reply > .ib-sentc-thread { flex-basis: 100%; font-size: calc(1em / 0.9); }
+.ib-sentc-reply > .ib-sentc-thread { flex-basis: 100%; font-size: var(--ib-fs-14, 14px); }
 .ib-sentc-mark { background: color-mix(in oklab, var(--primary) 18%, transparent); color: inherit; border-radius: 2px; }
-.ib-sentc-boxquote { margin: 0; font-size: 0.85em; color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ib-sentc-boxquote { margin: 0; font-size: var(--ib-fs-12, 12px); color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ib-sentc-box { display: grid; gap: 4px; padding: 4px 6px; }
 .ib-sentc-area { width: 100%; resize: vertical; font: inherit; font-size: var(--ib-fs-12-5, 12.5px); padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--background); color: var(--foreground); }
 .ib-sentc-acts { display: flex; justify-content: flex-end; gap: 4px; }
