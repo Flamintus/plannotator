@@ -41,14 +41,19 @@ import {
   inboxCommentLastReplies,
   inboxCommentMessages,
   inboxCommentRounds,
+  inboxCommentsHiddenUnderFolded,
+  inboxCommentSitsUnder,
   inboxCommentState,
+  inboxMessagesWithOpenThreads,
   inboxOpenSubThreadPaths,
   isInboxCommentReply,
+  isInboxCommentThreadFolded,
   isInboxCommentUnderAnother,
   isInboxSubThread,
   type InboxCommentMessage,
   type InboxCommentThreadMessage,
 } from '@plannotator/core/inbox-comment-threads';
+import { inboxCommentThreadView, type InboxCommentSend } from '@plannotator/core/inbox-comment-sends';
 import type { TextPassage } from '@plannotator/core/passage';
 import type { InboxAnnotationRecord, InboxCommentReplyRecord } from '@plannotator/core/inbox-types';
 import type { Annotation, Block } from '@plannotator/ui/types';
@@ -57,30 +62,16 @@ import { PASSAGE_BODY_ATTRIBUTE, passageRanges, selectedPassage, splitByRanges, 
 import { InboxApiError, inboxApi, type AttachmentsModel } from '../api';
 import { Icon } from '../icons';
 import { annotationOf, annotationQuote, isFileComment, shortLabel } from '../attachments';
-import {
-  agentReplyAnnotation,
-  commentOfCard,
-  followCodeLines,
-  hiddenUnderFolded,
-  isFoldedThread,
-  messagesWithOpenThreads,
-  openPassagesByParent,
-  placeThreads,
-  sentReplyRounds,
-  sentReplyRows,
-  sentUnanchoredChanges,
-  sitsUnder,
-  subThreadsByParent,
-  withSentWrites,
-  type SentReplyRow,
-} from '../sentComments';
+import { agentReplyAnnotation, commentOfCard, followCodeLines, placeThreads, sentCommentsParts, sentUnanchoredChanges, withSentWrites, type SentReplyRow } from '../sentComments';
 import { newUuid } from '../uuid';
 
 const NO_RECORDS: readonly InboxAnnotationRecord[] = [];
 const NO_REPLIES: readonly InboxCommentReplyRecord[] = [];
+const NO_SENDS: readonly InboxCommentSend[] = [];
 const NO_WRITES: ReadonlyMap<string, InboxAnnotationRecord> = new Map();
 const NO_IDS: ReadonlySet<string> = new Set();
 const NO_PASSAGES: readonly TextPassage[] = [];
+const NO_TREE: SentCommentsTree = { rounds: new Map(), resolved: NO_IDS, replies: new Map(), subThreads: new Map(), openBelow: NO_IDS, passages: new Map() };
 
 type UnanchoredReport = { attempted: readonly string[]; unanchored: readonly string[] };
 
@@ -104,6 +95,8 @@ export interface SentFileComments {
   resolved: ReadonlySet<string>;
   /** The messages with an open sub-thread under them: a resolved one among them stays unfolded. */
   openBelow: ReadonlySet<string>;
+  /** The thread's replies, sub-threads and passages (the pane looks its own comments up in it). */
+  tree: SentCommentsTree;
   /** What the pane found of their words. */
   onUnanchoredReport: (report: UnanchoredReport) => void;
   /** The person resolves one, or opens it again (absent: no Resolve, a linked machine's thread). */
@@ -155,9 +148,10 @@ export function useSentComments(input: {
   const { messages, files, drafts, patchDrafts, onError, canResolve } = input;
   const listed = files?.sent_comments ?? NO_RECORDS;
   const agentReplies = files?.comment_replies ?? NO_REPLIES;
+  const sends = files?.comment_sends ?? NO_SENDS;
   const [written, setWritten] = useState(NO_WRITES);
   const records = useMemo(() => withSentWrites(listed, written), [listed, written]);
-  const rounds = useMemo(() => inboxCommentRounds(messages, records), [messages, records]);
+  const rounds = useMemo(() => inboxCommentRounds(messages, records, sends), [messages, records, sends]);
   // A reply newer than a resolution opens the comment again (inboxCommentState), the person's draft too.
   const lastReplies = useMemo(() => inboxCommentLastReplies([...records, ...drafts], agentReplies), [records, drafts, agentReplies]);
   // The threads: the comments and the sub-threads (a reply is part of its comment's thread).
@@ -173,12 +167,13 @@ export function useSentComments(input: {
     for (const record of comments) if (record.message) out.set(record.message_id, [...(out.get(record.message_id) ?? []), record]);
     return out;
   }, [comments]);
-  const replyRounds = useMemo(() => sentReplyRounds(messages, rounds, records, agentReplies), [messages, rounds, records, agentReplies]);
-  const replies = useMemo(() => sentReplyRows([...records, ...drafts], agentReplies, replyRounds), [records, drafts, agentReplies, replyRounds]);
-  const subThreads = useMemo(() => subThreadsByParent([...records, ...drafts]), [records, drafts]);
+  // The replies, sub-threads and passages: the thread view's (core), over what was sent and the drafts.
+  const { replyRounds, replies, subThreads, passages } = useMemo(() => {
+    const all = [...records, ...drafts];
+    return sentCommentsParts(inboxCommentThreadView({ messages, records: all, agentReplies, sends }), all);
+  }, [messages, records, drafts, agentReplies, sends]);
   // A draft sub-thread is open too: what it is under stays unfolded so the person sees it.
   const openBelow = useMemo(() => inboxOpenSubThreadPaths([...records, ...drafts], agentReplies, (id) => !resolved.has(id)), [records, drafts, agentReplies, resolved]);
-  const passages = useMemo(() => openPassagesByParent(subThreads, resolved), [subThreads, resolved]);
   const commentMessages = useMemo<ReadonlyMap<string, InboxCommentMessage>>(() => inboxCommentMessages(records, agentReplies), [records, agentReplies]);
   const recordsRef = useRef(records);
   recordsRef.current = records;
@@ -225,6 +220,7 @@ export function useSentComments(input: {
     }
   }, []);
   const fileRecords = useMemo(() => records.filter(isFileComment), [records]);
+  const tree = useMemo<SentCommentsTree>(() => ({ rounds, resolved, replies, subThreads, openBelow, passages }), [rounds, resolved, replies, subThreads, openBelow, passages]);
   const pane = useMemo<SentFileComments | undefined>(
     () =>
       files?.sent_comments
@@ -235,17 +231,17 @@ export function useSentComments(input: {
             replyRounds,
             resolved,
             openBelow,
+            tree,
             onUnanchoredReport: report,
             ...(canResolve ? { onResolve: resolve, onReply: reply, onSubThread: subThread } : {}),
           }
         : undefined,
-    [files?.sent_comments, fileRecords, rounds, agentReplies, replyRounds, resolved, openBelow, report, resolve, reply, subThread, canResolve],
+    [files?.sent_comments, fileRecords, rounds, agentReplies, replyRounds, resolved, openBelow, tree, report, resolve, reply, subThread, canResolve],
   );
-  const tree = useMemo<SentCommentsTree>(() => ({ rounds, resolved, replies, subThreads, openBelow, passages }), [rounds, resolved, replies, subThreads, openBelow, passages]);
-  const foldedIds = useMemo(() => new Set(threads.filter((record) => isFoldedThread(record.id, resolved, openBelow)).map((record) => record.id)), [threads, resolved, openBelow]);
+  const foldedIds = useMemo(() => new Set(threads.filter((record) => isInboxCommentThreadFolded(record.id, resolved, openBelow)).map((record) => record.id)), [threads, resolved, openBelow]);
   const view = useSentThreadsView(canResolve && byMessage.size > 0, foldedIds);
   // The messages holding a thread still open: they open unfolded (null until the thread's files are read).
-  const openMessages = useMemo(() => (files ? messagesWithOpenThreads(comments, resolved, openBelow) : null), [files, comments, resolved, openBelow]);
+  const openMessages = useMemo(() => (files ? inboxMessagesWithOpenThreads(comments, resolved, openBelow) : null), [files, comments, resolved, openBelow]);
   /**
    * The threads on an agent's message, for its body (MessageBody
    * `belowBlocks`): each under the block its passage starts in, the ones
@@ -342,9 +338,11 @@ export function useSentFileComments(input: {
   /** Every card here under another message (the person's replies and sub-threads, sent or drafts, and the agents' replies): never painted. */
   const replyIds = useMemo(() => new Set([...fileRecords.filter(isInboxCommentUnderAnother).map((r) => r.id), ...agentHere.map((reply) => reply.id)]), [fileRecords, agentHere]);
   /** The cards a folded comment or sub-thread hides. */
-  const folded = useMemo(() => hiddenUnderFolded(replyIds, sitsUnder(fileRecords, agentHere), foldedIds), [replyIds, fileRecords, agentHere, foldedIds]);
+  const folded = useMemo(() => inboxCommentsHiddenUnderFolded(replyIds, inboxCommentSitsUnder(fileRecords, agentHere), foldedIds), [replyIds, fileRecords, agentHere, foldedIds]);
+  /** The thread's replies, sub-threads and passages: this file's are looked up in it by id. */
+  const sentTree = sent?.tree ?? NO_TREE;
   /** The passages marked in each card's words: its sub-threads still open. */
-  const passagesOn = useMemo(() => openPassagesByParent(subThreadsByParent(fileRecords), resolvedIds), [fileRecords, resolvedIds]);
+  const passagesOn = sentTree.passages;
   const text = view?.text;
   const codeLines = useMemo(() => (isCode && text !== undefined && sentIds.size > 0 ? text.split('\n') : null), [isCode, text, sentIds]);
   const panelAnnotations = useMemo(
@@ -495,17 +493,7 @@ export function useSentFileComments(input: {
     },
     [reportUnanchored],
   );
-  const fileTree = useMemo<SentCommentsTree>(
-    () => ({
-      rounds: sent?.rounds ?? new Map(),
-      resolved: resolvedIds,
-      replies: sentReplyRows(fileRecords, agentHere, sent?.replyRounds ?? new Map()),
-      subThreads: subThreadsByParent(fileRecords),
-      openBelow,
-      passages: passagesOn,
-    }),
-    [sent?.rounds, sent?.replyRounds, resolvedIds, fileRecords, agentHere, openBelow, passagesOn],
-  );
+  const fileTree = sentTree;
   /**
    * The threads on the document drawn (its blocks), for its viewer (`below`,
    * ui Viewer `belowBlock`) and after it (`after`: the ones whose passage was
@@ -710,7 +698,7 @@ function SentThreadBox({ record, root, tree, view, actions }: { record: InboxAnn
   const round = record.sent_reply_id ? rounds.get(record.sent_reply_id) : undefined;
   const isSub = isInboxSubThread(record);
   const isResolved = resolved.has(id);
-  const foldable = isFoldedThread(id, resolved, openBelow);
+  const foldable = isInboxCommentThreadFolded(id, resolved, openBelow);
   const folded = foldable && !view.shown.has(id);
   const under = replies.get(id) ?? [];
   const roundChip = draft ? <span className="ib-sentc-chip">Not sent</span> : round !== undefined ? <span className="ib-sentc-chip" data-sent-round={round}>Round {round}</span> : null;

@@ -2,22 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import type { InboxAnnotationRecord, InboxCommentReplyRecord } from '@plannotator/core/inbox-types';
 import { attachmentFeedback, codeCommentAnnotation, codeRangeOf } from './attachments';
 import { inboxCommentMessages } from '@plannotator/core/inbox-comment-threads';
-import {
-  agentReplyAnnotation,
-  commentOfCard,
-  followCodeLines,
-  hiddenUnderFolded,
-  messagesWithOpenThreads,
-  openPassagesByParent,
-  placeThreads,
-  sentReplyRounds,
-  sentReplyRows,
-  sentUnanchoredChanges,
-  sitsUnder,
-  subThreadsByParent,
-  unfoldOpenThreads,
-  withSentWrites,
-} from './sentComments';
+import { inboxCommentThreadView } from '@plannotator/core/inbox-comment-sends';
+import { agentReplyAnnotation, commentOfCard, followCodeLines, placeThreads, sentCommentsParts, sentUnanchoredChanges, unfoldOpenThreads, withSentWrites } from './sentComments';
 
 const sent = (id: string, unanchored_at: string | null = null) => ({ id, unanchored_at, sent_reply_id: 'msg_p1' }) as unknown as InboxAnnotationRecord;
 
@@ -92,14 +78,14 @@ describe('replies under a sent comment, as the window draws them', () => {
   ];
 
   test("one list per comment, oldest first: the agent's by its name, the person's as You, a draft marked so, each with its round", () => {
-    const sent = [comment, mine('r1', 'msg_p2', '2026-11-04T10:04:00.000Z')];
-    const rounds = sentReplyRounds(messages, new Map([['msg_p1', 1], ['msg_p2', 2]]), sent, agents);
-    const rows = sentReplyRows([...sent, mine('d1', null, '2026-11-04T10:06:00.000Z')], agents, rounds).get('c1')!;
-    expect(rows.map((row) => [row.id, row.who, row.round, row.draft])).toEqual([
+    const records = [comment, mine('r1', 'msg_p2', '2026-11-04T10:04:00.000Z'), mine('d1', null, '2026-11-04T10:06:00.000Z')];
+    const parts = sentCommentsParts(inboxCommentThreadView({ messages, records, agentReplies: agents }), records);
+    expect(parts.replies.get('c1')!.map((row) => [row.id, row.who, row.round, row.draft])).toEqual([
       ['rep_a', 'Claude Code', 1, false],
       ['r1', 'You', 2, false],
       ['d1', 'You', undefined, true],
     ]);
+    expect(Object.fromEntries(parts.replyRounds)).toEqual({ rep_a: 1, r1: 2 });
   });
 
   test("an agent's reply is a card in its comment's place, threaded under it, by the agent", () => {
@@ -126,32 +112,27 @@ describe('replies under a sent comment, as the window draws them', () => {
 describe('sub-threads in the window', () => {
   const at = (n: number) => `2026-11-04T10:0${n}:00.000Z`;
   const rec = (id: string, fields: Partial<InboxAnnotationRecord>) =>
-    ({ id, removed_at: null, sent_reply_id: 'msg_p1', created_at: at(1), annotation: { id, originalText: 'q', text: `words of ${id}` }, ...fields }) as InboxAnnotationRecord;
+    ({ id, message_id: 'msg_a1', message: { at: at(0) }, removed_at: null, sent_reply_id: 'msg_p1', created_at: at(1), annotation: { id, originalText: 'q', text: `words of ${id}` }, ...fields }) as InboxAnnotationRecord;
+  const messages = [
+    { id: 'msg_a1', author: { kind: 'agent' }, created_at: at(0) },
+    { id: 'msg_p1', author: { kind: 'person' }, created_at: at(1) },
+  ];
+  const partsOf = (records: InboxAnnotationRecord[]) => sentCommentsParts(inboxCommentThreadView({ messages, records, agentReplies: [answer] }), records);
   const answer = { id: 'rep_a', re: 'c1', text: 'Step 2 rolls back through the off switch.', from: { kind: 'agent', host: null, session: 'ses_a', name: 'Claude Code' }, created_at: at(2) } as InboxCommentReplyRecord;
   const s1 = rec('s1', { parent: 'rep_a', quote_offset: 33, created_at: at(3), annotation: { id: 's1', originalText: 'off switch', text: 'Which off switch?' } });
   const s2 = rec('s2', { parent: 'rep_a', quote_offset: 7, created_at: at(4), sent_reply_id: null, annotation: { id: 's2', originalText: 'rolls back', text: 'How fast?' } });
   const nested = rec('s3', { parent: 's1', quote_offset: 6, created_at: at(5), annotation: { id: 's3', originalText: 'off switch', text: 'The runbook one.' } });
 
-  test('each message lists its sub-threads, oldest first, drafts too; a removed one is gone', () => {
-    const by = subThreadsByParent([nested, s2, s1, rec('gone', { parent: 'rep_a', removed_at: at(6) }), rec('c1', {})]);
-    expect([...by].map(([parent, list]) => [parent, list.map((r) => r.id)])).toEqual([
-      ['s1', ['s3']],
-      ['rep_a', ['s1', 's2']],
-    ]);
+  test('each message lists its sub-threads, oldest first, drafts after; a removed one is gone', () => {
+    const records = [nested, s2, s1, rec('gone', { parent: 'rep_a', removed_at: at(6), sent_reply_id: null }), rec('c1', {})];
+    const by = partsOf(records).subThreads;
+    expect(Object.fromEntries([...by].map(([parent, list]) => [parent, list.map((r) => r.id)]))).toEqual({ rep_a: ['s1', 's2'], s1: ['s3'] });
   });
 
   test("a message's words mark its sub-threads still open, not a resolved one", () => {
-    const marks = openPassagesByParent(subThreadsByParent([s1, s2, nested]), new Set(['s1']));
+    const marks = partsOf([rec('c1', {}), { ...s1, resolved_at: at(9) }, s2, nested]).passages;
     expect(marks.get('rep_a')).toEqual([{ quote: 'rolls back', offset: 7 }]);
     expect(marks.get('s1')).toEqual([{ quote: 'off switch', offset: 6 }]);
-  });
-
-  test('a folded thread hides what is under it, at any depth; nothing else is hidden', () => {
-    const up = sitsUnder([rec('c1', {}), s1, nested], [answer]);
-    expect(Object.fromEntries(up)).toEqual({ s1: 'rep_a', s3: 's1', rep_a: 'c1' });
-    expect([...hiddenUnderFolded(['rep_a', 's1', 's3'], up, new Set(['c1']))].sort()).toEqual(['rep_a', 's1', 's3']);
-    expect([...hiddenUnderFolded(['rep_a', 's1', 's3'], up, new Set(['s1']))]).toEqual(['s3']);
-    expect(hiddenUnderFolded(['rep_a', 's1', 's3'], up, new Set()).size).toBe(0);
   });
 
   test("a Send carries a sub-thread in the threads' section, with the words its passage is in, and nowhere else", () => {
@@ -193,13 +174,6 @@ describe('where the threads on a document are drawn', () => {
 });
 
 describe('a message holding a comment thread still open opens unfolded', () => {
-  const comment = (id: string, message_id: string, message = true) => ({ id, message_id, ...(message ? { message: { id: message_id } } : {}) }) as unknown as InboxAnnotationRecord;
-
-  test('open, or resolved with a sub-thread open under it: its message; resolved with nothing open, or a file comment: none', () => {
-    const comments = [comment('open', 'm1'), comment('kept', 'm2'), comment('done', 'm3'), comment('file', 'm4', false)];
-    expect([...messagesWithOpenThreads(comments, new Set(['kept', 'done']), new Set(['kept']))]).toEqual(['m1', 'm2']);
-  });
-
   const fold = (folded: string[], hidden: string[][], revealed: number[] = []) => ({ folded: new Set(folded), hidden, revealed: new Set(revealed) });
 
   test('out of its fold and of "N earlier messages", the run cut around it; the others stay as they are', () => {

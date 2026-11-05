@@ -3,6 +3,7 @@
  * answers, and which reply each waiting annotation rides.
  */
 import { inboxActionInDraft, type InboxAnnotationRecord, type InboxMessageWire, type InboxThread } from '@plannotator/core/inbox-types';
+import { inboxWordsMessage } from '@plannotator/core/inbox-comment-sends';
 
 /**
  * One reply of a Send: the message it answers, its picks and the questions it
@@ -117,25 +118,11 @@ export function sendTargetsOf(thread: InboxThread, skip: ReadonlySet<string> = n
  * The message the person's words answer: the latest agent message, except
  * in a thread handed to another session (approval "inbox-tag-handoff"): then
  * the new owner's latest message after the hand-off, else the hand-off reply
- * itself (a reply to it is addressed as it is, to the new owner). So the
- * former owner writing again never takes the person's words back.
+ * itself. The rule lives in core (`inboxWordsMessage`), so a comment send's
+ * words go where a Send's do.
  */
 export function wordsMessage(thread: InboxThread): InboxMessageWire {
-  let handedAt = -1;
-  for (let index = thread.messages.length - 1; index >= 0; index--) {
-    const m = thread.messages[index]!;
-    if (m.author.kind === 'person' && m.handoff && !m.handoff.undone_at && m.to) {
-      handedAt = index;
-      break;
-    }
-  }
-  if (handedAt >= 0) {
-    const handoff = thread.messages[handedAt]!;
-    const owner = handoff.to!.session;
-    const after = thread.messages.slice(handedAt + 1).filter((m) => m.author.kind === 'agent' && m.author.session === owner);
-    return after.at(-1) ?? handoff;
-  }
-  return thread.messages.filter((m) => m.author.kind === 'agent').at(-1) ?? thread.messages[0]!;
+  return inboxWordsMessage(thread.messages)!;
 }
 
 /** The reply a message's questions ride: its session's, or its own when it has none. */

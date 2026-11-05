@@ -228,6 +228,53 @@ export function isInboxCommentThreadFolded(id: string, resolved: ReadonlySet<str
   return resolved.has(id) && !openBelow.has(id);
 }
 
+/** What each reply or sub-thread sits under, by its id: a reply's comment (the person's or an agent's), a sub-thread's parent. */
+export function inboxCommentSitsUnder(
+  records: readonly Pick<InboxAnnotationRecord, "id" | "re" | "parent">[],
+  agentReplies: readonly Pick<InboxCommentReplyRecord, "id" | "re">[],
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const record of records) {
+    if (isInboxCommentReply(record)) out.set(record.id, record.re!);
+    else if (isInboxSubThread(record)) out.set(record.id, record.parent!);
+  }
+  for (const reply of agentReplies) out.set(reply.id, reply.re);
+  return out;
+}
+
+/**
+ * The messages that a folded thread hides, by id: every reply or sub-thread
+ * (`ids`) with a folded comment or sub-thread above it (`up`, what each sits
+ * under, inboxCommentSitsUnder). A thread folds when it is resolved with
+ * nothing open below it, so an open sub-thread is never hidden.
+ */
+export function inboxCommentsHiddenUnderFolded(ids: Iterable<string>, up: ReadonlyMap<string, string>, folded: ReadonlySet<string>): Set<string> {
+  const out = new Set<string>();
+  if (folded.size === 0) return out;
+  for (const id of ids) {
+    const seen = new Set<string>();
+    for (let above = up.get(id); above !== undefined && !seen.has(above); above = up.get(above)) {
+      seen.add(above);
+      if (folded.has(above)) {
+        out.add(id);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/** The agents' messages that hold a comment thread still open, it or one under it (not folded): a client opens them unfolded. */
+export function inboxMessagesWithOpenThreads(
+  comments: readonly Pick<InboxAnnotationRecord, "id" | "message" | "message_id">[],
+  resolved: ReadonlySet<string>,
+  openBelow: ReadonlySet<string>,
+): Set<string> {
+  const out = new Set<string>();
+  for (const record of comments) if (record.message && !isInboxCommentThreadFolded(record.id, resolved, openBelow)) out.add(record.message_id);
+  return out;
+}
+
 /** A sent comment is open until the person resolves it. */
 export type InboxCommentState = "open" | "resolved";
 
@@ -456,7 +503,9 @@ export function inboxCommentAnchor(record: InboxAnnotationRecord): InboxCommentA
  * open a comment again here) and the agent's (`agentReplies`). A comment a
  * comment send carried (its `sent_reply_id` is the send's id) has that send's
  * round (`sends`). A record whose reply or send is not given (a Send that
- * never landed) is left out.
+ * never landed) is left out, except from the person's view (`drafts`),
+ * where it is one just sent that the reader has not read yet: in the round
+ * under way.
  *
  * `drafts`: the person's drafts too (a comment, a reply under a comment, a
  * sub-thread; never a guided review's), marked `draft`, in the round under
@@ -478,7 +527,8 @@ export function inboxCommentThreads(
   for (const record of records) {
     // A guided review's draft is the review app's to show, with the person's verdict.
     const draft = options.drafts === true && record.sent_reply_id === null && record.removed_at === null && !record.guide;
-    const round = draft ? now : isInboxCommentSent(record) ? rounds.get(record.sent_reply_id!) : undefined;
+    // The person's view (`drafts`) also lists a comment whose carrier it has not read yet (a Send just made): in the round under way.
+    const round = draft ? now : isInboxCommentSent(record) ? (rounds.get(record.sent_reply_id!) ?? (options.drafts === true ? now : undefined)) : undefined;
     if (round === undefined) continue;
     const carrier = draft ? "" : record.sent_reply_id!;
     const mark = draft ? { draft: true as const } : {};

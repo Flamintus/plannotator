@@ -473,3 +473,15 @@ describe('where a press goes', () => {
     expect(inboxCommentSendRoutes([record('file', { message: undefined })], () => undefined, null)).toEqual([{ to: null, drafts: [expect.objectContaining({ id: 'file' })] }]);
   });
 });
+
+describe("the person's view while a Send is being read", () => {
+  test('a comment whose carrier the reader has not read yet is in the round under way for the person, and left out for an agent', () => {
+    const messages = [agent('msg_a1', 0)];
+    const c1 = record('c1', { sent_reply_id: 'snd_1', created_at: at(1) });
+    const fresh = record('r1', { re: 'c1', sent_reply_id: 'snd_new', created_at: at(3) });
+    const sends = [send('snd_1', 2, { comments: ['c1'] })];
+    const view = inboxCommentThreadView({ messages, records: [c1, fresh], sends });
+    expect(view.threads[0]!.replies.map((r) => [r.id, r.round, r.draft])).toEqual([['r1', 1, false]]);
+    expect(inboxCommentThreads(messages, [c1, fresh], [], sends)[0]!.replies).toEqual([]);
+  });
+});

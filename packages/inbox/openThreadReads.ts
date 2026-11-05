@@ -67,7 +67,8 @@ function threadOfRecord(event: InboxEvent): string | null {
     case 'annotation':
       return id(event.annotation?.thread_id);
     case 'comment_reply':
-      // An agent's reply under a sent comment (experimental "persistent-comments"): the thread's files list it.
+    case 'comment_send':
+      // An agent's reply under a sent comment, or the person's comment send (experimental "persistent-comments"): the thread's files list it.
       return id(event.thread_id);
     default:
       // A project (a rename, a combine, a label any thread's header reads), a card (the window hands those to the

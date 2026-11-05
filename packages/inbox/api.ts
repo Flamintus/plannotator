@@ -50,6 +50,7 @@ import type { RecipientConnection } from './deliveryLine';
 import { parseRestartAgents } from './restartAgents';
 import type { InboxPullDiffAnswer, InboxPullDiffScope, InboxPullsAnswer, InboxRestartAgents, InboxTidyPlan, InboxTidyRun } from '@plannotator/core/inbox-types';
 import type { InboxSearchAnswer, InboxSearchFrom, InboxSearchGroupId, InboxSearchStatus } from '@plannotator/core/inbox-search';
+import type { InboxCommentSend } from '@plannotator/core/inbox-comment-sends';
 import type {
   InboxAgentId,
   InboxAccountsRead,
@@ -1653,7 +1654,9 @@ export type InboxEvent =
   /** A Board initiative made, renamed or deleted (approval "board-initiatives"): silent; the Board reads its cards again. Absent from an older Inbox. */
   | { seq: number; kind: 'initiative'; id: string; initiative: InboxInitiative }
   /** An agent's reply under a sent comment (experimental "persistent-comments"): silent; the window reads that thread's files again. Absent from an older Inbox. */
-  | { seq: number; kind: 'comment_reply'; id: string; thread_id: string };
+  | { seq: number; kind: 'comment_reply'; id: string; thread_id: string }
+  /** The person's comments sent to a session, or a send read or delivered (the same switch): its thread's files list it. Absent from an older Inbox. */
+  | { seq: number; kind: 'comment_send'; id: string; thread_id: string };
 
 /** A thread's attachments as they are now, and the person's annotations waiting for a Send. */
 export interface AttachmentsModel {
@@ -1666,6 +1669,8 @@ export interface AttachmentsModel {
   sent_comments?: InboxAnnotationRecord[];
   /** The agents' replies under them (the same switch; absent while off or from an older Inbox). */
   comment_replies?: InboxCommentReplyRecord[];
+  /** The person's comment sends, which carried some of them (the same switch; absent while off or from an older Inbox). */
+  comment_sends?: InboxCommentSend[];
 }
 
 /** One version of a file: its text, and for HTML the page as annotate serves it. */
