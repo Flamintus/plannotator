@@ -248,7 +248,8 @@ test.skipIf(!hasDom)("a sent comment on a file stays in its panel with its round
   await renderApp(`#thread=${world.filed}&file=${world.attachment}`);
   const card = () => document.querySelector(`[data-annotation-id="sent-file-1"]`);
   await until(() => card() !== null, "the sent comment's card");
-  expect(card()!.querySelector('[data-sent-round="1"]')).not.toBeNull();
+  // A Markdown file draws its threads in its text: its panel is a flat list, the round on the card's line.
+  expect(card()!.querySelector('[data-comment-meta-round="1"]')).not.toBeNull();
   // No edit or delete: Reply and Resolve are its only buttons (the action labels are pinned on purpose).
   expect([...card()!.querySelectorAll('button')].map((button) => button.getAttribute('aria-label') ?? button.textContent)).toEqual(['Reply', 'Resolve']);
   await until(() => card()!.querySelector('[data-annotation-unanchored]') !== null, 'the Unanchored chip');
@@ -297,7 +298,7 @@ test.skipIf(!hasDom)('resolved from its box, a sent comment leaves its words and
   expect((await storedRecord(sent, 'res-msg-1'))?.resolved_at).toBeNull();
 }, 30_000);
 
-test.skipIf(!hasDom)('resolved from its card, a sent comment on a file folds to its header with Reopen, and leaves the file', async () => {
+test.skipIf(!hasDom)('resolved from its card, a sent comment on a file says Resolved with Reopen (the list is flat: no fold), and leaves the file', async () => {
   await postJson('/api/inbox/annotations', { attachment_id: world.attachment, version: 'current', annotation: words('res-file-1', 'The plan, in short.', 'Say more.') });
   await postJson(`/api/inbox/messages/${world.filed}/reply`, { idempotency_key: 'k-res-file', feedback: '# Feedback', annotation_ids: ['res-file-1'] });
 
@@ -312,17 +313,17 @@ test.skipIf(!hasDom)('resolved from its card, a sent comment on a file folds to 
   expect(box()!.closest('[data-viewer-below-block]')!.previousElementSibling!.textContent).toBe('The plan, in short.');
   expect(box()!.textContent).toContain('Say more.');
 
-  act(() => card()!.querySelector<HTMLButtonElement>('[data-sent-resolve]')!.click());
-  await until(() => card()?.querySelector('[data-sent-resolved]') != null, 'the Resolved chip');
-  expect(card()!.textContent).not.toContain('Say more.');
-  expect(card()!.querySelector('[data-sent-resolve]')!.textContent).toBe('Reopen');
+  act(() => card()!.querySelector<HTMLButtonElement>('[data-comment-meta-resolve]')!.click());
+  await until(() => card()?.querySelector('[data-comment-meta-resolved]') != null, 'the Resolved line');
+  expect(card()!.textContent).toContain('Say more.');
+  expect(card()!.querySelector('[data-comment-meta-resolve]')!.textContent).toBe('Reopen');
   await until(() => highlight() === null, 'the highlight gone');
   // The box in the document folds with it, in place.
   await until(() => box()?.hasAttribute('data-sent-folded') === true, 'the box folded');
   expect(typeof (await storedRecord(world.filed, 'res-file-1'))?.resolved_at).toBe('string');
 
-  act(() => card()!.querySelector<HTMLButtonElement>('[data-sent-resolve]')!.click());
-  await until(() => highlight() !== null && card()!.textContent!.includes('Say more.'), 'the comment open again, painted');
+  act(() => card()!.querySelector<HTMLButtonElement>('[data-comment-meta-resolve]')!.click());
+  await until(() => highlight() !== null && card()!.querySelector('[data-comment-meta-resolved]') === null, 'the comment open again, painted');
 }, 30_000);
 
 async function type(el: HTMLTextAreaElement, value: string) {
@@ -388,7 +389,7 @@ test.skipIf(!hasDom)("under the message, the agent's reply sits under its commen
   expect(chord.defaultPrevented).toBe(true);
 }, 30_000);
 
-test.skipIf(!hasDom)("on a file, the agent's reply is a card under its comment's, never painted, and the person replies from the sent card", async () => {
+test.skipIf(!hasDom)("on a Markdown file, the agent's reply is read in the box (the flat list only counts it), never painted, and the person replies from the sent card", async () => {
   await postJson('/api/inbox/annotations', { attachment_id: world.attachment, version: 'current', annotation: words('rep-file-1', 'The plan, in short.', 'Longer, please.') });
   await postJson(`/api/inbox/messages/${world.filed}/reply`, { idempotency_key: 'k-rep-file', feedback: '# Feedback', annotation_ids: ['rep-file-1'] });
   const { replied } = await command<{ replied: string }>({ commentReply: { comment: 'rep-file-1', session: 'ses_file', text: 'Added three lines.' } });
@@ -401,13 +402,15 @@ test.skipIf(!hasDom)("on a file, the agent's reply is a card under its comment's
 
   await renderApp(`#thread=${world.filed}&file=${world.attachment}`);
   const card = (id: string) => document.querySelector(`[data-annotation-id="${id}"]`);
-  await until(() => card('rep-file-1') !== null && card(replied) !== null, "the comment's card and the agent's under it");
-  expect(card(replied)!.closest('[data-annotation-reply]')?.getAttribute('data-annotation-depth')).toBe('1');
-  expect(card(replied)!.textContent).toContain('Added three lines.');
-  // The agent's reply: no edit or delete, no Resolve of its own.
-  expect([...card(replied)!.querySelectorAll('button')].map((button) => button.getAttribute('aria-label') ?? button.textContent)).toEqual(['Reply']);
+  const inBox = () => document.querySelector(`.ib-docscroll [data-sent-reply="${replied}"]`);
+  await until(() => card('rep-file-1') !== null && inBox() !== null, "the comment's card and the agent's reply in the box");
+  expect(inBox()!.textContent).toContain('Added three lines.');
+  // The list: no card of the agent's, the comment's line counts the reply under its passage.
+  expect(card(replied)).toBeNull();
+  expect(card('rep-file-1')!.querySelector('[data-comment-meta-replies]')!.textContent).toBe('\u21b3 1 reply under the passage');
   expect(document.querySelector(`[data-bind-id="${replied}"], [data-highlight-id="${replied}"]`)).toBeNull();
   expect(card(elsewhere)).toBeNull();
+  expect(document.querySelector(`[data-sent-reply="${elsewhere}"]`)).toBeNull();
 
   act(() => card('rep-file-1')!.querySelector<HTMLButtonElement>('button[aria-label="Reply"]')!.click());
   const area = document.querySelector<HTMLTextAreaElement>('[data-annotation-panel] textarea[aria-label="Reply"]')!;
@@ -417,9 +420,11 @@ test.skipIf(!hasDom)("on a file, the agent's reply is a card under its comment's
   });
   await until(() => posted.some((p) => p.path.includes('/annotations/rep-file-1/replies')), 'the reply saved under the comment');
   const draft = () =>
-    [...document.querySelectorAll('[data-annotation-reply] [data-annotation-id]')].find((node) => node.textContent?.includes('Thanks, that reads well.')) ?? null;
-  await until(() => draft() !== null, "the person's draft card under the comment");
-  expect(draft()!.closest('[data-annotation-reply]')?.getAttribute('data-annotation-depth')).toBe('1');
+    [...document.querySelectorAll('[data-annotation-panel] [data-annotation-id]')].find((node) => node.textContent?.includes('Thanks, that reads well.')) ?? null;
+  await until(() => draft() !== null, "the person's draft card");
+  // Flat: a card of its own, not nested under the comment's; in the box, under the comment.
+  expect(draft()!.closest('[data-annotation-reply]')).toBeNull();
+  await until(() => document.querySelector('.ib-docscroll [data-sent-replies="rep-file-1"] [data-sent-reply-draft]') !== null, 'the draft in the box');
 }, 30_000);
 
 /** Select `quote` in a message's words and let the mouse go there. */
@@ -530,15 +535,17 @@ test.skipIf(!hasDom)("with comment sends, a draft comment on a file has Send on 
 
   await renderApp(`#thread=${world.filed}&file=${world.attachment}`);
   const card = () => document.querySelector<HTMLElement>('[data-annotation-id="snd-file-1"]');
-  await until(() => card()?.querySelector('[data-sent-send="snd-file-1"]') != null, "the draft card's Send");
+  // A Markdown file's flat list: the draft's line says Not sent, with Send.
+  await until(() => card()?.querySelector('[data-comment-meta-send]') != null, "the draft card's Send");
+  expect(card()!.querySelector('[data-comment-meta-round]')!.textContent).toBe('Not sent');
   await act(async () => {
-    card()!.querySelector<HTMLButtonElement>('[data-sent-send="snd-file-1"]')!.click();
+    card()!.querySelector<HTMLButtonElement>('[data-comment-meta-send]')!.click();
   });
   await until(() => posted.some((p) => p.path.endsWith('/comment-sends')), 'the send');
   expect(posted.find((p) => p.path.endsWith('/comment-sends'))!.body).toMatchObject({ mode: 'now', comment_ids: ['snd-file-1'] });
-  await until(() => card()?.querySelector('[data-sent-status="pending"]') != null, 'the sent card, Queued');
-  expect(card()!.querySelector('[data-sent-send]')).toBeNull();
-  expect(card()!.querySelector('[data-sent-round="1"]')).not.toBeNull();
+  await until(() => card()?.querySelector('[data-comment-meta-status="pending"]') != null, 'the sent card, Queued');
+  expect(card()!.querySelector('[data-comment-meta-send]')).toBeNull();
+  expect(card()!.querySelector('[data-comment-meta-round="1"]')).not.toBeNull();
 }, 30_000);
 
 test.skipIf(!hasDom)("with comment sends, a draft comment is a box with Send that goes alone; the words' Send carries no draft; Finish round sends the rest with the words, and the header counts the round", async () => {
@@ -648,37 +655,40 @@ test.skipIf(!hasDom)('a resolved comment stays unfolded, marked Resolved, while 
   await until(() => row() !== null && !row()!.hasAttribute('data-sent-resolved'), 'the comment open again');
 }, 30_000);
 
-test.skipIf(!hasDom)("on a file, words selected in a sent card open a comment on that passage, a draft card under it", async () => {
+test.skipIf(!hasDom)("on a Markdown file, words selected in a sent comment's box open a comment on that passage; the flat card offers none", async () => {
   await postJson('/api/inbox/annotations', { attachment_id: world.attachment, version: 'current', annotation: words('sub-file-1', 'The plan, in short.', 'Say more about the rollback, please.') });
   await postJson(`/api/inbox/messages/${world.filed}/reply`, { idempotency_key: 'k-sub-file', feedback: '# Feedback', annotation_ids: ['sub-file-1'] });
 
   await renderApp(`#thread=${world.filed}&file=${world.attachment}`);
-  const body = () => document.querySelector<HTMLElement>('[data-annotation-id="sub-file-1"] [data-passage-body="sub-file-1"]');
-  await until(() => body() !== null, "the sent card's words");
+  await until(() => document.querySelector('[data-annotation-id="sub-file-1"]') !== null, "the sent card");
+  // The list is flat: no passage to select in the card; the box in the text has it.
+  expect(document.querySelector('[data-annotation-id="sub-file-1"] [data-passage-body]')).toBeNull();
+  const body = () => document.querySelector<HTMLElement>('.ib-docscroll [data-sent-message="sub-file-1"] [data-passage-body="sub-file-1"]');
+  await until(() => body() !== null, "the sent comment's words in its box");
   await selectIn(body()!, 'the rollback');
   await until(() => document.querySelector('[data-pn-annotation-toolbar-row]') !== null, 'the selection toolbar');
   await act(async () => {
     toolbarComment().click();
   });
-  const area = () => document.querySelector<HTMLTextAreaElement>('[data-annotation-panel] textarea[aria-label="Comment on passage"]');
-  await until(() => area() !== null, 'the box under the card');
+  const area = () => document.querySelector<HTMLTextAreaElement>('.ib-docscroll [data-sent-message="sub-file-1"] textarea[aria-label="Comment on passage"]');
+  await until(() => area() !== null, 'the box under the comment');
   await type(area()!, 'Which rollback?');
   await act(async () => {
     area()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true, cancelable: true }));
   });
   await until(() => posted.some((p) => p.path.includes('/annotations/sub-file-1/subthreads')), 'the sub-thread saved on the card');
-  const draft = () => [...document.querySelectorAll('[data-annotation-reply] [data-annotation-id]')].find((node) => node.textContent?.includes('Which rollback?')) ?? null;
-  await until(() => draft() !== null, 'the draft card under the comment');
-  expect(draft()!.closest('[data-annotation-reply]')?.getAttribute('data-annotation-depth')).toBe('1');
-  // Its passage is at its head, and marked in the comment's words.
-  expect(draft()!.textContent).toContain('"the rollback"');
+  const draft = () => [...document.querySelectorAll('[data-annotation-panel] [data-annotation-id]')].find((node) => node.textContent?.includes('Which rollback?')) ?? null;
+  await until(() => draft() !== null, 'the draft card, flat');
+  expect(draft()!.closest('[data-annotation-reply]')).toBeNull();
+  // In the box: a box in the box under the comment, its passage marked in the comment's words.
+  await until(() => document.querySelector('.ib-docscroll [data-sent-subthreads="sub-file-1"] [data-sent-subthread]') !== null, 'the draft sub-thread in the box');
   expect([...body()!.querySelectorAll('mark[data-passage-mark]')].map((m) => m.textContent)).toEqual(['the rollback']);
   // Never painted on the file.
   const id = draft()!.getAttribute('data-annotation-id')!;
   expect(document.querySelector(`[data-bind-id="${id}"], [data-highlight-id="${id}"]`)).toBeNull();
 }, 30_000);
 
-test.skipIf(!hasDom)("with comment sends, the closed foot keeps the Draft note at its right and Send Feedback ends the round; the comments list lists what was sent, each alone, with its round, replies and resolution", async () => {
+test.skipIf(!hasDom)("with comment sends, the closed foot keeps the Draft note and Looks good, and Send Feedback ends the round; the comments list lists what was sent, each alone, with its round, replies and resolution", async () => {
   const { sent } = await command<{ sent: string }>({ send: { project: world.project, session: 'ses_list_msg', body: 'Deploys roll out to every store, then we watch sales.' } });
   await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('lst-d1', 'every store', 'Lyon first.', 'block-0') });
   await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('lst-d2', 'watch sales', 'Who watches?', 'block-0') });
@@ -691,7 +701,8 @@ test.skipIf(!hasDom)("with comment sends, the closed foot keeps the Draft note a
   // The round's end is Send Feedback, as on the screens; the Draft note counts the draft, and Looks good waits for it.
   expect(el.querySelector('[data-foot-row] [data-finish-round]')!.textContent).toBe('Send Feedback');
   expect(el.querySelector('[data-foot-status] [data-draft-foot]')!.textContent).toContain('1 comment');
-  expect(el.querySelector('[data-ack]')).toBeNull();
+  // 👍 Looks good stays offered (nothing is taken away).
+  expect(el.querySelector('[data-ack]')).not.toBeNull();
 
   // The list: the draft first (Not sent, Send, Edit), then the sent one, alone and read-only, with its line.
   act(() => el.querySelector<HTMLButtonElement>('[data-foot-status] button[data-draft-comments]')!.click());

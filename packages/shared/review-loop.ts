@@ -77,6 +77,22 @@ const PATHS: ReadonlySet<string> = new Set([
   HOST_MESSAGES_PATH,
 ]);
 
+/** The most a decision's `reviewEnd` holds (the line the page writes of how a review under the loop ended). */
+export const REVIEW_END_MAX = 2000;
+
+/**
+ * A decision body's `reviewEnd`: how the review ended (every comment thread
+ * resolved, or the ids still open), which the page adds to Approve, Done and
+ * Close once the loop ran in its tab, and the host's result gives the agent
+ * as a line of its own. Undefined when absent, empty, not a string or too long.
+ */
+export function readReviewEnd(body: unknown): string | undefined {
+  const value = body && typeof body === "object" ? (body as { reviewEnd?: unknown }).reviewEnd : undefined;
+  if (typeof value !== "string") return undefined;
+  const line = value.trim();
+  return line && line.length <= REVIEW_END_MAX ? line : undefined;
+}
+
 /** Whether a path is the review loop's (its body, for a POST, is JSON). */
 export function isReviewLoopPath(pathname: string): boolean {
   return PATHS.has(pathname);

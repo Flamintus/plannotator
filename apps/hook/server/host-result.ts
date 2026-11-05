@@ -82,6 +82,21 @@ function closedByFields(result: { closedBy?: unknown; unsentAnnotations?: unknow
   };
 }
 
+/**
+ * The review loop's line of how a review ended (the page's `reviewEnd`:
+ * every comment thread resolved, or the ids still open), given to the agent
+ * as a line of its own after the decision's message, never inside a prompt
+ * that frames feedback ("Please address…"); a decision that said nothing
+ * (Done, Close, a bare approval) now says that line. Without it, or when the
+ * agent closed the review itself, the record is today's.
+ */
+function withReviewEnd(record: HostResultRecord, reviewEnd: unknown): HostResultRecord {
+  const line = typeof reviewEnd === "string" ? reviewEnd.trim() : "";
+  if (!line || record.closedBy === "agent") return record;
+  const message = record.message.trim();
+  return { ...record, message: message ? `${message}\n\n${line}` : line, noop: false };
+}
+
 let takenPath: string | undefined;
 let taken = false;
 
@@ -191,6 +206,8 @@ interface AnnotateOutcomeLike {
   feedback?: string;
   exit?: boolean;
   annotations?: readonly unknown[];
+  /** The review loop ran: how the review ended (`withReviewEnd`). */
+  reviewEnd?: string;
   /** The editor's Done with nothing to send: `feedback` still carries the
    *  legacy zero-state sentence (stdout and `--json` keep it), but there is
    *  nothing for the agent. */
@@ -238,7 +255,7 @@ export function annotateContextLine(context: AnnotateHostContext): string {
  */
 export function annotateHostResult(result: AnnotateOutcomeLike, context: AnnotateHostContext): HostResultRecord {
   const record = withTarget(
-    annotateHostRecord(result, context),
+    withReviewEnd(annotateHostRecord(result, context), result.reviewEnd),
     context.kind === "last" ? undefined : context.kind === "bundle" ? context.bundlePaths : context.target,
   );
   if (context.kind !== "bundle") return record;
@@ -286,6 +303,8 @@ function annotateHostRecord(result: AnnotateOutcomeLike, context: AnnotateHostCo
 interface PlanDecisionLike {
   approved: boolean;
   feedback?: string;
+  /** The review loop ran: how the review ended (`withReviewEnd`). */
+  reviewEnd?: string;
   savedPath?: string;
   permissionMode?: string;
   answersOnly?: boolean;
@@ -296,7 +315,7 @@ export function planHostResult(
   result: PlanDecisionLike,
   context: { approvedPlan: string; planFilePath?: string; config?: PlannotatorConfig },
 ): HostResultRecord {
-  return withTarget(planHostRecord(result, context), context.planFilePath);
+  return withTarget(withReviewEnd(planHostRecord(result, context), result.reviewEnd), context.planFilePath);
 }
 
 function planHostRecord(

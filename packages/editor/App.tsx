@@ -4638,7 +4638,7 @@ const App: React.FC = () => {
         : autoSaveResultsRef.current;
 
       // Build request body - include integrations if enabled
-      const body: { draftGeneration: number; planRevision?: number; obsidian?: object; bear?: object; octarine?: object; notion?: object; feedback?: string; agentSwitch?: string; planSave?: { enabled: boolean; customPath?: string }; permissionMode?: string } = {
+      const body: { draftGeneration: number; planRevision?: number; obsidian?: object; bear?: object; octarine?: object; notion?: object; feedback?: string; agentSwitch?: string; planSave?: { enabled: boolean; customPath?: string }; permissionMode?: string; reviewEnd?: string } = {
         draftGeneration: getDraftGeneration(),
         ...planRevisionBodyField(),
       };
@@ -4710,8 +4710,9 @@ const App: React.FC = () => {
         body.feedback = getCurrentFeedbackPayload(checkedSavedFileChanges);
       }
       // The review loop: the agent reads how the review ended (every thread resolved, or the ones still open).
+      // Its own field: the host gives it as a line of its own, outside the notes' prompt.
       const planEnd = reviewLoop.available ? reviewLoopEndState(reviewLoop.index, 'approved') : null;
-      if (planEnd) body.feedback = body.feedback ? `${body.feedback}\n\n${planEnd}` : planEnd;
+      if (planEnd) body.reviewEnd = planEnd;
       sentFeedback = body.feedback;
 
       const res = await fetch(withDraftClient('/api/approve'), {
@@ -4984,11 +4985,11 @@ const App: React.FC = () => {
       const payload = getCurrentFeedbackPayload(checkedSavedFileChanges, options);
       // The review loop: every end of the review tells the agent how it ended: Done (nothing left to send, or
       // discarded), and a note with the approval's framing.
+      // Its own field (`reviewEnd`): the host gives it as a line of its own, outside the feedback's prompt.
       const ending = reviewLoop.available && (discard || options?.approvalFraming || isEmptyFeedbackSentinel(payload))
         ? reviewLoopEndState(reviewLoop.index, options?.approvalFraming ? 'approved' : 'done')
         : null;
-      const doneEnd = ending !== null && isEmptyFeedbackSentinel(payload) ? ending : null;
-      const feedback = ending === null ? payload : doneEnd ?? `${payload}\n\n${ending}`;
+      const feedback = payload;
       sentFeedback = feedback;
       const agentFeedbackDelivery = agentTerminalSessionId === null
         ? null
@@ -5025,6 +5026,7 @@ const App: React.FC = () => {
         // sentence (CLI stdout and --json print it), and this marks it so a
         // host that must not start an agent turn for it can tell (#1701).
         ...(isEmptyFeedbackSentinel(feedback) ? { nothingToSend: true } : {}),
+        ...(ending ? { reviewEnd: ending } : {}),
       };
       const res = await fetch(withDraftClient('/api/feedback'), {
         method: 'POST',
@@ -5043,8 +5045,8 @@ const App: React.FC = () => {
       // did: the same predicate the servers use to make this a no-op decision.
       // 'denied' doubles as the "feedback sent" overlay state. Done that only
       // told the agent how the review ended is still Done.
-      setDoneTold(doneEnd !== null);
-      setSubmitted(isNothingToSendFeedbackBody(body) || doneEnd !== null ? 'done' : 'denied');
+      setDoneTold(ending !== null);
+      setSubmitted(isNothingToSendFeedbackBody(body) ? 'done' : 'denied');
       return true;
     } catch (error) {
       setIsSubmitting(false);
@@ -5092,20 +5094,21 @@ const App: React.FC = () => {
         ? getCurrentFeedbackPayload(checkedSavedFileChanges)
         : '';
       // The review loop: the agent reads how the review ended (every thread resolved, or the ones still open).
+      // Its own field (`reviewEnd`): the host gives it as a line of its own, outside the notes' prompt.
       const end = reviewLoop.available ? reviewLoopEndState(reviewLoop.index, 'approved') : null;
-      const feedback = end ? (notes ? `${notes}\n\n${end}` : end) : notes;
+      const feedback = notes;
       sentFeedback = feedback;
       const res = await fetch(withDraftClient('/api/approve'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withServerSession(buildAnnotateApprovalBody({
+        body: JSON.stringify({ ...withServerSession(buildAnnotateApprovalBody({
           supported: approvalNotesSupported,
           draftGeneration: getDraftGeneration(),
           feedback,
           annotations: discard ? [] : getSubmittedAnnotations(),
           codeAnnotations: discard ? [] : codeAnnotations,
           ...getFeedbackMessageScope(),
-        }))),
+        })), ...(end ? { reviewEnd: end } : {}) }),
       }).catch(throwUnreachable);
       if (await noteServerSessionMismatch(res)) {
         setIsSubmitting(false);
@@ -5135,12 +5138,18 @@ const App: React.FC = () => {
   const handleAnnotateExit = useCallback(async () => {
     setIsExiting(true);
     try {
-      const res = await fetch(withDraftClient(withServerSessionQuery(withDraftGeneration('/api/exit'))), { method: 'POST' });
+      // The review loop: Close tells the agent how the review ended too (today's Close posts no body).
+      const closing = reviewLoop.available ? reviewLoopEndState(reviewLoop.index, 'closed') : null;
+      const res = await fetch(withDraftClient(withServerSessionQuery(withDraftGeneration('/api/exit'))), {
+        method: 'POST',
+        ...(closing ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reviewEnd: closing }) } : {}),
+      });
       if (await noteServerSessionMismatch(res)) {
         setIsExiting(false);
         return;
       }
       if (res.ok) {
+        setDoneTold(closing !== null);
         setSubmitted('exited');
       } else {
         throw new Error('Failed to exit');
@@ -5148,7 +5157,7 @@ const App: React.FC = () => {
     } catch {
       setIsExiting(false);
     }
-  }, [withDraftGeneration, withDraftClient]);
+  }, [withDraftGeneration, withDraftClient, reviewLoop.available, reviewLoop.index]);
 
   const handleGoalSetupSubmit = useCallback(() => {
     goalSetupSurfaceRef.current?.submit();
@@ -8763,7 +8772,7 @@ const App: React.FC = () => {
                     : 'document',
                 ).subtitle
             : submitted === 'exited'
-              ? 'Annotation session closed without feedback.'
+              ? (doneTold ? `${agentName} was told the review is closed.` : 'Annotation session closed without feedback.')
               : archive.archiveMode
                 ? 'You can reopen with plannotator archive.'
                 : goalSetupMode

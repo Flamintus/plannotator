@@ -79,6 +79,7 @@ import type { TextPassage } from '@plannotator/core/passage';
 import type { InboxAnnotationRecord, InboxCommentReplyRecord } from '@plannotator/core/inbox-types';
 import type { Annotation, Block } from '@plannotator/ui/types';
 import { SentSendButton, SentStatusChip, SentThreads, useSentThreadsView, type ReplyInput, type SubThreadSave } from '@plannotator/ui/components/inbox-thread/SentThreads';
+import { CommentListMeta } from '@plannotator/ui/components/inbox-thread/CommentListMeta';
 import type { SentCommentsTree } from '@plannotator/ui/components/inbox-thread/sentCommentsTree';
 import { Icon } from '@plannotator/ui/components/inbox-thread/icons';
 import { InboxApiError, inboxApi, type AttachmentsModel } from '../api';
@@ -411,8 +412,14 @@ export function useSentFileComments(input: {
   readOnly: boolean;
   /** Paint comments on the file shown (the viewer's `applySharedAnnotations`; it skips one already painted). */
   repaint: (annotations: Annotation[]) => void;
+  /**
+   * The file draws its threads in its text (a Markdown or text file, `slotsFor`): the panel is then a flat list
+   * (R7), each of the person's comments alone, a reply or a sub-thread too, with ui's `CommentListMeta` line,
+   * no agent's card, no fold and no tree. Absent: the threads as cards, as before (a code, HTML, image or video file).
+   */
+  inFlow?: boolean;
 }) {
-  const { sent, drafts, path, version, isCode, view, setUnanchored, readOnly, repaint } = input;
+  const { sent, drafts, path, version, isCode, view, setUnanchored, readOnly, repaint, inFlow = false } = input;
   const sentRecords = sent?.records;
   const fileRecords = useMemo(
     () => [...drafts, ...(sentRecords ?? NO_RECORDS)].filter((r) => r.path === path && r.version === version),
@@ -442,17 +449,23 @@ export function useSentFileComments(input: {
   const passagesOn = sentTree.passages;
   const text = view?.text;
   const codeLines = useMemo(() => (isCode && text !== undefined && sentIds.size > 0 ? text.split('\n') : null), [isCode, text, sentIds]);
-  const panelAnnotations = useMemo(
+  const cardAnnotations = useMemo(
     () => [
       ...fileRecords.filter((r) => !folded.has(r.id)).map((r) => (codeLines && sentIds.has(r.id) && !replyIds.has(r.id) ? followCodeLines(annotationOf(r), codeLines) : annotationOf(r))),
       ...agentHere.filter((reply) => !folded.has(reply.id)).map((reply) => agentReplyAnnotation(sentById.get(reply.re)!, reply)),
     ],
     [fileRecords, agentHere, folded, codeLines, sentIds, replyIds, sentById],
   );
+  /** The list is flat where the threads are in the text, with the switch on (a draft gets the same line as what was sent). */
+  const flat = inFlow && sent !== undefined;
+  const panelAnnotations = useMemo(
+    () => (flat ? fileRecords.map((r) => { const a = annotationOf(r); return a.inReplyTo ? { ...a, inReplyTo: undefined } : a; }) : cardAnnotations),
+    [flat, fileRecords, cardAnnotations],
+  );
   // What the file paints and counts: a resolved comment leaves its words, and a reply's or sub-thread's place is its comment's.
   const annotations = useMemo(
-    () => (resolvedIds.size === 0 && replyIds.size === 0 ? panelAnnotations : panelAnnotations.filter((a) => !resolvedIds.has(a.id) && !replyIds.has(a.id))),
-    [panelAnnotations, resolvedIds, replyIds],
+    () => (resolvedIds.size === 0 && replyIds.size === 0 ? cardAnnotations : cardAnnotations.filter((a) => !resolvedIds.has(a.id) && !replyIds.has(a.id))),
+    [cardAnnotations, resolvedIds, replyIds],
   );
   // The image and video views draw their own remove controls: a sent comment is in the panel only.
   const ownAnnotations = useMemo(() => (sentIds.size === 0 ? annotations : annotations.filter((a) => !sentIds.has(a.id))), [annotations, sentIds]);
@@ -484,7 +497,7 @@ export function useSentFileComments(input: {
   const statuses = sent?.tree.statuses;
   /** A sent card: its round, what became of it (comment sends) and Resolved, after the card's own header. */
   const withSentRound = (header: ((annotation: Annotation) => ReactNode) | undefined) =>
-    sentIds.size === 0
+    sentIds.size === 0 || flat
       ? header
       : (annotation: Annotation) => {
           const own = header?.(annotation) ?? null;
@@ -523,10 +536,12 @@ export function useSentFileComments(input: {
         return draft && isInboxCommentReply(draft) ? { ...parts(annotation), passage: false } : { ...parts(annotation), reply: false, passage: false };
       }
       if (!sentIds.has(id) && !replyIds.has(id)) return parts(annotation);
+      // Flat, a sub-thread starts from a box in the text, and nothing folds here.
+      if (flat) return { ...parts(annotation), actions: false, passage: false };
       return foldedIds.has(id) ? { ...parts(annotation), actions: false, quote: false, text: false, images: false } : { ...parts(annotation), actions: false };
     };
   /** A folded card draws no body of its own either (a drawing's picture). */
-  const withSentBody = (body: (annotation: Annotation) => ReactNode) => (annotation: Annotation) => (foldedIds.has(annotation.id) ? null : body(annotation));
+  const withSentBody = (body: (annotation: Annotation) => ReactNode) => (annotation: Annotation) => (!flat && foldedIds.has(annotation.id) ? null : body(annotation));
   /**
    * A sent card's foot (a comment's or a sub-thread's): Resolve, or Reopen once resolved. With comment sends, a
    * draft card's foot (a comment, a reply under one, a sub-thread): Send, which sends it alone at once.
@@ -534,8 +549,27 @@ export function useSentFileComments(input: {
   const onResolve = sent?.onResolve;
   const onSend = readOnly ? undefined : sent?.onSend;
   const sendableHere = useMemo(() => new Set(onSend ? drafts.filter((r) => r.path === path && r.version === version && isInboxCommentSendable(r)).map((r) => r.id) : []), [onSend, drafts, path, version]);
-  const sentFooter =
-    (sentIds.size === 0 && sendableHere.size === 0) || readOnly || (!onResolve && !onSend)
+  /** Flat: ui's `CommentListMeta` under each comment, as the screens' panel and the comments list. */
+  const flatFooter = (annotation: Annotation): ReactNode => {
+    const record = sentById.get(annotation.id);
+    if (!record) {
+      if (!draftIds.has(annotation.id)) return null;
+      return <CommentListMeta draft {...(!readOnly && onSend && sendableHere.has(annotation.id) ? { onSend: () => onSend(annotation.id) } : {})} />;
+    }
+    const thread = !isInboxCommentReply(record);
+    return (
+      <CommentListMeta
+        round={rounds.get(record.id)}
+        status={statuses?.get(record.id)}
+        resolved={thread ? resolvedIds.has(record.id) : undefined}
+        replies={thread ? (sent?.tree.replies.get(record.id)?.length ?? 0) : 0}
+        {...(thread && !readOnly && onResolve ? { onResolve: (resolved: boolean) => onResolve(record, resolved) } : {})}
+      />
+    );
+  };
+  const sentFooter = flat
+    ? flatFooter
+    : (sentIds.size === 0 && sendableHere.size === 0) || readOnly || (!onResolve && !onSend)
       ? undefined
       : (annotation: Annotation) => {
           if (onSend && sendableHere.has(annotation.id)) return <SentSendButton id={annotation.id} onSend={onSend} />;
@@ -576,7 +610,7 @@ export function useSentFileComments(input: {
       : (parentId: string, reply: ReplyInput) => onReply(commentOfCard(parentId, fileRecords, agentHere), reply);
   /** The person's comment on a passage of a card's words: a sub-thread under that card. */
   const onSubThread = sent?.onSubThread;
-  const onCommentPassage = sentIds.size === 0 || readOnly || !onSubThread ? undefined : onSubThread;
+  const onCommentPassage = sentIds.size === 0 || readOnly || !onSubThread || flat ? undefined : onSubThread;
   const cardPassages = (annotation: Annotation) => passagesOn.get(annotation.id) ?? NO_PASSAGES;
 
   // The threads in the document's flow (a Markdown or text file): each under the block its passage is in now.
@@ -636,7 +670,7 @@ export function useSentFileComments(input: {
     reportUnanchored,
     onReply: replyAt,
     onCommentPassage,
-    cardPassages: sentIds.size > 0 ? cardPassages : undefined,
+    cardPassages: sentIds.size > 0 && !flat ? cardPassages : undefined,
     reportRestore,
     slotsFor,
   };

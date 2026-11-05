@@ -325,8 +325,8 @@ describe.if(hasDom)("the review loop on an annotate screen", () => {
     await press("[data-decision-primary]");
     for (let attempt = 0; attempt < 10 && !posts.some((post) => post.path === "/api/feedback"); attempt += 1) await settle(10);
     const done = posts.find((post) => post.path === "/api/feedback");
-    expect(done?.body).toMatchObject({ feedback: "The person ended the review (Done): every comment thread is resolved. This is not a request: there is nothing to change or answer.", annotations: [] });
-    expect(done?.body.nothingToSend).toBeUndefined();
+    // Its own field: the host gives it as a line of its own, outside the feedback prompt; the Done is today's.
+    expect(done?.body).toMatchObject({ nothingToSend: true, annotations: [], reviewEnd: "Review ended (Done): every comment thread is resolved. Nothing more is asked." });
     expect(posts.filter((post) => post.path === "/api/threads/send")).toHaveLength(2);
     // "Done" over the page; a press brings the page back to be read.
     for (let attempt = 0; attempt < 10 && !document.querySelector("[data-completion-over-page]"); attempt += 1) await settle(10);

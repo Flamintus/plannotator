@@ -131,6 +131,35 @@ describe("annotateHostResult", () => {
   });
 });
 
+// The review loop's line of how a review ended (`reviewEnd`): a line of its own after the decision's message, never
+// inside the prompt that frames feedback, so Done reads no "Please address…"; a decision that said nothing says it.
+describe("reviewEnd", () => {
+  const line = "Review ended (Done); 1 comment thread stays open: c2. Nothing more is asked.";
+  test("Done, Close and a bare approval start a turn with the line alone, or after the approval's prompt", () => {
+    const done = annotateHostResult({ feedback: "User reviewed the document and has no feedback.", annotations: [], nothingToSend: true, reviewEnd: line }, { kind: "file", target: "/a.md" });
+    expect(done).toMatchObject({ decision: "annotated", noop: false, message: line });
+    const closed = annotateHostResult({ feedback: "", exit: true, reviewEnd: line }, { kind: "last" });
+    expect(closed).toMatchObject({ decision: "dismissed", noop: false, message: line });
+    const approved = annotateHostResult({ approved: true, feedback: "", reviewEnd: "Review approved: every comment thread is resolved." }, { kind: "file", target: "/a.md" });
+    expect(approved.noop).toBe(false);
+    expect(approved.message.endsWith("\n\nReview approved: every comment thread is resolved.")).toBe(true);
+  });
+
+  test("after feedback, the line follows the whole prompt, outside it; a plan approval carries it too", () => {
+    const framed = annotateHostResult({ feedback: "A note.", reviewEnd: line }, { kind: "file", target: "/a.md" });
+    expect(framed.message.indexOf("Please address the annotation feedback above.")).toBeLessThan(framed.message.indexOf(line));
+    expect(framed.message.endsWith(line)).toBe(true);
+    const plan = planHostResult({ approved: true, reviewEnd: "Review approved: every comment thread is resolved." }, { approvedPlan: "# Plan" });
+    expect(plan.message.endsWith("Review approved: every comment thread is resolved.")).toBe(true);
+  });
+
+  test("without it, or when the agent closed the review, the record is today's", () => {
+    expect(annotateHostResult({ feedback: "", annotations: [], nothingToSend: true }, { kind: "file", target: "/a.md" }).noop).toBe(true);
+    const agentClosed = annotateHostResult({ feedback: "", exit: true, closedBy: "agent", reviewEnd: line } as never, { kind: "last" });
+    expect(agentClosed).toMatchObject({ decision: "dismissed", noop: true, message: "" });
+  });
+});
+
 describe("takeHostResultPath", () => {
   test("scrubs the variable so nothing the server spawns inherits it", () => {
     // Module state is taken once per process; use a private env object.

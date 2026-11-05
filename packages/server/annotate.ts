@@ -75,7 +75,7 @@ import { handleOpenInApps, handleOpenIn } from "./open-in";
 import { agentToolHostForServer, createAIRuntime } from "./ai-runtime";
 import { handleHostControl, resolveHostControlToken, type HostControl } from "./host-control";
 import { createServerReviewLoop, handleReviewLoopRequest, type ReviewLoopLaunch } from "./review-loop";
-import { annotateReviewTarget } from "@plannotator/shared/review-loop";
+import { annotateReviewTarget, readReviewEnd } from "@plannotator/shared/review-loop";
 import { sessionTailnetAudience, sessionTailnetGate } from "./session-tailnet";
 import { countUnsentDraftComments, hostSessionClosedEvent } from "@plannotator/shared/host-control";
 import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody } from "@plannotator/shared/server-session";
@@ -252,6 +252,8 @@ export interface AnnotateServerResult {
     closedBy?: "agent";
     /** With `closedBy`: the reviewer's unsent comments kept in the draft. */
     unsentAnnotations?: number;
+    /** The review loop ran: how it ended, a line of its own for the agent (`readReviewEnd`). */
+    reviewEnd?: string;
   }>;
   /** Stop the server */
   stop: () => void;
@@ -821,6 +823,8 @@ export async function startAnnotateServer(
     closedBy?: "agent";
     /** With `closedBy`: the reviewer's unsent comments kept in the draft. */
     unsentAnnotations?: number;
+    /** The review loop ran: how it ended, a line of its own for the agent (`readReviewEnd`). */
+    reviewEnd?: string;
   }) => void;
   const decisionPromise = new Promise<{
     feedback: string;
@@ -836,6 +840,8 @@ export async function startAnnotateServer(
     closedBy?: "agent";
     /** With `closedBy`: the reviewer's unsent comments kept in the draft. */
     unsentAnnotations?: number;
+    /** The review loop ran: how it ended, a line of its own for the agent (`readReviewEnd`). */
+    reviewEnd?: string;
   }>((resolve) => {
     resolveDecision = resolve;
   });
@@ -1569,7 +1575,9 @@ export async function startAnnotateServer(
             if (checkServerSession({ serverSession: url.searchParams.get("serverSession") ?? undefined }, serverSession) === "mismatch") {
               return sessionMismatch();
             }
-            if (!decision.settle({ feedback: "", annotations: [], exit: true })) {
+            // The review loop: a body may say how the review ended (`reviewEnd`); today's Close posts none.
+            const exitEnd = readReviewEnd(await req.json().catch(() => null));
+            if (!decision.settle({ feedback: "", annotations: [], exit: true, ...(exitEnd ? { reviewEnd: exitEnd } : {}) })) {
               return alreadyDecided();
             }
             // Decision-only line — a dismissal has no content, so a failed
@@ -1624,6 +1632,7 @@ export async function startAnnotateServer(
                   : body.feedbackScope === "message"
                     ? "message"
                     : undefined,
+              ...(readReviewEnd(body) ? { reviewEnd: readReviewEnd(body) } : {}),
             });
             if (!approvalWon) return alreadyDecided();
             // Approving ends the review loop's review: its journal goes.
@@ -1658,6 +1667,7 @@ export async function startAnnotateServer(
                 selectedMessageId: body.selectedMessageId,
                 feedbackScope: body.feedbackScope,
                 ...(isNothingToSendFeedbackBody(body) && { nothingToSend: true }),
+                ...(readReviewEnd(body) ? { reviewEnd: readReviewEnd(body) } : {}),
               });
               if (!feedbackWon) return alreadyDecided();
               // Make the submitted feedback durable BEFORE deleting the draft:

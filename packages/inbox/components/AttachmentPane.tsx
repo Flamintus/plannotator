@@ -1457,6 +1457,8 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
     readOnly: props.readOnly,
     // A comment opened again: the markdown and HTML viewers paint it again (the others draw from their props).
     repaint: (list) => viewerRef.current?.applySharedAnnotations(list.filter(annotationOwnsHighlight)),
+    // A Markdown or text file draws its threads in its text: its panel is a flat list.
+    inFlow: kind === 'markdown' || kind === 'text',
   });
   const { annotations, panelAnnotations, ownAnnotations, sentIds, withSentRound, withSentParts, withSentBody, sentFooter, reportUnanchored, onReply, onCommentPassage, cardPassages, reportRestore } = sentFile;
   // The document's blocks keep their identity across saves (the Viewer re-renders on a new array);
