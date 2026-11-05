@@ -148,6 +148,35 @@ test("on: Archive all leaves a thread with an open comment thread where it is (k
   expect([isArchived(server, thread), isArchived(server, other.thread_id)]).toEqual([false, true]);
 });
 
+test("on: comments the window sends as comment sends hold the archive, Finish round archives nothing, and an agent's reply sent alone opens a resolved one again", async () => {
+  const { project, server, client } = await world(true);
+  const sent = await call(client, "send_message", { project_path: project, body: "The plan: ship on Friday, all stores at once.", ...SESSION });
+  const thread = sent.thread_id as string;
+  const press = async (body: Record<string, unknown>) => expect((await post(server, `/api/inbox/threads/${thread}/comment-sends`, body)).status).toBe(200);
+  expect((await post(server, `/api/inbox/messages/${sent.message_id}/annotations`, { annotation: words("c-now", "ship on Friday", "Not on a Friday.") })).status).toBe(200);
+  expect((await post(server, `/api/inbox/messages/${sent.message_id}/annotations`, { annotation: words("c-round", "all stores at once", "One store first.") })).status).toBe(200);
+
+  // Send on one draft's box: the comment it sent holds; the draft still waiting does not.
+  await press({ mode: "now", comment_ids: ["c-now"], idempotency_key: "k-1" });
+  expect((await archive(server, thread)).body.comment_ids).toEqual(["c-now"]);
+
+  // Finish round sends the draft left and archives nothing: both hold.
+  await press({ mode: "round", idempotency_key: "f-1" });
+  expect(isArchived(server, thread)).toBe(false);
+  const both = await archive(server, thread);
+  expect([both.status, [...both.body.comment_ids].sort()]).toEqual([409, ["c-now", "c-round"]]);
+
+  // The agent's reply sent alone (no message) after the person resolved the comment opens it again.
+  await resolveComment(server, "c-now");
+  await resolveComment(server, "c-round");
+  await call(client, "send_message", { project_path: project, comment_replies: [{ comment_id: "c-now", text: "Tuesday, then." }], ...SESSION });
+  const agent = await tool(client, "resolve_message", { message_id: thread });
+  expect(agent.text.startsWith("comment_threads_open: 1 comment thread is still open in this thread: c-now.")).toBe(true);
+
+  await resolveComment(server, "c-now");
+  expect((await archive(server, thread)).status).toBe(200);
+});
+
 test("off: open comments hold nothing, for the agent, the person and Archive all", async () => {
   const { project, server, client } = await world(false);
   const sent = await call(client, "send_message", { project_path: project, body: "The plan: ship on Friday.", ...SESSION });

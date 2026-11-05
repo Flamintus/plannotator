@@ -380,7 +380,9 @@ test("on: a reply alone into an archived thread brings it back, unread; a Mark r
   expect((await rowOf(server, thread_id)).read_at).not.toBeNull();
   await call(client, "send_message", alone([{ comment_id: "c-1", text: "Lyon first." }]));
   expect(await rowOf(server, thread_id)).toMatchObject({ section: "new", unread: true, read_at: null });
-  expect((await post(server, `/api/inbox/messages/${thread_id}/resolve`, { resolved: true })).status).toBe(200);
+  // own/open-threads-guard: an open comment holds every door's archive, so the thread is archived as the store keeps it
+  // when the switch was off then (inbox-open-threads-guard.test.ts proves the doors).
+  server.store.resolveThread(thread_id, true, "person");
   expect(await rowOf(server, thread_id, "?archived=exclude")).toBeUndefined();
   await call(client, "send_message", alone([{ comment_id: "c-2", text: "No release." }]));
   expect(await rowOf(server, thread_id, "?archived=exclude")).toMatchObject({ back_from_archive: true, unread: true });

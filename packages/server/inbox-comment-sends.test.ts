@@ -310,7 +310,9 @@ test("a Finish never names again a comment sent before the thread's archive, onc
   const sent = await opening(client, project);
   await comment(server, sent.message_id, "c-old", "all stores at once", "One store first.");
   await press(server, sent.thread_id, { mode: "now", comment_ids: ["c-old"], idempotency_key: "k-1" });
-  expect((await post(server, `/api/inbox/messages/${sent.thread_id}/resolve`, { resolved: true })).status).toBe(200);
+  // own/open-threads-guard: an open comment holds every door's archive, so the thread is archived as the store keeps it
+  // when the switch was off then (inbox-open-threads-guard.test.ts proves the doors).
+  server.store.resolveThread(sent.thread_id, true, "person");
   const back = (await call(client, "send_message", { project_path: project, body: "One more thing about the rollout.", reply_to: sent.message_id, ...A })).structured as { message_id: string };
   await comment(server, back.message_id, "c-new", "One more thing", "Which thing?");
   await press(server, sent.thread_id, { mode: "now", comment_ids: ["c-new"], idempotency_key: "k-2" });
@@ -442,7 +444,9 @@ test("refusals: no agent session to send to, a resolved thread; a live reply who
   expect([answer.annotation.sent_reply_id, answer.send_refused?.code]).toEqual([null, "session_not_live"]);
 
   await comment(server, sent.message_id, "c-2", "with a press release", "No press release yet.");
-  await call(client, "resolve_message", { message_id: sent.message_id });
+  // own/open-threads-guard: an open comment holds every door's archive, so the thread is archived as the store keeps it
+  // when the switch was off then (inbox-open-threads-guard.test.ts proves the doors).
+  server.store.resolveThread(sent.message_id, true);
   expect(await refusal(server, sent.thread_id, { mode: "now", comment_ids: ["c-2"], idempotency_key: "k-2" })).toEqual([409, "thread_resolved"]);
 });
 
