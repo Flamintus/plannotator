@@ -52,6 +52,27 @@ describe("a client's side through the CLI", () => {
     expect(readReviewJournal(dataDir, { key: key() })).toBeNull();
   });
 
+  test("a send's text again by its id, nothing written; a Finish with nothing to send writes no round", async () => {
+    const empty = await threads(["send", JSON.stringify({ target, mode: "round" })]);
+    expect([empty.code, empty.out, empty.err.split(":")[0]]).toEqual([1, "", "empty"]);
+    expect(readReviewJournal(dataDir, { key: key() })).toBeNull();
+    await call("comment", { id: "c1", on: { kind: "message", message_id: "m1" }, quote: "Lyon store", text: "Two stores." });
+    await call("comment", { id: "c2", on: { kind: "message", message_id: "m1" }, quote: "Friday", text: "", type: "deletion" });
+    const sent = await call("send", { mode: "round" });
+    const again = await call("send", { id: sent.send.id });
+    expect([again.replayed, again.send, again.text]).toEqual([true, sent.send, sent.text]);
+    expect(readReviewJournal(dataDir, { key: key() })!.sends).toHaveLength(1);
+    expect((await threads(["send", JSON.stringify({ target, id: "snd_nope" })])).err).toStartWith("not_found:");
+    // Nothing new, and the open threads went to that session already: still a round naming them.
+    expect((await call("send", { mode: "round" })).send.comments).toEqual(["c1", "c2"]);
+    await call("resolve", { id: "c1" });
+    await call("resolve", { id: "c2" });
+    expect((await threads(["send", JSON.stringify({ target, mode: "round" })])).err).toStartWith("empty:");
+    expect((await call("send", { mode: "round", words: "All good." })).send.words).toBe("All good.");
+    const view = await call("view", {});
+    expect(view.view.threads.map((t: { id: string; type: string }) => [t.id, t.type])).toEqual([["c1", "comment"], ["c2", "deletion"]]);
+  });
+
   test("a refusal is a code and a message on stderr, nothing on stdout; bad JSON is a usage error", async () => {
     const missing = await threads(["resolve", JSON.stringify({ target, id: "c9" })]);
     expect([missing.code, missing.out, missing.err]).toEqual([1, "", "not_found: No sent comment or sub-thread c9."]);

@@ -10,7 +10,9 @@
  *   [<json> | -]` writes the person's side (comments, replies, sub-threads,
  *   resolutions, sends, deliveries, the close on approval) and reads the view;
  *   `send` gives back the text to hand the agent, composed by the shared core
- *   with the CLI's way to answer (`reviewCliHow`).
+ *   with the CLI's way to answer (`reviewCliHow`); given a send's `id`, that
+ *   send's text again, nothing written (a client that closed before handing it
+ *   over). A Finish with nothing to carry writes no round (`empty`).
  *
  * Unreleased (HIDDEN_SUBCOMMANDS): nothing calls them until a client does.
  * stdout carries the result only (one JSON value for a client's action); a
@@ -244,6 +246,14 @@ async function clientAction(action: ThreadsAction, argv: readonly string[], deps
       case "anchor":
         return { review, comment: anchorReviewComment(options, ref, idOf(args), { ...(args.on !== undefined ? { on: args.on as ReviewAnchor } : {}), unanchored: args.unanchored === true }) };
       case "send": {
+        const root = typeof args.root === "string" && args.root ? args.root : deps.cwd;
+        if (args.id !== undefined) {
+          // A send already written, its text composed again: a client that closed before handing it over.
+          const state = readReviewJournal(deps.dataDir, ref);
+          const send = state?.sends.find((known) => known.id === args.id);
+          if (!state || !send) throw new ReviewJournalError("not_found", `No send ${String(args.id)}.`);
+          return { review, send, replayed: true, text: reviewJournalSendText(state, [send.id], { root, how: reviewCliHow(review) }) };
+        }
         const ids = Array.isArray(args.ids) ? args.ids.filter((id): id is string => typeof id === "string") : undefined;
         const to = args.to as { host: string | null; session: string } | undefined;
         const done = sendReviewComments(options, ref, {
@@ -252,9 +262,9 @@ async function clientAction(action: ThreadsAction, argv: readonly string[], deps
           ...(to !== undefined ? { to } : {}),
           ...(typeof args.words === "string" ? { words: args.words } : {}),
           ...(typeof args.idempotency_key === "string" ? { idempotency_key: args.idempotency_key } : {}),
+          refuse_empty: true,
         });
         const state = readReviewJournal(deps.dataDir, { key: review })!;
-        const root = typeof args.root === "string" && args.root ? args.root : deps.cwd;
         return { review, send: done.send, replayed: done.replayed, text: reviewJournalSendText(state, [done.send.id], { root, how: reviewCliHow(review) }) };
       }
       case "delivered": {

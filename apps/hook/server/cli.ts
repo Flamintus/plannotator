@@ -397,11 +397,13 @@ export const THREADS_COMMAND_USAGE = [
   "  remove | resolve | reopen   {id}",
   "  anchor     {id, on?, unanchored}: where its words are now, or that they are gone",
   '  send       {mode: "now" | "round", ids?, to?, words?, idempotency_key?, root?}:',
-  "             the send, and the text to hand the agent",
+  "             the send, and the text to hand the agent; {id, root?}: that send's",
+  "             text again, nothing written",
   "  delivered  {sends: [<id>]}      close  {} (the review is approved: its journal goes)",
   "stdout is one JSON value.",
   "",
-  "Exit 0 ok, 1 refused (<code>: <message> on stderr), 2 bad usage.",
+  "Exit 0 ok, 1 refused (<code>: <message> on stderr; empty: a Finish with nothing",
+  "to send, no round written), 2 bad usage.",
 ].join("\n");
 
 /** `plannotator inbox projects …` (inbox-projects-command.ts): list, combine and undo, on the person's request. */
