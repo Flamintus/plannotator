@@ -12,7 +12,7 @@
  * of its own.
  */
 
-import { inboxCommentReplyAnnotation, inboxCommentReplyRound, inboxMovedLines, inboxQuoteOffset, isInboxCommentReply, isInboxSubThread, type InboxCommentThreadMessage } from '@plannotator/core/inbox-comment-threads';
+import { inboxCommentReplyAnnotation, inboxCommentReplyRound, inboxMovedLines, inboxQuoteOffset, isInboxCommentReply, isInboxCommentThreadFolded, isInboxSubThread, type InboxCommentThreadMessage } from '@plannotator/core/inbox-comment-threads';
 import type { TextPassage } from '@plannotator/core/passage';
 import { inboxAgentName, type InboxAnnotationRecord, type InboxCommentReplyRecord } from '@plannotator/core/inbox-types';
 import type { Annotation } from '@plannotator/ui/types';
@@ -208,14 +208,8 @@ export function placeThreads(
   return { byBlock, rest };
 }
 
-/**
- * Whether a thread is folded: resolved, with nothing open under it at any
- * depth (`openBelow`). A resolved thread with an open sub-thread under it
- * stays unfolded, marked resolved.
- */
-export function isFoldedThread(id: string, resolved: ReadonlySet<string>, openBelow: ReadonlySet<string>): boolean {
-  return resolved.has(id) && !openBelow.has(id);
-}
+/** Whether a thread is folded: the core rule (`isInboxCommentThreadFolded`), which the thread view applies too. */
+export const isFoldedThread = isInboxCommentThreadFolded;
 
 /** The messages that hold a thread still open, it or one under it (not folded): they open unfolded. */
 export function messagesWithOpenThreads(
