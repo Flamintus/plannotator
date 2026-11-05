@@ -867,6 +867,8 @@ export interface ReviewThreadNode<A = ReviewAnchor> extends Omit<ReviewThread<A>
   parent?: { id: string; quote_offset: number };
   /** The person's draft, not sent yet (`reply_id` is ''; its round is the one under way). */
   draft: boolean;
+  /** `deletion`: the person asks for the words to go (the reading's `isDeletion`); a client that edits or reopens it keeps it. */
+  type: "comment" | "deletion";
   /** Drawn folded: resolved, with nothing open under it at any depth (`isReviewThreadFolded`). */
   folded: boolean;
   /** A thread a send carried: what became of it. */
@@ -933,6 +935,7 @@ export function reviewThreadView<R extends ReviewCommentFields, A>(
     agentReplies,
     (id) => !resolved.has(id),
   );
+  const recordsById = new Map(input.records.map((record) => [record.id, record]));
   const nodes = new Map<string, ReviewThreadNode<A>>();
   const replyNodes = new Map<string, ReviewReplyNode<A>>();
   /** The thread each message of a thread belongs to: a thread to itself, a reply to the thread it is under. */
@@ -942,6 +945,7 @@ export function reviewThreadView<R extends ReviewCommentFields, A>(
       ...thread,
       ...(parent ? { parent: { id: parent.id, quote_offset: parent.quote_offset } } : {}),
       draft: draft === true,
+      type: read.isDeletion(recordsById.get(thread.id)!) ? "deletion" : "comment",
       folded: isReviewThreadFolded(thread.id, resolved, openBelow),
       ...statusOf(thread.reply_id, thread.id),
       live: live.has(thread.id),

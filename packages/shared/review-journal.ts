@@ -84,7 +84,7 @@ const QUOTE_MAX = 20_000;
 
 /** A refusal: `code` for a program, `message` for a person or an agent. */
 export class ReviewJournalError extends Error {
-  readonly code: "not_found" | "invalid" | "conflict" | "locked";
+  readonly code: "not_found" | "invalid" | "conflict" | "locked" | "empty";
   constructor(code: ReviewJournalError["code"], message: string) {
     super(message);
     this.name = "ReviewJournalError";
@@ -672,6 +672,8 @@ export interface ReviewSendInput {
   words?: string;
   /** A retry with the same key writes nothing and gives the first send back. */
   idempotency_key?: string;
+  /** A Finish with nothing to carry (no draft, no thread still open to name, no words) is refused (`empty`) rather than written as a round. */
+  refuse_empty?: boolean;
 }
 
 /**
@@ -719,6 +721,9 @@ export function sendReviewComments(options: ReviewJournalOptions, ref: ReviewJou
             .filter((thread) => thread.state === "open" && !carriedIds.has(thread.id) && sentTo.get(thread.reply_id) === to.session)
             .map((thread) => thread.id)
         : [];
+    if (input.refuse_empty && input.mode === "round" && carried.length === 0 && named.length === 0 && words === null) {
+      throw new ReviewJournalError("empty", "Nothing to send: no draft, no open thread to name, no words. No round was written.");
+    }
     const send: ReviewSend = {
       id,
       batch: id,
