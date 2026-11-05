@@ -11,7 +11,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { InboxAnnotationRecord, InboxAttachmentState, InboxMessageWire } from '@plannotator/core/inbox-types';
-import { inboxCommentRepliesFeedback, inboxCommentThreads, inboxOpenCommentsFeedback } from '@plannotator/core/inbox-comment-threads';
+import { INBOX_OPEN_COMMENTS_TITLE, inboxCommentRepliesFeedback } from '@plannotator/core/inbox-comment-threads';
 import { attachmentFeedback, imageCommentAnnotation } from './attachments';
 import { splitReplyFeedback } from './replyFeedback';
 
@@ -76,9 +76,9 @@ test("a reply that carries the person's replies under comments is split at that 
   expect(splitReplyFeedback(`Next round.\n\n${replies}`)).toEqual({ words: 'Next round.', feedback: replies });
 });
 
-test('a reply that sends open comments again is split at that section too (the server writes it after the feedback)', () => {
-  const sentRecord = { ...RECORDS[0]!, sent_reply_id: REPLY };
-  const again = inboxOpenCommentsFeedback(inboxCommentThreads([{ id: AGENT_MSG, author: { kind: 'agent' }, created_at: '2026-11-04T10:00:00.000Z' }, { id: REPLY, author: { kind: 'person' }, created_at: '2026-11-04T10:01:00.000Z' }], [sentRecord]), ROOT);
+test('an older reply that sent open comments again is split at that section too (the server wrote it after the feedback)', () => {
+  // As the store wrote it before comment sends named the open threads by id.
+  const again = `# ${INBOX_OPEN_COMMENTS_TITLE}\n\nThe person has not resolved these comments from earlier rounds yet.\n\n### 1. Round 1, on message ${AGENT_MSG}: "Friday" (id c-1)\n> Not on a Friday.`;
   expect(splitReplyFeedback(`Next round.\n\n${again}`)).toEqual({ words: 'Next round.', feedback: again });
 });
 

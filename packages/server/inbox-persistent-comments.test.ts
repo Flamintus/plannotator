@@ -101,9 +101,6 @@ test("off by default: a sent comment leaves the window, read_thread lists none, 
     expect([mark.status, ((await mark.json()) as { code: string }).code]).toEqual([409, "persistent_comments_off"]);
     const resolve = await post(server, "/api/inbox/annotations/c-file/resolve", { resolved: true });
     expect([resolve.status, ((await resolve.json()) as { code: string }).code]).toEqual([409, "persistent_comments_off"]);
-    // The next round sends nothing again.
-    const answer = (await call(client, "send_message", { project_path: project, body: "Tuesday then.", reply_to: sent.message_id, ...SESSION })).structured;
-    expect(await replyBody(server, answer.message_id, "r-off")).not.toContain("still open");
   } finally {
     if (before.data === undefined) delete process.env.PLANNOTATOR_DATA_DIR;
     else process.env.PLANNOTATOR_DATA_DIR = before.data;
@@ -209,41 +206,17 @@ test("the person resolves a sent comment and opens it again: read_thread shows i
   expect((await files(again, sent.thread_id)).sent_comments!.find((r) => r.id === "c-file")!.resolved_at).toBeNull();
 });
 
-test("each round sends the comments still open to the session again, never a resolved one, once per round", async () => {
+test("a reply never carries the comments still open: a comment send's Finish names them instead", async () => {
   const { project, dataDir } = world();
   const server = await start(dataDir, true);
   const client = await agent(server);
   const { sent, replyId } = await roundOne(server, client, project);
-  // Before the agent answers, a second reply sends nothing again.
-  expect(await replyBody(server, sent.message_id, "r-same-round")).not.toContain("still open");
-
-  expect((await post(server, "/api/inbox/annotations/c-msg/resolve", { resolved: true })).status).toBe(200);
   const answer = (await call(client, "send_message", { project_path: project, body: "Tuesday then.", reply_to: replyId, ...SESSION })).structured;
-  // The open comments never make a reply on their own.
-  expect((await post(server, `/api/inbox/messages/${answer.message_id}/reply`, { idempotency_key: "r-empty" })).status).toBe(422);
+  // Both comments are open and went to that session in round 1: the person's next words carry neither.
   const body = await replyBody(server, answer.message_id, "r-2");
-  expect(body).toContain("# Feedback on comments still open");
-  const headings = body.split("\n").filter((line) => line.startsWith("### "));
-  expect(headings).toHaveLength(1);
-  expect(headings[0]).toContain("Round 1, on notes.md");
-  expect(headings[0]!.endsWith("(id c-file)")).toBe(true);
-  // The person's words come first; the section follows them.
-  expect(body.startsWith("Next round.")).toBe(true);
-  // Once per round: the next reply before the agent answers again repeats none.
-  expect(await replyBody(server, answer.message_id, "r-3")).not.toContain("still open");
-  // What the agent read in the reply, it reads in its thread too.
+  expect(body).toBe("Next round.");
   const read = await call(client, "read_thread", { thread_id: sent.thread_id, format: "full", ...READER });
-  expect(read.structured.thread.messages.at(-2).body).toContain("(id c-file)");
-});
-
-test("comments sent before the thread was archived stay with it when the agent brings it back", async () => {
-  const { project, dataDir } = world();
-  const server = await start(dataDir, true);
-  const client = await agent(server);
-  const { sent, replyId } = await roundOne(server, client, project);
-  expect((await post(server, `/api/inbox/messages/${sent.thread_id}/resolve`, { resolved: true })).status).toBe(200);
-  const back = (await call(client, "send_message", { project_path: project, body: "One more thing about the rollout.", reply_to: replyId, ...SESSION })).structured;
-  expect(await replyBody(server, back.message_id, "r-back")).not.toContain("still open");
+  expect(read.structured.thread.messages.at(-1).body).not.toContain("(id c-");
 });
 
 test("only a sent comment is marked or resolved, with a boolean", async () => {
