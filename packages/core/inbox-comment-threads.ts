@@ -22,9 +22,9 @@
  * - its state: `open` once sent, `resolved` once the person resolved it (the
  *   record's `resolved_at`; only the person sets it), open again when they
  *   reopen it or a reply lands under it (`inboxCommentState`);
- * - which open comments the agent is asked about again, each round
- *   (`isInboxCommentAskedAgain`): a comment send's Finish names them by id
- *   (inbox-comment-sends.ts), as crit sends every unresolved thread;
+ * - which open comments a reply sends again (`inboxCommentsToCarry`), as a
+ *   section of its feedback (`inboxOpenCommentsFeedback`): each round, the
+ *   agent gets what is still open, as crit sends every unresolved thread;
  * - its replies, one flat list under it, as crit's: the agent's
  *   (`InboxCommentReplyRecord`, send_message's `comment_replies`) and the person's
  *   (a comment record whose `re` names it, a draft until a Send carries it,
@@ -721,6 +721,40 @@ export function inboxSubThreadWords(thread: Pick<InboxCommentThread, "parent" | 
 /** The most of a passage's surrounding words a feedback entry carries, in characters. */
 export const INBOX_SUB_THREAD_WORDS_SENT = 600;
 
+/** What sending comments again needs of a message: who wrote it, and an agent's session. */
+export interface InboxCommentCarryMessage extends InboxCommentRoundMessage {
+  author: { kind: string; session?: string | null };
+}
+
+/**
+ * The open comments the person's new reply to the agent session `session`
+ * sends again: those that went to that session before it last wrote in the
+ * thread, still open, and only when this reply is the person's first to it
+ * since then (a second reply before it answers repeats nothing). A comment
+ * that went to another session waits for a reply to that one. A comment on a
+ * guided review's diff is left out: the window draws none of those, so none
+ * can be resolved. `sentTo` names the session a message of the person went
+ * to (the store's `recipientOf`), null for one that is not a reply to it.
+ */
+export function inboxCommentsToCarry<M extends InboxCommentCarryMessage>(
+  messages: readonly M[],
+  threads: readonly InboxCommentThread[],
+  session: string,
+  sentTo: (message: M) => string | null,
+): InboxCommentThread[] {
+  let last = -1;
+  messages.forEach((message, index) => {
+    if (message.author.kind === "agent" && message.author.session === session) last = index;
+  });
+  if (last < 0) return [];
+  if (messages.slice(last + 1).some((message) => message.author.kind === "person" && sentTo(message) === session)) return [];
+  const at = new Map(messages.map((message, index) => [message.id, index]));
+  return threads.filter((thread) => {
+    const index = at.get(thread.reply_id);
+    return isInboxCommentAskedAgain(thread) && index !== undefined && index < last && sentTo(messages[index]!) === session;
+  });
+}
+
 /**
  * Whether a sent comment is one the agent is asked about again while it is
  * open, each round: any but a comment on a guided review's diff, which the
@@ -731,15 +765,34 @@ export function isInboxCommentAskedAgain(thread: Pick<InboxCommentThread, "state
 }
 
 /**
- * The title of the section the person's replies once ended with to send open
- * comments again (before comment sends, whose Finish names them by id). The
- * window still draws it in an older reply with the rest of its feedback
+ * The title of the section that sends open comments again. It is a feedback
+ * section of the reply, so the window draws it with the rest of the feedback
  * (packages/inbox/replyFeedback.ts).
  */
 export const INBOX_OPEN_COMMENTS_TITLE = "Feedback on comments still open";
 
-/** A Finish names at most this many open threads, the newest; the rest are counted. */
+/** A reply sends at most this many open comments again, the newest; the rest are counted. */
 export const INBOX_OPEN_COMMENTS_SENT = 20;
+
+/**
+ * The open comments a reply sends again, as a section of its feedback: one
+ * entry per comment with its round, where it is and its words, then the
+ * comment; each heading ends with the comment's id, as every entry of a Send
+ * does. The newest `INBOX_OPEN_COMMENTS_SENT` only, and a line counting the
+ * others. Empty when there is none.
+ */
+export function inboxOpenCommentsFeedback(threads: readonly InboxCommentThread[], root: string): string {
+  if (threads.length === 0) return "";
+  const shown = threads.slice(-INBOX_OPEN_COMMENTS_SENT);
+  const older = threads.length - shown.length;
+  const entries = shown.map((thread, index) => {
+    const place = `${inboxCommentThreadPlace(thread, root)}${thread.unanchored ? ", unanchored (its words were not in the file when the person last opened it)" : ""}`;
+    return feedbackEntry(index + 1, `Round ${thread.round}, ${place}${quoted(thread.quote)}`, thread.id, inboxSubThreadWords(thread, INBOX_SUB_THREAD_WORDS_SENT), thread.text);
+  });
+  const intro = "The person has not resolved these comments from earlier rounds yet.";
+  const rest = older > 0 ? [`${older} older open comment${older === 1 ? " is" : "s are"} not repeated here: read_thread lists every comment.`] : [];
+  return [`# ${INBOX_OPEN_COMMENTS_TITLE}`, intro, ...entries, ...rest].join("\n\n");
+}
 
 /** A quote as an entry's heading ends: `: "…"` on one line, or nothing when there is none. */
 function quoted(quote: string): string {

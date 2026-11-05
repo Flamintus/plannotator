@@ -10,10 +10,14 @@ import {
   inboxCommentReplyId,
   inboxCommentReplyText,
   isInboxCommentReplyRecord,
+  INBOX_OPEN_COMMENTS_SENT,
+  INBOX_OPEN_COMMENTS_TITLE,
   inboxCommentRounds,
   inboxCommentState,
   inboxCommentThreads,
+  inboxCommentsToCarry,
   inboxMovedLines,
+  inboxOpenCommentsFeedback,
   inboxOpenSubThreadPaths,
   inboxSubThreadAnnotation,
   inboxCommentMessages,
@@ -150,6 +154,89 @@ describe('the resolved state', () => {
     const resolved = { resolved_at: '2026-11-04T10:05:00.000Z' };
     expect(inboxCommentState(resolved, '2026-11-04T10:06:00.000Z')).toBe('open');
     expect(inboxCommentState(resolved, '2026-11-04T10:04:00.000Z')).toBe('resolved');
+  });
+});
+
+describe('the open comments a reply sends again', () => {
+  const ses = (id: string, session: string) => ({ id, author: { kind: 'agent', session }, created_at: '2026-11-04T09:00:00.000Z' });
+  const to = new Map([
+    ['msg_p1', 'ses_a'],
+    ['msg_p2', 'ses_a'],
+    ['msg_q1', 'ses_b'],
+  ]);
+  const sentTo = (message: { id: string }) => to.get(message.id) ?? null;
+  const carried = (messages: { id: string; author: { kind: string; session?: string }; created_at: string }[], records: InboxAnnotationRecord[], session: string) =>
+    inboxCommentsToCarry(messages, inboxCommentThreads(messages, records), session, sentTo).map((t) => t.id);
+
+  test('the first reply to a session after it answered sends its open comments again, not the resolved ones', () => {
+    const messages = [ses('msg_a1', 'ses_a'), person('msg_p1'), ses('msg_a2', 'ses_a')];
+    const records = [record('c1', { sent_reply_id: 'msg_p1' }), record('c2', { sent_reply_id: 'msg_p1', resolved_at: '2026-11-04T10:05:00.000Z' })];
+    expect(carried(messages, records, 'ses_a')).toEqual(['c1']);
+  });
+
+  test('nothing again before the session answered, nor in a second reply of the same round', () => {
+    const records = [record('c1', { sent_reply_id: 'msg_p1' })];
+    expect(carried([ses('msg_a1', 'ses_a'), person('msg_p1')], records, 'ses_a')).toEqual([]);
+    expect(carried([ses('msg_a1', 'ses_a'), person('msg_p1'), ses('msg_a2', 'ses_a'), person('msg_p2')], records, 'ses_a')).toEqual([]);
+  });
+
+  test('every round sends again every comment still open from all earlier rounds', () => {
+    const messages = [ses('msg_a1', 'ses_a'), person('msg_p1'), ses('msg_a2', 'ses_a'), person('msg_p2'), ses('msg_a3', 'ses_a')];
+    const records = [record('c1', { sent_reply_id: 'msg_p1' }), record('c2', { sent_reply_id: 'msg_p2', resolved_at: null })];
+    expect(carried(messages, records, 'ses_a').sort()).toEqual(['c1', 'c2']);
+  });
+
+  test("a guided review's comment is never sent again: the window cannot resolve it", () => {
+    const messages = [ses('msg_a1', 'ses_a'), person('msg_p1'), ses('msg_a2', 'ses_a')];
+    const guide = record('g1', { sent_reply_id: 'msg_p1', message: undefined, guide: { title: 'Review', file: 'src/a.ts', side: 'new', line_start: 3, line_end: 3 }, version: 'a'.repeat(64) });
+    expect(carried(messages, [guide, record('c1', { sent_reply_id: 'msg_p1' })], 'ses_a')).toEqual(['c1']);
+  });
+
+  test("a comment that went to another session waits for a reply to that one", () => {
+    const messages = [ses('msg_a1', 'ses_a'), ses('msg_b1', 'ses_b'), person('msg_q1'), ses('msg_b2', 'ses_b'), ses('msg_a2', 'ses_a')];
+    const records = [record('c1', { sent_reply_id: 'msg_q1' })];
+    expect(carried(messages, records, 'ses_a')).toEqual([]);
+    expect(carried(messages, records, 'ses_b')).toEqual(['c1']);
+  });
+
+  test('as feedback: one entry per comment, named by its id with its round and place, the whole comment quoted', () => {
+    expect(inboxOpenCommentsFeedback([], '/repo')).toBe('');
+    const messages = [agent('msg_a1'), person('msg_p1')];
+    const threads = inboxCommentThreads(messages, [
+      record('c1', { sent_reply_id: 'msg_p1', annotation: { originalText: 'every\nstore', text: 'One store first.\nThen the rest.' } }),
+      record('c2', {
+        sent_reply_id: 'msg_p1',
+        message: undefined,
+        attachment_id: 'att_1',
+        path: '/repo/notes.md',
+        unanchored_at: '2026-11-04T11:00:00.000Z',
+        annotation: { originalText: 'Ship on Friday.', text: 'Not on a Friday.' },
+      }),
+    ]);
+    const text = inboxOpenCommentsFeedback(threads, '/repo');
+    expect(text.startsWith(`# ${INBOX_OPEN_COMMENTS_TITLE}\n`)).toBe(true);
+    const headings = text.split('\n').filter((line) => line.startsWith('### '));
+    expect(headings).toHaveLength(2);
+    expect(headings[0]).toContain('Round 1, on message msg_a1: "every store"');
+    expect(headings[0]!.endsWith('(id c1)')).toBe(true);
+    expect(headings[1]).toContain('on notes.md');
+    expect(headings[1]).toContain('unanchored');
+    expect(headings[1]!.endsWith('(id c2)')).toBe(true);
+    // Every line of a comment stays in its quote, so the next heading starts a new entry.
+    expect(text).toContain('> One store first.\n> Then the rest.');
+  });
+
+  test('as feedback, a long backlog sends the newest again and counts the rest', () => {
+    const count = INBOX_OPEN_COMMENTS_SENT + 3;
+    const ids = Array.from({ length: count }, (_, i) => `c${String(i).padStart(2, '0')}`);
+    const threads = inboxCommentThreads(
+      [agent('msg_a1'), person('msg_p1')],
+      ids.map((id, i) => record(id, { sent_reply_id: 'msg_p1', created_at: `2026-11-04T10:${String(i).padStart(2, '0')}:00.000Z` })),
+    );
+    const text = inboxOpenCommentsFeedback(threads, '/repo');
+    const named = text.split('\n').filter((line) => line.startsWith('### ')).map((line) => /\(id (\w+)\)$/.exec(line)![1]);
+    expect(named).toEqual(ids.slice(-INBOX_OPEN_COMMENTS_SENT));
+    expect(text).toContain('3 older open comments');
   });
 });
 
@@ -331,6 +418,15 @@ describe('sub-threads on a passage of a message of a thread', () => {
     expect(inboxCommentRepliesFeedback([draft], '/repo')).not.toContain('In: ');
   });
 
+  test('each round sends an open one again with the words its passage is in, even once its parent is resolved', () => {
+    const later = [...messages, { id: 'msg_a3', author: { kind: 'agent', session: 'ses_a' }, created_at: '2026-11-04T10:12:00.000Z' }];
+    const threads = inboxCommentThreads(later, [{ ...comment, resolved_at: '2026-11-04T10:06:00.000Z' }, s1], [answer]);
+    const carried = inboxCommentsToCarry(later, threads, 'ses_a', (m) => (m.author.kind === 'person' ? 'ses_a' : null));
+    expect(carried.map((t) => t.id)).toEqual(['s1']);
+    const text = inboxOpenCommentsFeedback(carried, '/repo');
+    expect(text).toContain('### 1. Round 2, on a passage of reply rep_a under comment c1 (on message msg_a1): "off switch" (id s1)\nIn: "');
+    expect(text).toContain('feature-flag off switch');
+  });
 });
 
 describe('the fold', () => {

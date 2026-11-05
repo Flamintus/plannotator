@@ -4558,6 +4558,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
                 idempotency_key: body.idempotency_key as string,
                 feedback: typeof body.feedback === "string" ? body.feedback : undefined,
                 annotation_ids: body.annotation_ids as never,
+                // Comments still open from earlier rounds go again with a reply that carries comments itself (experimental
+                // "persistent-comments"): a linked machine's Send, whose comments travel in its replies and which no Finish
+                // names; with comment sends a Send carries none (a guided review's go with its verdict) and a Finish names them.
+                carry_open_comments: persistentCommentsOn() && Array.isArray(body.annotation_ids) && body.annotation_ids.some((id) => typeof id === "string" && !!store.annotation(id) && !store.annotation(id)!.guide),
                 // A verdict on a review (Approve / Send feedback in the review's header): only while Code review is on.
                 ...(body.review_verdict !== undefined && body.review_verdict !== null
                   ? codeReviewOn()

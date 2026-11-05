@@ -206,17 +206,25 @@ test("the person resolves a sent comment and opens it again: read_thread shows i
   expect((await files(again, sent.thread_id)).sent_comments!.find((r) => r.id === "c-file")!.resolved_at).toBeNull();
 });
 
-test("a reply never carries the comments still open: a comment send's Finish names them instead", async () => {
+test("a reply that carries comments itself (a linked machine's Send) sends the open ones again; words alone never do: a Finish names them", async () => {
   const { project, dataDir } = world();
   const server = await start(dataDir, true);
   const client = await agent(server);
-  const { sent, replyId } = await roundOne(server, client, project);
+  const { replyId } = await roundOne(server, client, project);
+  expect((await post(server, "/api/inbox/annotations/c-msg/resolve", { resolved: true })).status).toBe(200);
+  // The next round: the person's words alone carry none of the comments still open.
   const answer = (await call(client, "send_message", { project_path: project, body: "Tuesday then.", reply_to: replyId, ...SESSION })).structured;
-  // Both comments are open and went to that session in round 1: the person's next words carry neither.
-  const body = await replyBody(server, answer.message_id, "r-2");
-  expect(body).toBe("Next round.");
-  const read = await call(client, "read_thread", { thread_id: sent.thread_id, format: "full", ...READER });
-  expect(read.structured.thread.messages.at(-1).body).not.toContain("(id c-");
+  const wordsOnly = await post(server, `/api/inbox/messages/${answer.message_id}/reply`, { idempotency_key: "r-2", words: "Next round." });
+  const words2 = ((await wordsOnly.json()) as { reply: { id: string; body: string } }).reply;
+  expect(words2.body).toBe("Next round.");
+  // Another round: a reply carrying a comment the old way sends the open ones again after its feedback, never a resolved one.
+  const again = (await call(client, "send_message", { project_path: project, body: "Done for Tuesday.", reply_to: words2.id, ...SESSION })).structured;
+  expect((await post(server, `/api/inbox/messages/${again.message_id}/annotations`, { annotation: words("c-new", "Done for Tuesday", "Done how?") })).status).toBe(200);
+  const carried = await post(server, `/api/inbox/messages/${again.message_id}/reply`, { idempotency_key: "r-3", feedback: "# Feedback", annotation_ids: ["c-new"] });
+  const body = ((await carried.json()) as { reply: { body: string } }).reply.body;
+  expect(body).toContain("# Feedback on comments still open");
+  expect(body).toContain("(id c-file)");
+  expect(body).not.toContain("(id c-msg)");
 });
 
 test("only a sent comment is marked or resolved, with a boolean", async () => {

@@ -178,6 +178,10 @@ import {
   inboxCommentReplyId,
   inboxCommentReplyText,
   inboxCommentState,
+  inboxCommentThreads,
+  inboxCommentsToCarry,
+  inboxCommentWrites,
+  inboxOpenCommentsFeedback,
   inboxQuoteOffset,
   inboxSubThreadAnnotation,
   isInboxCommentReply,
@@ -319,6 +323,14 @@ export interface InboxReplyInput {
   feedback?: string;
   /** The annotations that text carries: marked sent with the reply. */
   annotation_ids?: string[];
+  /**
+   * Send the person's comments still open from earlier rounds to the reply's
+   * session again, after the feedback (experimental "persistent-comments":
+   * the reply route sets it while the switch is on for a reply that carries
+   * comments itself, as a linked machine's Send does; with comment sends a
+   * Finish names them instead; inbox-comment-threads.ts).
+   */
+  carry_open_comments?: boolean;
   /**
    * The person chose another live session to take this reply, because the
    * session that asked has ended (the window's choice at Send). Absent: the
@@ -4303,6 +4315,8 @@ export class InboxStore {
         )
       : [];
     const tags = [...typed, ...members, ...notice];
+    // The comments still open from earlier rounds go to that session again (experimental "persistent-comments").
+    const stillOpenComments = input.carry_open_comments === true && recipient ? this.openCommentsFeedback(message, recipient) : "";
     const reply: InboxMessage = {
       id: replyId,
       project_id: message.project_id,
@@ -4310,7 +4324,7 @@ export class InboxStore {
       reply_to: message.id,
       author: { kind: "person" },
       subject: null,
-      body,
+      body: [body, stillOpenComments].filter((part) => part !== "").join("\n\n"),
       created_at: at,
       resolved_at: null,
       idempotency_key: key,
@@ -5396,6 +5410,22 @@ export class InboxStore {
     const replies = [...this.annotations.values()].filter((record) => record.re === comment.id);
     const agents = this.commentReplies(comment.thread_id).filter((record) => record.re === comment.id);
     return inboxCommentLastReplies(replies, agents).get(comment.id) ?? null;
+  }
+
+  /**
+   * The comments still open that the person's reply to `message` sends its
+   * session again, as feedback (none: empty). A Re-ask is no reply of the
+   * round, and comments sent before the thread's archive stay with it.
+   */
+  private openCommentsFeedback(message: InboxMessage, session: string): string {
+    const messages = this.threadMessages(message.thread_id);
+    const replies = this.commentReplies(message.thread_id);
+    const threads = inboxCommentThreads(messages, this.sentAnnotations(message.thread_id), replies, this.commentSends(message.thread_id));
+    const sentTo = (m: InboxMessage) => (m.reask ? null : (this.recipientOf(m)?.session ?? null));
+    // An agent's replies sent alone are its writing again too (inboxCommentWrites).
+    const writes = inboxCommentWrites(messages, replies);
+    const carried = inboxCommentsToCarry(writes, threads, session, (m) => ("call" in m ? null : sentTo(m))).filter((t) => !this.commentCarrierClosedByArchive(t.reply_id));
+    return inboxOpenCommentsFeedback(carried, this.projectsById.get(message.project_id)?.root ?? "");
   }
 
   /** The annotations a Send names: each in this thread and still waiting. */

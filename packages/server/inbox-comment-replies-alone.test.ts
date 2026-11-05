@@ -296,7 +296,7 @@ test("on: replies sent alone are the round's: the round of the newest send the s
   ]);
 });
 
-test("on: replies sent alone answer a reply that carried comments as a message does: its round ends", async () => {
+test("on: replies sent alone answer a reply that carried comments as a message does: its round ends, the open ones go again", async () => {
   const { project, dataDir } = world();
   const server = await start(dataDir);
   const client = await agent(server);
@@ -312,12 +312,14 @@ test("on: replies sent alone answer a reply that carried comments as a message d
   await reply("r-1", ["c-1"]);
   await call(client, "send_message", alone([{ comment_id: "c-1", text: "Is Lyon fine?" }]));
   expect((await post(server, `/api/inbox/messages/${sent.message_id}/annotations`, { annotation: words("c-2", "a press release", "No press release.") })).status).toBe(200);
-  await reply("r-2", ["c-2"]);
+  const second = await reply("r-2", ["c-2"]);
   const read = (await call(client, "read_thread", { thread_id: sent.thread_id, ...READER })).structured.comments;
   expect(read.map((c: { id: string; round: number }) => [c.id, c.round])).toEqual([
     ["c-1", 1],
     ["c-2", 2],
   ]);
+  // The session wrote since round 1: its open comment goes again with the next reply.
+  expect(second.body).toContain("(id c-1)");
 });
 
 test("on: replies sent alone make the row unread until a look passes them; Mark unread and Mark read count them", async () => {
