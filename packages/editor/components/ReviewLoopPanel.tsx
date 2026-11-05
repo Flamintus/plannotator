@@ -1,36 +1,44 @@
 /**
- * The review loop in a screen's annotations panel (#1116, experimental
- * "persistent-comments"; the rules are ../reviewLoop.ts, the state
- * ../hooks/useReviewLoop.ts). With the loop available, the panel's cards are
- * the review's threads, as cards (crit's rounds and sub-threads, drawn the way
- * the Inbox's file pane draws its sent comments):
+ * The review loop on a screen (#1116, experimental "persistent-comments"; the
+ * rules are ../reviewLoop.ts, the state ../hooks/useReviewLoop.ts), drawn as
+ * every web client draws it (the bench's R1, R2, R7 to R9):
  *
- * - a sent card keeps its place and its highlight, takes no edit or delete,
- *   says its round and what became of its send (Queued, Delivered, Read,
- *   Working, Replied; "Not delivered" with Retry when the host could not put
- *   it in the session), and Resolve, or Reopen once resolved (folded to its
- *   header with what is under it, unless something under it is open);
- * - the agent's replies are cards under their comment, "New" until the person
- *   looks at their thread;
- * - Reply under a sent card, or under an agent's reply, writes the person's
- *   reply under that thread: a draft, sent with the next Send Feedback, or at
- *   once when the thread is live (a single send reached it);
- * - words selected in a sent card offer a comment on that passage, a
- *   sub-thread: a draft card under it, its passage marked in the card's words;
- * - a draft has Send, which sends it alone at once and leaves the round open;
- *   Reply under a draft is today's (the reply goes as a comment of its own,
- *   naming the one it answers), except under a sub-thread not sent yet.
+ * - The threads are boxes in the text, under the passage they are on (ui's
+ *   `SentThreads`, the Inbox window's boxes, through the Viewer's
+ *   `belowBlock`): the comment, the agent's replies and the person's, "New"
+ *   until the person looks at the box, sub-threads as boxes in the box (words
+ *   selected in a sent message offer a comment on that passage), Reply,
+ *   Resolve and Reopen at a thread's head, a resolved thread folded to one
+ *   line once nothing under it is open, and Send on a draft (it goes alone,
+ *   at once, and the round stays open). The person's drafts are boxes too,
+ *   "Not sent", after the sent ones on their block.
+ * - The annotations panel stays today's list, one comment per card with its
+ *   controls, no tree of the loop's: the page's own annotations only (a sent
+ *   one takes no edit or delete), each with one more line (ui's
+ *   `CommentListMeta`): its round or "Not sent", what became of its send,
+ *   "✓ Resolved" with Resolve or Reopen, Send for a draft, and
+ *   "↳ N replies under the passage" (the replies are read in the box).
+ *
+ * A document the viewer does not draw in blocks (an HTML page) has nowhere
+ * to put a box: there the panel keeps the threads as cards, as before
+ * (`threadsInText` false): a sent card keeps its place and its highlight,
+ * says its round and its send's status ("Not delivered" with Retry), and
+ * Resolve or Reopen (folded to its header once resolved, unless something
+ * under it is open); the agent's replies are cards under their comment;
+ * words selected in a sent card offer a sub-thread on that passage.
  */
 import React, { useCallback, useMemo } from 'react';
 import type { TextPassage } from '@plannotator/core/passage';
 import type { ReviewThreadNode, ReviewReplyNode } from '@plannotator/core/review-threads';
-import { SENT_STATUS_WORDS } from '@plannotator/ui/components/inbox-thread/SentThreads';
-import { AnnotationType, type Annotation } from '@plannotator/ui/types';
+import { CommentListMeta } from '@plannotator/ui/components/inbox-thread/CommentListMeta';
+import { SENT_STATUS_WORDS, SentThreads, useSentThreadsView } from '@plannotator/ui/components/inbox-thread/SentThreads';
+import { placeThreads, sentThreadsFromView, type SentReplyRow, type SentThreadRecord } from '@plannotator/ui/components/inbox-thread/sentCommentsTree';
+import { AnnotationType, type Annotation, type Block } from '@plannotator/ui/types';
 import { annotationOwnsHighlight, PASSAGE_ANNOTATION_PREFIX } from '@plannotator/ui/utils/annotationOwnsHighlight';
 import { buildReplyAnnotation } from '@plannotator/ui/utils/annotationReply';
 import { generateId } from '@plannotator/ui/utils/generateId';
 import type { ReviewLoop, ReviewLoopSendResult } from '../hooks/useReviewLoop';
-import { isPassageAnnotation, reviewLoopCards, reviewLoopPassages, reviewLoopThreadOf, type ReviewLoopElement } from '../reviewLoop';
+import { EMPTY_REVIEW_LOOP_INDEX, isPassageAnnotation, reviewLoopCards, reviewLoopPassages, reviewLoopThreadOf, type ReviewLoopElement } from '../reviewLoop';
 
 const CHIP = 'ml-1 shrink-0 rounded px-1.5 py-0.5 text-[9px] font-medium';
 const MUTED_CHIP = `${CHIP} bg-muted text-muted-foreground`;
@@ -85,6 +93,10 @@ export interface ReviewLoopPanelInput {
   reply: (parentId: string, reply: Reply) => void;
   /** Tells the person a write did not go. */
   notify: (message: string) => void;
+  /** The document is drawn in blocks (the Markdown viewer): the threads are boxes under their passage and the panel a flat list. */
+  threadsInText: boolean;
+  /** The blocks of the document shown, where the boxes go. */
+  blocks: readonly Block[];
 }
 
 export interface ReviewLoopPanelProps {
@@ -96,12 +108,15 @@ export interface ReviewLoopPanelProps {
   cardParts: (annotation: Annotation) => CardParts;
   renderCardHeader: (annotation: Annotation) => React.ReactNode;
   renderCardFooter: (annotation: Annotation) => React.ReactNode;
+  /** The boxes under each block of the document shown (the Viewer's `belowBlock`); absent: the threads are the panel's cards. */
+  belowBlock?: (block: Block) => React.ReactNode;
 }
 
 /** The panel's props under the loop; null while it is not available (the panel is today's). */
 export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanelProps | null {
-  const { loop, annotations, here, person, readOnly, addDraft, sendNow, select, reply, notify } = input;
+  const { loop, annotations, here, person, readOnly, addDraft, sendNow, select, reply, notify, blocks } = input;
   const { index, state } = loop;
+  const inText = input.threadsInText;
   const held = useMemo(() => new Map(annotations.map((annotation) => [annotation.id, annotation])), [annotations]);
   /** The threads the page's drafts are under: drawn unfolded, the draft in view. */
   const draftThreads = useMemo(() => {
@@ -113,7 +128,7 @@ export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanel
     }
     return out;
   }, [annotations, index]);
-  const folded = useCallback((element: ReviewLoopElement) => element.kind === 'thread' && (element.node as ReviewThreadNode).folded && !draftThreads.has(element.node.id), [draftThreads]);
+  const folded = useCallback((element: ReviewLoopElement) => !inText && element.kind === 'thread' && (element.node as ReviewThreadNode).folded && !draftThreads.has(element.node.id), [inText, draftThreads]);
   /** Under a folded thread (not itself): not drawn. */
   const hidden = useCallback((id: string) => {
     const element = index.elements.get(id);
@@ -124,15 +139,20 @@ export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanel
   }, [index, folded]);
 
   const cards = useMemo(
-    () => (loop.available ? reviewLoopCards({ index: { ...index, elements: new Map([...index.elements].map(([id, element]) => [id, { ...element, hidden: hidden(id) }])) }, held, here, person }) : []),
-    [loop.available, index, held, here, person, hidden],
+    () => (loop.available && !inText ? reviewLoopCards({ index: { ...index, elements: new Map([...index.elements].map(([id, element]) => [id, { ...element, hidden: hidden(id) }])) }, held, here, person }) : []),
+    [loop.available, inText, index, held, here, person, hidden],
+  );
+  // In the text, every element of the review stands for what an answer on it goes under: the page's own, else drawn from the view.
+  const drawn = useMemo(
+    () => (loop.available && inText ? reviewLoopCards({ index: { ...index, elements: new Map([...index.elements].map(([id, element]) => [id, { ...element, hidden: false }])) }, held, here: () => true, person }) : []),
+    [loop.available, inText, index, held, person],
   );
   const panelAnnotations = useMemo(() => {
-    if (!loop.available) return annotations;
+    if (!loop.available || inText) return annotations;
     const own = annotations.filter((annotation) => !(index.elements.has(annotation.id) && hidden(annotation.id)));
     return [...own, ...cards];
-  }, [loop.available, annotations, cards, index, hidden]);
-  const byId = useMemo(() => new Map(panelAnnotations.map((annotation) => [annotation.id, annotation])), [panelAnnotations]);
+  }, [loop.available, inText, annotations, cards, index, hidden]);
+  const byId = useMemo(() => new Map([...drawn, ...panelAnnotations].map((annotation) => [annotation.id, annotation])), [drawn, panelAnnotations]);
   const failed = useMemo(() => new Map((state?.failed ?? []).map((entry) => [entry.send, entry.message])), [state?.failed]);
   const passages = useMemo(
     () =>
@@ -202,20 +222,182 @@ export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanel
     return true;
   }, [byId, index, person, loop, addDraft, lookAt]);
 
+  /** Resolve or Reopen a thread; said when it did not go. */
+  const resolveThread = useCallback(async (id: string, resolved: boolean) => {
+    const result = await loop.resolve(id, resolved);
+    if (!result.ok) notify(result.error ?? 'The comment did not change.');
+    lookAt(id);
+  }, [loop, notify, lookAt]);
+
+  // ── In the text: the threads as boxes under their passage ──
+  /** The review's threads on what the page shows now. */
+  const viewHere = useMemo(() => {
+    const view = state?.view;
+    if (!loop.available || !inText || !view) return null;
+    return { ...view, threads: view.threads.filter((thread) => here(thread)) };
+  }, [loop.available, inText, state?.view, here]);
+  /**
+   * The person's drafts the view does not hold yet (the page's own): a reply under a sent thread (in its box, "Not
+   * sent"), a sub-thread on a passage of a sent message (a box in the box), and any other comment on a passage or on
+   * the whole document (a box of its own, after the sent ones on its block). Never an agent's comment on the page,
+   * a plan diff's, or a checkbox's or an answer's (they have no passage to sit under until they are sent).
+   */
+  const ownDrafts = useMemo(() => {
+    if (!viewHere) return null;
+    const top: Annotation[] = [];
+    const replies = new Map<string, SentReplyRow[]>();
+    const subThreads = new Map<string, SentThreadRecord[]>();
+    const subDrafts: Annotation[] = [];
+    for (const annotation of annotations) {
+      if (index.elements.has(annotation.id) || index.sent.has(annotation.id) || annotation.source || annotation.diffContext) continue;
+      if (isPassageAnnotation(annotation)) {
+        const on = annotation.inReplyTo;
+        if (on && index.sent.has(on)) {
+          subThreads.set(on, [...(subThreads.get(on) ?? []), { id: annotation.id, annotation: annotation as unknown as Record<string, unknown>, sent_reply_id: null, parent: on }]);
+          subDrafts.push(annotation);
+        }
+        continue;
+      }
+      const thread = annotation.inReplyTo ? reviewLoopThreadOf(annotation.inReplyTo, index, byId) : null;
+      if (thread !== null) {
+        const row: SentReplyRow = { id: annotation.id, who: 'You', round: undefined, text: annotation.text ?? '', at: new Date(annotation.createdA).toISOString(), draft: true };
+        replies.set(thread, [...(replies.get(thread) ?? []), row]);
+        continue;
+      }
+      if (annotation.type === AnnotationType.GLOBAL_COMMENT || annotationOwnsHighlight(annotation)) top.push(annotation);
+    }
+    const passages = reviewLoopPassages({ index: EMPTY_REVIEW_LOOP_INDEX, drafts: subDrafts, offsets: loop.offsets, wordsOf: (id) => byId.get(id)?.text });
+    return { top, replies, subThreads, passages };
+  }, [viewHere, annotations, index, byId, loop.offsets]);
+  /** A thread's drawing data: the page's annotation when it holds it (its block); else its words, under the block they are found in. */
+  const annotationOf = useCallback((id: string): Record<string, unknown> | undefined => {
+    const own = held.get(id);
+    if (own) return own as unknown as Record<string, unknown>;
+    const element = index.elements.get(id);
+    if (!element || element.kind !== 'thread' || element.under !== null) return undefined;
+    const node = element.node as ReviewThreadNode;
+    const block = node.quote ? blocks.find((entry) => entry.content.includes(node.quote))?.id : undefined;
+    return { originalText: node.quote, text: node.text, ...(block ? { blockId: block } : {}) };
+  }, [held, index, blocks]);
+  const boxes = useMemo(() => {
+    if (!viewHere || !ownDrafts) return null;
+    const fresh = new Set<string>();
+    for (const [id, element] of index.elements) {
+      if (element.kind === 'reply' && (element.node as ReviewReplyNode).author.kind === 'agent' && loop.isNew(id)) fresh.add(id);
+    }
+    const built = sentThreadsFromView(viewHere, {
+      annotationOf,
+      drafts: { replies: ownDrafts.replies, subThreads: ownDrafts.subThreads, passages: ownDrafts.passages },
+      fresh,
+      person: 'You',
+    });
+    const drafts: SentThreadRecord[] = ownDrafts.top.map((annotation) => ({ id: annotation.id, annotation: annotation as unknown as Record<string, unknown>, sent_reply_id: null }));
+    const roots = [...built.threads, ...drafts];
+    if (roots.length === 0) return null;
+    const { byBlock, rest } = placeThreads(roots, new Set(blocks.map((block) => block.id)));
+    const general = rest.filter((record) => record.annotation.type === AnnotationType.GLOBAL_COMMENT || record.annotation.originalText === '');
+    const lost = rest.filter((record) => !general.includes(record));
+    return { tree: built.tree, byBlock, general, lost };
+  }, [viewHere, ownDrafts, index, loop, annotationOf, blocks]);
+  const foldedIds = useMemo(() => new Set(boxes ? [...boxes.tree.resolved].filter((id) => !boxes.tree.openBelow.has(id)) : []), [boxes]);
+  const threadsView = useSentThreadsView(!!boxes && !readOnly, foldedIds);
+  const boxActions = useMemo(
+    () => ({
+      onOpen: (record: SentThreadRecord) => onSelect(record.id),
+      ...(readOnly
+        ? {}
+        : {
+            onResolve: (record: SentThreadRecord, resolved: boolean) => void resolveThread(record.id, resolved),
+            onReply: async (commentId: string, words: Reply) => onReply(commentId, words),
+            onSubThread: async (parentId: string, passage: TextPassage, words: Reply) => onCommentPassage(parentId, passage, words),
+            onSend: async (id: string) => {
+              const draft = held.get(id);
+              return draft ? sendDrafts([draft]) : false;
+            },
+          }),
+    }),
+    [readOnly, onSelect, resolveThread, onReply, onCommentPassage, held, sendDrafts],
+  );
+  const lastBlock = blocks.length > 0 ? blocks[blocks.length - 1]!.id : null;
+  const belowBlock = useMemo(() => {
+    if (!boxes) return undefined;
+    return (block: Block): React.ReactNode => {
+      const on = boxes.byBlock.get(block.id);
+      const end = block.id === lastBlock;
+      const general = end ? boxes.general : [];
+      const lost = end ? boxes.lost : [];
+      if (!on && general.length === 0 && lost.length === 0) return null;
+      const shown = [...(on ?? []), ...general, ...lost];
+      return (
+        // A press in a box is a look at its threads: their agent's replies are no longer New.
+        <div className="pn-review-boxes" data-review-loop-boxes={block.id} onClickCapture={() => shown.forEach((record) => lookAt(record.id))}>
+          {on && <SentThreads group={block.id} records={on} tree={boxes.tree} view={threadsView} {...boxActions} />}
+          {general.length > 0 && <SentThreads group="general" records={general} tree={boxes.tree} view={threadsView} {...boxActions} />}
+          {lost.length > 0 && <SentThreads group="lost" records={lost} tree={boxes.tree} view={threadsView} lost {...boxActions} />}
+        </div>
+      );
+    };
+  }, [boxes, lastBlock, threadsView, boxActions, lookAt]);
+
+  // ── In the text: the panel's flat list, one more line per comment ──
+  const listLine = useCallback((annotation: Annotation): React.ReactNode => {
+    const element = index.elements.get(annotation.id);
+    if (!element || element.node.draft) {
+      // A draft of the person's own (never an agent's comment on the page): "Not sent", and Send, alone, at once.
+      if (annotation.source || index.sent.has(annotation.id) || annotation.diffContext) return null;
+      return <CommentListMeta draft onSend={readOnly ? undefined : () => sendDrafts([annotation])} />;
+    }
+    const node = element.node as ReviewThreadNode & ReviewReplyNode;
+    if (element.kind === 'reply' && node.author.kind === 'agent') return null;
+    const thread = element.kind === 'thread';
+    const carrier = thread ? node.reply_id : node.message_id;
+    const notDelivered = failed.has(carrier);
+    const retry = !readOnly && notDelivered && loop.canRetry(carrier);
+    return (
+      <CommentListMeta
+        round={node.round}
+        status={notDelivered ? undefined : node.status}
+        resolved={thread ? node.state === 'resolved' : undefined}
+        replies={thread ? node.replies.length : 0}
+        onResolve={readOnly || !thread ? undefined : (resolved) => void resolveThread(annotation.id, resolved)}
+      >
+        {notDelivered && (
+          <span className={`${CHIP} bg-destructive/15 text-destructive`} data-review-loop-chip="failed" title={failed.get(carrier) ?? undefined}>
+            Not delivered
+          </span>
+        )}
+        {retry && (
+          <PressButton
+            action="retry"
+            id={carrier}
+            onPress={async () => {
+              const result = await loop.retry(carrier);
+              if (result && !result.ok) notify(`Not sent: ${result.error}`);
+              return result?.ok === true;
+            }}
+          >
+            Retry
+          </PressButton>
+        )}
+      </CommentListMeta>
+    );
+  }, [index, readOnly, sendDrafts, failed, loop, resolveThread, notify]);
+
   const cardParts = useCallback((annotation: Annotation): CardParts => {
     const element = index.elements.get(annotation.id);
     if (element && !element.node.draft) {
       if (folded(element)) return { actions: false, quote: false, text: false, images: false, reply: false, passage: false };
-      return { actions: false };
+      // In the text, a sub-thread starts from a box: the list's card offers none.
+      return inText ? { actions: false, passage: false } : { actions: false };
     }
     // A draft: edited, removed and replied to as today; no sub-thread on its words until it is sent, and no reply
     // under a sub-thread not sent yet (its reply would land under the thread it is on).
     return isPassageAnnotation(annotation) ? { passage: false, reply: false } : { passage: false };
-  }, [index, folded]);
+  }, [index, folded, inText]);
 
   const renderCardHeader = useCallback((annotation: Annotation): React.ReactNode => {
     const element = index.elements.get(annotation.id);
-    if (!element || element.node.draft) return null;
+    if (inText || !element || element.node.draft) return null;
     const node = element.node as ReviewThreadNode & ReviewReplyNode;
     const agent = element.kind === 'reply' && (node as ReviewReplyNode).author.kind === 'agent';
     const carrier = element.kind === 'thread' ? (node as ReviewThreadNode).reply_id : (node as ReviewReplyNode).message_id;
@@ -233,9 +415,10 @@ export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanel
         {element.kind === 'thread' && node.state === 'resolved' && <span className={MUTED_CHIP} data-review-loop-chip="resolved">Resolved</span>}
       </>
     );
-  }, [index, failed, loop]);
+  }, [index, failed, loop, inText]);
 
   const renderCardFooter = useCallback((annotation: Annotation): React.ReactNode => {
+    if (inText) return listLine(annotation);
     if (readOnly) return null;
     const element = index.elements.get(annotation.id);
     if (!element || element.node.draft) {
@@ -287,18 +470,19 @@ export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanel
         )}
       </div>
     );
-  }, [readOnly, index, failed, loop, notify, sendDrafts, lookAt]);
+  }, [inText, listLine, readOnly, index, failed, loop, notify, sendDrafts, lookAt]);
 
-  const cardPassages = useCallback((annotation: Annotation) => passages.get(annotation.id) ?? NO_PASSAGES, [passages]);
+  const cardPassages = useCallback((annotation: Annotation) => (inText ? NO_PASSAGES : (passages.get(annotation.id) ?? NO_PASSAGES)), [inText, passages]);
 
   if (!loop.available) return null;
   return {
     annotations: panelAnnotations,
     onSelect,
-    ...(readOnly ? {} : { onReply, onCommentPassage }),
+    ...(readOnly ? {} : inText ? { onReply } : { onReply, onCommentPassage }),
     cardPassages,
     cardParts,
     renderCardHeader,
     renderCardFooter,
+    ...(belowBlock ? { belowBlock } : {}),
   };
 }

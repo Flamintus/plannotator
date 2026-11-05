@@ -85,6 +85,31 @@ export function indexReviewLoop(view: ReviewThreadView | null | undefined): Revi
   return { elements, sent, count: anySent ? { round: view.round, open } : null };
 }
 
+/** The sent comment threads still open (comments and sub-threads, at any depth), by id, oldest first. */
+export function reviewLoopOpenThreads(index: ReviewLoopIndex): string[] {
+  const open: string[] = [];
+  for (const element of index.elements.values()) {
+    if (element.kind === 'thread' && !element.node.draft && (element.node as ReviewThreadNode).state === 'open') open.push(element.node.id);
+  }
+  return open;
+}
+
+/**
+ * How the review ended, in a line the agent reads with the decision (the
+ * bench's R6: the agent always learns the end state, even from Done): every
+ * comment thread resolved, or the ids still open. Null when nothing was ever
+ * sent in the loop (today's decision says it all).
+ */
+export function reviewLoopEndState(index: ReviewLoopIndex, ending: 'approved' | 'done'): string | null {
+  if (index.count === null) return null;
+  const open = reviewLoopOpenThreads(index);
+  const lead = ending === 'approved' ? 'Review approved' : 'Review done';
+  const rest = ending === 'done' ? ' Nothing more is asked.' : '';
+  if (open.length === 0) return `${lead}: every comment thread is resolved.${rest}`;
+  const threads = open.length === 1 ? '1 comment thread stays open' : `${open.length} comment threads stay open`;
+  return `${lead}; ${threads}: ${open.join(', ')}.${rest}`;
+}
+
 /** An annotation not yet sent: the page's own, minus what the loop says went. The same list when nothing went (the loop off). */
 export function withoutSent<T extends { id: string }>(list: T[], sent: ReadonlySet<string>): T[] {
   if (sent.size === 0 || !list.some((item) => sent.has(item.id))) return list;

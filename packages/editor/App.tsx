@@ -277,7 +277,7 @@ import { useAnnotationJump } from './hooks/useAnnotationJump';
 import { planRevisionBlocker, usePlanRevisions, type PlanRevisionSnapshot } from './hooks/usePlanRevisions';
 import { useReviewLoop } from './hooks/useReviewLoop';
 import { useReviewLoopPanel } from './components/ReviewLoopPanel';
-import { mergeHostMessages, reviewLoopCommentInputs, withoutSent, type ReviewLoopCommentInput } from './reviewLoop';
+import { mergeHostMessages, reviewLoopCommentInputs, reviewLoopEndState, withoutSent, type ReviewLoopCommentInput } from './reviewLoop';
 import type { ReviewAnchor, ReviewThreadNode } from '@plannotator/core/review-threads';
 import { AgentNudgeBanner } from './components/AgentNudgeBanner';
 import { useDocumentWebMcp } from './webmcp/useDocumentWebMcp';
@@ -821,6 +821,11 @@ const App: React.FC = () => {
   const [isExiting, setIsExiting] = useState(false);
   // 'done': an annotate Done with nothing to send (no feedback went out).
   const [submitted, setSubmitted] = useState<'approved' | 'denied' | 'done' | 'exited' | null>(null);
+  // The review loop (crit's way): a round's "Feedback Sent" over the page, the review going on under it; a final
+  // message the person moved away from to read the page again; Done that told the agent how the review ended.
+  const [roundOverlay, setRoundOverlay] = useState<{ round: number } | null>(null);
+  const [finalOverlayDismissed, setFinalOverlayDismissed] = useState(false);
+  const [doneTold, setDoneTold] = useState(false);
   // A decided review has nothing left to retry: take any send failure down.
   useEffect(() => {
     if (submitted) dismissSendFailureToast();
@@ -4704,6 +4709,9 @@ const App: React.FC = () => {
       if (!options?.discardFeedback && (feedbackAllAnnotations.length > 0 || codeAnnotations.length > 0 || globalAttachments.length > 0 || hasDocAnnotations || editorAnnotations.length > 0 || editsSection || savedChangesSection)) {
         body.feedback = getCurrentFeedbackPayload(checkedSavedFileChanges);
       }
+      // The review loop: the agent reads how the review ended (every thread resolved, or the ones still open).
+      const planEnd = reviewLoop.available ? reviewLoopEndState(reviewLoop.index, 'approved') : null;
+      if (planEnd) body.feedback = body.feedback ? `${body.feedback}\n\n${planEnd}` : planEnd;
       sentFeedback = body.feedback;
 
       const res = await fetch(withDraftClient('/api/approve'), {
@@ -4841,7 +4849,8 @@ const App: React.FC = () => {
       }
     }
     annotationHistory.clear();
-    toast(`Round ${result.send!.round} sent`, { description: 'The agent answers under each comment, in this tab.' });
+    // "Feedback Sent" over the page, as crit's: a press takes it away and the review goes on here.
+    setRoundOverlay({ round: result.send!.round });
     return true;
   };
   /** One draft (or a live thread's reply) sent alone, at once: the round stays open. */
@@ -4972,7 +4981,10 @@ const App: React.FC = () => {
           return round;
         }
       }
-      const feedback = getCurrentFeedbackPayload(checkedSavedFileChanges, options);
+      const payload = getCurrentFeedbackPayload(checkedSavedFileChanges, options);
+      // The review loop: Done with nothing left to send still tells the agent how the review ended.
+      const doneEnd = reviewLoop.available && !discard && !options?.approvalFraming && isEmptyFeedbackSentinel(payload) ? reviewLoopEndState(reviewLoop.index, 'done') : null;
+      const feedback = doneEnd ?? payload;
       sentFeedback = feedback;
       const agentFeedbackDelivery = agentTerminalSessionId === null
         ? null
@@ -5025,8 +5037,10 @@ const App: React.FC = () => {
       dismissDraft();
       // The completion screen must not claim feedback went out when nothing
       // did: the same predicate the servers use to make this a no-op decision.
-      // 'denied' doubles as the "feedback sent" overlay state.
-      setSubmitted(isNothingToSendFeedbackBody(body) ? 'done' : 'denied');
+      // 'denied' doubles as the "feedback sent" overlay state. Done that only
+      // told the agent how the review ended is still Done.
+      setDoneTold(doneEnd !== null);
+      setSubmitted(isNothingToSendFeedbackBody(body) || doneEnd !== null ? 'done' : 'denied');
       return true;
     } catch (error) {
       setIsSubmitting(false);
@@ -5070,9 +5084,12 @@ const App: React.FC = () => {
       const discard = options?.discardAnnotations === true;
       // hasFeedbackToSend (not hasFeedbackContent) so notes already delivered
       // via the agent terminal are not re-sent on approve.
-      const feedback = !discard && hasFeedbackToSend
+      const notes = !discard && hasFeedbackToSend
         ? getCurrentFeedbackPayload(checkedSavedFileChanges)
         : '';
+      // The review loop: the agent reads how the review ended (every thread resolved, or the ones still open).
+      const end = reviewLoop.available ? reviewLoopEndState(reviewLoop.index, 'approved') : null;
+      const feedback = end ? (notes ? `${notes}\n\n${end}` : end) : notes;
       sentFeedback = feedback;
       const res = await fetch(withDraftClient('/api/approve'), {
         method: 'POST',
@@ -5588,6 +5605,9 @@ const App: React.FC = () => {
     select: handleSelectAnnotation,
     reply: handleReplyToAnnotation,
     notify: (message) => toast.error(message),
+    // The threads go under their passage wherever the viewer draws blocks; an HTML page keeps them in the panel.
+    threadsInText: renderAs !== 'html',
+    blocks,
   });
 
   const annotationDocumentGroups = useMemo(() => {
@@ -8411,6 +8431,7 @@ const App: React.FC = () => {
                     actionsLabelMode={actionsLabelMode}
                     onAskAI={canUseDocumentAskAI ? handleAskAI : undefined}
                     readOnly={documentReadOnly}
+                    belowBlock={reviewPanel?.belowBlock}
                   />
                 )}
               </div>
@@ -8695,8 +8716,21 @@ const App: React.FC = () => {
           />
         )}
 
-        {/* Completion overlay - shown after approve/deny */}
-        <CompletionOverlay
+        {/* The review loop's round: "Feedback Sent" over the page; the review goes on under it. */}
+        {roundOverlay && !submitted && (
+          <CompletionOverlay
+            submitted="feedback"
+            title="Feedback Sent"
+            subtitle={`Round ${roundOverlay.round} sent. You can still change and add comments here: what you send next reaches ${agentName}.`}
+            agentLabel={agentName}
+            onDismiss={() => setRoundOverlay(null)}
+            reviewContinues
+          />
+        )}
+
+        {/* Completion overlay - shown after approve/deny. With the review loop it sits over the page, which a press brings back. */}
+        {!finalOverlayDismissed && <CompletionOverlay
+          {...(reviewLoop.available ? { onDismiss: () => setFinalOverlayDismissed(true) } : {})}
           submitted={submitted}
           title={
             archive.archiveMode ? 'Archive Closed'
@@ -8732,13 +8766,13 @@ const App: React.FC = () => {
                       ? `${agentName} will proceed.`
                       : `${agentName} will proceed with the implementation.`)
                   : submitted === 'done'
-                    ? `Nothing was sent to ${agentName}.`
+                    ? (doneTold ? `${agentName} was told the review is done.` : `Nothing was sent to ${agentName}.`)
                   : annotateMode
                     ? `${agentName} will address your feedback on the ${annotateSource === 'message' ? 'message' : annotateSource === 'folder' ? 'files' : 'file'}.`
                     : `${agentName} will revise the plan based on your feedback.`
           }
           agentLabel={agentName}
-        />
+        />}
 
         <LookAndFeelAnnouncementDialog
           isOpen={shouldShowLookAndFeelAnnouncement}

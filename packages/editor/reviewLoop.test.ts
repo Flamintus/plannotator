@@ -16,6 +16,7 @@ import {
   readReviewLoopState,
   reviewLoopCards,
   reviewLoopCommentInputs,
+  reviewLoopEndState,
   reviewLoopPassages,
   withoutSent,
 } from './reviewLoop';
@@ -66,6 +67,20 @@ describe('indexReviewLoop', () => {
     expect(index.elements.get('rep_1')).toMatchObject({ under: 'c1', thread: { id: 'c1' } });
     expect(index.elements.get('rep_2')?.hidden).toBe(true);
     expect(index.elements.get('c2')?.hidden).toBe(false);
+  });
+});
+
+describe('reviewLoopEndState', () => {
+  test('the agent reads how the review ended: every thread resolved, or the ids still open (a sub-thread too); nothing before anything was sent', () => {
+    expect(reviewLoopEndState(indexReviewLoop(view([])), 'approved')).toBeNull();
+    expect(reviewLoopEndState(indexReviewLoop(view([thread('c1', { draft: true, reply_id: '' })])), 'done')).toBeNull();
+    const resolved = indexReviewLoop(view([thread('c1', { state: 'resolved' })]));
+    expect(reviewLoopEndState(resolved, 'approved')).toBe('Review approved: every comment thread is resolved.');
+    expect(reviewLoopEndState(resolved, 'done')).toBe('Review done: every comment thread is resolved. Nothing more is asked.');
+    const sub = thread('s1', { parent: { id: 'rep_1', quote_offset: 0 } });
+    const open = indexReviewLoop(view([thread('c1', { state: 'resolved', replies: [agentReply('rep_1', { sub_threads: [sub] })] }), thread('c2')]));
+    expect(reviewLoopEndState(open, 'approved')).toBe('Review approved; 2 comment threads stay open: s1, c2.');
+    expect(reviewLoopEndState(indexReviewLoop(view([thread('c2')])), 'done')).toBe('Review done; 1 comment thread stays open: c2. Nothing more is asked.');
   });
 });
 

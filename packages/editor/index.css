@@ -14,6 +14,8 @@
 @source "./components/**/*.tsx";
 
 @import "../ui/theme.css";
+/* The review loop's comment threads, as boxes under their passage (the Inbox's boxes). */
+@import "./reviewLoopBoxes.css";
 
 /* Keep xterm's scrollback layer aligned with the host app terminal palette. */
 [data-annotate-agent-terminal="true"] .webtui-shell {

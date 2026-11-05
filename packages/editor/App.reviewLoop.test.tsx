@@ -3,11 +3,14 @@
  * "persistent-comments" with a host that carries sends, as `GET /api/threads`
  * answers it). Send Feedback must end the round through `/api/threads/send`
  * with each comment by its id and leave the tab open, never posting today's
- * decision; a sent comment must stop counting as feedback (else the next
- * round, or Approve's notes, would send it again); the agent's reply must
- * come under its comment as a card; a reply to it must go under the right
- * thread; and Resolve must reach the server. With the loop unavailable the
- * page is today's: Send Feedback posts `/api/feedback`.
+ * decision, showing "Feedback Sent" over the page (a press brings it back);
+ * a sent comment must stop counting as feedback (else the next round, or
+ * Approve's notes, would send it again); the threads are boxes under their
+ * passage (the agent's reply in its comment's box, New until looked at; a
+ * reply written there goes under the right thread; Resolve folds the box),
+ * while the panel stays a flat list with one line more per comment; and Done
+ * tells the agent how the review ended. With the loop unavailable the page
+ * is today's: no box, Send Feedback posts `/api/feedback`, today's screen.
  */
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import React, { act } from "react";
@@ -187,6 +190,8 @@ async function settle(ms = 0): Promise<void> {
 }
 
 const card = (id: string) => document.querySelector<HTMLElement>(`[data-annotation-id="${id}"]`);
+/** A thread's box in the text, under its passage. */
+const box = (id: string) => document.querySelector<HTMLElement>(`[data-review-loop-boxes] [data-sent-comment="${id}"]`);
 
 async function mountAndRestore(): Promise<void> {
   setStorageBackend(memoryBackend);
@@ -243,10 +248,13 @@ afterAll(() => {
 });
 
 describe.if(hasDom)("the review loop on an annotate screen", () => {
-  test("Send Feedback ends the round in the same tab; the agent's reply, a reply to it and Resolve go through the loop", async () => {
+  test("Send Feedback ends the round in the same tab; the threads are boxes under their passage, the panel a flat list; Done tells the agent how the review ended", async () => {
     await mountAndRestore();
-    // A draft keeps today's Reply (nested replies, PR 2).
+    // A draft keeps today's Reply (nested replies, PR 2), and is a box too, "Not sent", under its paragraph.
     expect(card("annRetry")?.querySelector('button[title="Reply"]')).not.toBeNull();
+    expect(box("annRetry")?.hasAttribute("data-sent-draft")).toBe(true);
+    expect(box("annRetry")?.closest("[data-below-block]")?.getAttribute("data-below-block")).toBe("block-1");
+    expect(card("annRetry")?.querySelector('[data-comment-meta-round]')?.textContent).toBe("Not sent");
 
     await pressPrimary();
     expect(posts.map((post) => post.path)).toEqual(["/api/threads/send"]);
@@ -254,28 +262,37 @@ describe.if(hasDom)("the review loop on an annotate screen", () => {
       mode: "round",
       comments: [{ id: "annRetry", on: { kind: "file", path: "/tmp/release.md" }, quote: "The retry loop", text: "make it exponential" }],
     });
-    // The tab stays: the comment is still in the panel, sent, and the header counts the round.
-    expect(card("annRetry")?.querySelector('[data-review-loop-chip="status"]')?.textContent).toBe("Delivered");
+    // "Feedback Sent" over the page, as crit's: the review goes on under it, and a press brings the page back.
+    const over = document.querySelector('[data-completion-over-page]');
+    expect(over?.getAttribute("data-completion-state")).toBe("feedback");
+    expect(over?.querySelector("[data-completion-continues]")).not.toBeNull();
+    await press("[data-completion-back]");
+    expect(document.querySelector("[data-completion-over-page]")).toBeNull();
+    // The tab stays: the comment is still in the panel, sent, one line more; the header counts the round.
+    expect(card("annRetry")?.querySelector('[data-comment-meta-status="delivered"]')?.textContent).toBe("Delivered");
+    expect(card("annRetry")?.querySelector('[data-comment-meta-round]')?.textContent).toBe("Round 1");
     // Pinned on purpose: the count's words are the initiative's ("Round N · M open"), the numbers the server's.
     expect(document.querySelector("[data-review-loop-count]")?.textContent).toBe("Round 2 · 1 open");
     // Sent: no longer feedback, so the primary is no longer a Send of it, and the card takes no edit.
     expect(card("annRetry")?.querySelector('button[title="Edit"]')).toBeNull();
+    expect(box("annRetry")?.hasAttribute("data-sent-draft")).toBe(false);
 
-    // The agent answers under the comment's id: a card under it, New until the person looks.
+    // The agent answers under the comment's id: in its box, New until the person looks; the list only says so.
     view = { ...view, threads: view.threads.map((thread) => ({ ...thread, status: "replied", replies: [agentReply] })) };
     await act(async () => { StreamEventSource.current?.push({ type: "review-threads", ...state() }); });
     await settle();
-    const reply = card(agentReply.id);
-    expect(reply?.textContent).toContain("Doubled the backoff");
-    expect(reply?.closest("[data-annotation-reply]")?.getAttribute("data-annotation-depth")).toBe("1");
-    expect(reply?.querySelector('[data-review-loop-chip="new"]')).not.toBeNull();
-    await act(async () => { reply!.click(); });
+    const reply = () => box("annRetry")?.querySelector<HTMLElement>(`[data-sent-reply="${agentReply.id}"]`) ?? null;
+    expect(reply()?.textContent).toContain("Doubled the backoff");
+    expect(reply()?.hasAttribute("data-sent-new")).toBe(true);
+    expect(card(agentReply.id)).toBeNull();
+    expect(card("annRetry")?.querySelector("[data-comment-meta-replies]")?.textContent).toBe("\u21b3 1 reply under the passage");
+    await act(async () => { reply()!.click(); });
     await settle();
-    expect(card(agentReply.id)?.querySelector('[data-review-loop-chip="new"]')).toBeNull();
+    expect(reply()?.hasAttribute("data-sent-new")).toBe(false);
 
-    // The person replies under the agent's reply: a draft, sent alone at once under the comment's thread.
-    await act(async () => { card(agentReply.id)!.querySelector<HTMLButtonElement>('button[title="Reply"]')!.click(); });
-    const field = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Reply"]')!;
+    // The person replies in the box: a draft there, "Not sent", sent alone at once by its own Send under the thread.
+    await press('[data-sent-reply-to="annRetry"]');
+    const field = document.querySelector<HTMLTextAreaElement>('[data-review-loop-boxes] textarea[aria-label="Reply"]')!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, "Cap it at 10 s instead.");
       field.dispatchEvent(new Event("input", { bubbles: true }));
@@ -283,23 +300,33 @@ describe.if(hasDom)("the review loop on an annotate screen", () => {
     await act(async () => {
       field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true }));
     });
-    await settle();
-    const draft = Array.from(document.querySelectorAll<HTMLElement>("[data-annotation-id]")).find((element) => element.textContent?.includes("Cap it at 10 s instead."));
-    const draftId = draft!.getAttribute("data-annotation-id")!;
-    await press(`[data-review-loop-action="send"][data-review-loop-id="${draftId}"]`);
+    for (let attempt = 0; attempt < 5; attempt += 1) await settle(5);
+    const draftRow = box("annRetry")?.querySelector<HTMLElement>("[data-sent-reply-draft]");
+    expect(draftRow?.textContent).toContain("Cap it at 10 s instead.");
+    const draftId = draftRow!.getAttribute("data-sent-reply")!;
+    await press(`[data-review-loop-boxes] [data-sent-send="${draftId}"]`);
     expect(posts[1]?.body).toMatchObject({ mode: "now", comments: [{ id: draftId, re: "annRetry", text: "Cap it at 10 s instead." }] });
 
-    await press('[data-review-loop-action="resolve"][data-review-loop-id="annRetry"]');
+    // Resolve at the box's head: the box folds to its "✓ Resolved" line, the list's card says Resolved.
+    await press('[data-review-loop-boxes] [data-sent-resolve="annRetry"]');
     expect(posts[2]).toEqual({ path: "/api/threads/resolve", body: { id: "annRetry", resolved: true } });
-    expect(card("annRetry")?.querySelector('[data-review-loop-chip="resolved"]')).not.toBeNull();
+    expect(box("annRetry")?.hasAttribute("data-sent-folded")).toBe(true);
+    expect(card("annRetry")?.querySelector("[data-comment-meta-resolved]")).not.toBeNull();
     expect(posts.some((post) => post.path === "/api/feedback")).toBe(false);
 
-    // Nothing left to send: the primary is today's Done, and what went is not carried again.
+    // Nothing left to send: the primary is today's Done; what went is not carried again, and the agent reads how the review ended.
     await press("[data-decision-primary]");
     for (let attempt = 0; attempt < 10 && !posts.some((post) => post.path === "/api/feedback"); attempt += 1) await settle(10);
     const done = posts.find((post) => post.path === "/api/feedback");
-    expect(done?.body).toMatchObject({ nothingToSend: true, annotations: [] });
+    expect(done?.body).toMatchObject({ feedback: "Review done: every comment thread is resolved. Nothing more is asked.", annotations: [] });
+    expect(done?.body.nothingToSend).toBeUndefined();
     expect(posts.filter((post) => post.path === "/api/threads/send")).toHaveLength(2);
+    // "Done" over the page; a press brings the page back to be read.
+    for (let attempt = 0; attempt < 10 && !document.querySelector("[data-completion-over-page]"); attempt += 1) await settle(10);
+    expect(document.querySelector("[data-completion-over-page]")?.getAttribute("data-completion-state")).toBe("done");
+    await press("[data-completion-back]");
+    expect(document.querySelector("[data-completion-state]")).toBeNull();
+    expect(box("annRetry")).not.toBeNull();
   });
 
   test("with the host gone, Send Feedback is today's decision again", async () => {
@@ -311,12 +338,17 @@ describe.if(hasDom)("the review loop on an annotate screen", () => {
     expect((posts[0]!.body.annotations as { id: string }[]).map((annotation) => annotation.id)).toEqual(["annRetry"]);
   });
 
-  test("with the loop unavailable, Send Feedback is today's decision", async () => {
+  test("with the loop unavailable, the page is today's: no box, no line, Send Feedback is today's decision and its screen", async () => {
     loopAvailable = false;
     await mountAndRestore();
+    expect(document.querySelector("[data-review-loop-boxes]")).toBeNull();
+    expect(document.querySelector("[data-comment-meta]")).toBeNull();
     await pressPrimary();
     expect(posts.map((post) => post.path)).toEqual(["/api/feedback"]);
     expect(document.querySelector("[data-review-loop-count]")).toBeNull();
     expect(document.querySelector("[data-review-loop-action]")).toBeNull();
+    for (let attempt = 0; attempt < 10 && !document.querySelector("[data-completion-state]"); attempt += 1) await settle(10);
+    expect(document.querySelector("[data-completion-state]")?.getAttribute("data-completion-state")).toBe("denied");
+    expect(document.querySelector("[data-completion-over-page]")).toBeNull();
   });
 });
