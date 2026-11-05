@@ -521,6 +521,10 @@ type DocumentHistoryAction =
 
 const itemId = (item: { id: string }): string => item.id;
 
+/** The review loop: the server kept the review reopenable in its tab after this decision (its answer's `reopenable`). */
+const reopenableAfter = async (res: Response): Promise<boolean> =>
+  ((await res.json().catch(() => null)) as { reopenable?: unknown } | null)?.reopenable === true;
+
 
 /** Hint shown following the cursor while hovering a sidebar/panel resize handle. */
 const RESIZE_HANDLE_TOOLTIP = 'Click to close · Drag to resize';
@@ -821,10 +825,12 @@ const App: React.FC = () => {
   const [isExiting, setIsExiting] = useState(false);
   // 'done': an annotate Done with nothing to send (no feedback went out).
   const [submitted, setSubmitted] = useState<'approved' | 'denied' | 'done' | 'exited' | null>(null);
-  // The review loop (crit's way): a round's "Feedback Sent" over the page, the review going on under it; a final
-  // message the person moved away from to read the page again; Done that told the agent how the review ended.
-  const [roundOverlay, setRoundOverlay] = useState<{ round: number } | null>(null);
+  // The review loop: a final message the person moved away from to read the page again; a review its server keeps
+  // reopenable after the person ended it (the message's button and a press outside it reopen it); Done that told
+  // the agent how the review ended.
   const [finalOverlayDismissed, setFinalOverlayDismissed] = useState(false);
+  const [reopenable, setReopenable] = useState(false);
+  const reopeningRef = useRef(false);
   const [doneTold, setDoneTold] = useState(false);
   // A decided review has nothing left to retry: take any send failure down.
   useEffect(() => {
@@ -4850,8 +4856,8 @@ const App: React.FC = () => {
       }
     }
     annotationHistory.clear();
-    // "Feedback Sent" over the page, as crit's: a press takes it away and the review goes on here.
-    setRoundOverlay({ round: result.send!.round });
+    // The round went and the tab stays the review: the agent's replies come here by themselves.
+    toast.success(`Round ${result.send!.round} sent`, { description: `This page updates by itself when ${agentName} replies.` });
     return true;
   };
   /** One draft (or a live thread's reply) sent alone, at once: the round stays open. */
@@ -5040,6 +5046,7 @@ const App: React.FC = () => {
         return false;
       }
       await assertSendOk(res);
+      setReopenable(await reopenableAfter(res));
       dismissDraft();
       // The completion screen must not claim feedback went out when nothing
       // did: the same predicate the servers use to make this a no-op decision.
@@ -5115,6 +5122,7 @@ const App: React.FC = () => {
         return false;
       }
       await assertSendOk(res);
+      setReopenable(await reopenableAfter(res));
       dismissDraft();
       setSubmitted('approved');
       return true;
@@ -5149,6 +5157,7 @@ const App: React.FC = () => {
         return;
       }
       if (res.ok) {
+        setReopenable(await reopenableAfter(res));
         setDoneTold(closing !== null);
         setSubmitted('exited');
       } else {
@@ -5158,6 +5167,32 @@ const App: React.FC = () => {
       setIsExiting(false);
     }
   }, [withDraftGeneration, withDraftClient, reviewLoop.available, reviewLoop.index]);
+
+  // The review loop: the person takes up the review they ended. The server decides again and tells the agent; the
+  // page is the review again. When it can no longer be (the server stopped), the page stays to read, as before.
+  const reopenReview = async () => {
+    if (reopeningRef.current) return;
+    reopeningRef.current = true;
+    try {
+      const reopened = await reviewLoop.reopen();
+      if (!reopened.ok) {
+        if (reopened.final) {
+          setReopenable(false);
+          setFinalOverlayDismissed(true);
+        }
+        toast.error('The review was not reopened', { description: reopened.error });
+        return;
+      }
+      setReopenable(false);
+      setFinalOverlayDismissed(false);
+      setDoneTold(false);
+      setIsSubmitting(false);
+      setIsExiting(false);
+      setSubmitted(null);
+    } finally {
+      reopeningRef.current = false;
+    }
+  };
 
   const handleGoalSetupSubmit = useCallback(() => {
     goalSetupSurfaceRef.current?.submit();
@@ -8732,21 +8767,12 @@ const App: React.FC = () => {
           />
         )}
 
-        {/* The review loop's round: "Feedback Sent" over the page; the review goes on under it. */}
-        {roundOverlay && !submitted && (
-          <CompletionOverlay
-            submitted="feedback"
-            title="Feedback Sent"
-            subtitle={`Round ${roundOverlay.round} sent. You can still change and add comments here: what you send next reaches ${agentName}.`}
-            agentLabel={agentName}
-            onDismiss={() => setRoundOverlay(null)}
-            reviewContinues
-          />
-        )}
-
-        {/* Completion overlay - shown after approve/deny. With the review loop it sits over the page, which a press brings back. */}
+        {/* Completion overlay - shown after approve/deny. With the review loop it sits over the page: a press reopens the
+            review its server kept reopenable, or brings the page back to read. */}
         {!finalOverlayDismissed && <CompletionOverlay
-          {...(reviewLoop.available ? { onDismiss: () => setFinalOverlayDismissed(true) } : {})}
+          {...(reopenable && submitted
+            ? { onDismiss: () => void reopenReview(), dismissLabel: 'Reopen review' }
+            : reviewLoop.available ? { onDismiss: () => setFinalOverlayDismissed(true) } : {})}
           submitted={submitted}
           title={
             archive.archiveMode ? 'Archive Closed'

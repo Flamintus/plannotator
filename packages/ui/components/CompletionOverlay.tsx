@@ -46,15 +46,15 @@ interface CompletionOverlayProps {
    * unmounts the overlay. Absent: today's full-screen message, unchanged.
    */
   onDismiss?: () => void;
-  /** With `onDismiss`: the review goes on in this tab (a round was sent), so it never closes the tab by itself. */
-  reviewContinues?: boolean;
+  /** With `onDismiss`: what its button says ("Back to the page" by default), e.g. "Reopen review" when leaving the message takes the review up again. */
+  dismissLabel?: string;
 }
 
 /** A press on the backdrop this soon after it opened is the rest of the click that opened it (crit's guard). */
 const BACKDROP_GUARD_MS = 600;
 
 /** The card over the page (with `onDismiss`): a press outside it or Escape takes it away. */
-function OverPage({ state, onDismiss, children }: { state: string; onDismiss: () => void; children: ReactNode }) {
+function OverPage({ state, onDismiss, dismissLabel = 'Back to the page', children }: { state: string; onDismiss: () => void; dismissLabel?: string; children: ReactNode }) {
   const openedAt = useRef(Date.now());
   const dismissRef = useRef(onDismiss);
   dismissRef.current = onDismiss;
@@ -91,21 +91,21 @@ function OverPage({ state, onDismiss, children }: { state: string; onDismiss: ()
           onClick={onDismiss}
           className="text-sm font-medium text-primary underline-offset-4 hover:underline"
         >
-          Back to the page
+          {dismissLabel}
         </button>
       </div>
     </div>
   );
 }
 
-export function CompletionOverlay({ submitted, title, subtitle, agentLabel, links, onDismiss, reviewContinues = false }: CompletionOverlayProps) {
-  const { state, enableAndStart } = useAutoClose(!!submitted && !(onDismiss && reviewContinues));
+export function CompletionOverlay({ submitted, title, subtitle, agentLabel, links, onDismiss, dismissLabel }: CompletionOverlayProps) {
+  const { state, enableAndStart } = useAutoClose(!!submitted);
 
   if (!submitted) return null;
 
   if (onDismiss) {
     return (
-      <OverPage state={submitted} onDismiss={onDismiss}>
+      <OverPage state={submitted} onDismiss={onDismiss} dismissLabel={dismissLabel}>
         <CompletionBody
           submitted={submitted}
           title={title}
@@ -114,7 +114,6 @@ export function CompletionOverlay({ submitted, title, subtitle, agentLabel, link
           links={links}
           state={state}
           enableAndStart={enableAndStart}
-          reviewContinues={reviewContinues}
         />
       </OverPage>
     );
@@ -146,8 +145,7 @@ function CompletionBody({
   links,
   state,
   enableAndStart,
-  reviewContinues = false,
-}: Omit<CompletionOverlayProps, 'onDismiss' | 'submitted'> & {
+}: Omit<CompletionOverlayProps, 'onDismiss' | 'submitted' | 'dismissLabel'> & {
   submitted: NonNullable<Exclude<CompletionOverlayProps['submitted'], false>>;
   state: ReturnType<typeof useAutoClose>['state'];
   enableAndStart: () => void;
@@ -189,11 +187,7 @@ function CompletionBody({
         </div>
 
         <div className="pt-4 border-t border-border space-y-2">
-          {reviewContinues ? (
-            <p className="text-sm text-muted-foreground" data-completion-continues="">
-              The review goes on in this tab: <span className="text-foreground font-medium">{agentLabel}</span> answers under each comment.
-            </p>
-          ) : state.phase === 'counting' ? (
+          {state.phase === 'counting' ? (
             <>
               <p className="text-sm text-muted-foreground">
                 This tab will close in <span className="text-foreground font-medium">{state.remaining}</span> second

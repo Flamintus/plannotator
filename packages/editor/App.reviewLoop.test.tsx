@@ -3,13 +3,15 @@
  * "persistent-comments" with a host that carries sends, as `GET /api/threads`
  * answers it). Send Feedback must end the round through `/api/threads/send`
  * with each comment by its id and leave the tab open, never posting today's
- * decision, showing "Feedback Sent" over the page (a press brings it back);
+ * decision, saying so in a toast (the page updates by itself when the agent
+ * replies);
  * a sent comment must stop counting as feedback (else the next round, or
  * Approve's notes, would send it again); the threads are boxes under their
  * passage (the agent's reply in its comment's box, New until looked at; a
  * reply written there goes under the right thread; Resolve folds the box),
- * while the panel stays a flat list with one line more per comment; and Done
- * tells the agent how the review ended. With the loop unavailable the page
+ * while the panel stays a flat list with one line more per comment; Done
+ * tells the agent how the review ended, and its message over the page reopens
+ * the review its server kept reopenable. With the loop unavailable the page
  * is today's: no box, Send Feedback posts `/api/feedback`, today's screen.
  */
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
@@ -98,6 +100,8 @@ interface Post { path: string; body: Record<string, unknown> }
 
 let posts: Post[] = [];
 let loopAvailable = true;
+/** What the server answers a Done: the review stays reopenable in its tab (its `reopenable`). */
+let doneReopenable = false;
 let view: { v: 1; round: number; threads: Record<string, unknown>[] } = { v: 1, round: 1, threads: [] };
 
 const state = () => ({ available: true, review: "file-test", round: view.round, busy: false, view });
@@ -172,7 +176,11 @@ function makeFetch(): typeof fetch {
     }
     if (url.pathname === "/api/feedback") {
       posts.push({ path: url.pathname, body: body() });
-      return Response.json({ ok: true });
+      return Response.json({ ok: true, ...(doneReopenable ? { reopenable: true } : {}) });
+    }
+    if (url.pathname === "/api/threads/reopen") {
+      posts.push({ path: url.pathname, body: body() });
+      return Response.json({ reopened: true, ...state() });
     }
     return Response.json({});
   };
@@ -190,6 +198,7 @@ async function settle(ms = 0): Promise<void> {
 }
 
 const card = (id: string) => document.querySelector<HTMLElement>(`[data-annotation-id="${id}"]`);
+const toastText = () => Array.from(document.querySelectorAll<HTMLElement>("[data-sonner-toast]")).map((toast) => toast.textContent ?? "").join(" | ");
 /** A thread's box in the text, under its passage. */
 const box = (id: string) => document.querySelector<HTMLElement>(`[data-review-loop-boxes] [data-sent-comment="${id}"]`);
 
@@ -236,6 +245,7 @@ afterEach(async () => {
   StreamEventSource.current = null;
   posts = [];
   loopAvailable = true;
+  doneReopenable = false;
   view = { v: 1, round: 1, threads: [] };
   memory.clear();
   sessionStorage.clear();
@@ -262,16 +272,11 @@ describe.if(hasDom)("the review loop on an annotate screen", () => {
       mode: "round",
       comments: [{ id: "annRetry", on: { kind: "file", path: "/tmp/release.md" }, quote: "The retry loop", text: "make it exponential" }],
     });
-    // "Feedback Sent" over the page, as crit's: the review goes on under it, and a press brings the page back.
-    const over = document.querySelector('[data-completion-over-page]');
-    expect(over?.getAttribute("data-completion-state")).toBe("feedback");
-    expect(over?.querySelector("[data-completion-continues]")).not.toBeNull();
-    // The page behind takes no decision key: Mod+Enter decides nothing while the message is over it.
-    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true })); });
-    for (let attempt = 0; attempt < 5; attempt += 1) await settle(5);
-    expect(posts).toHaveLength(1);
-    await press("[data-completion-back]");
-    expect(document.querySelector("[data-completion-over-page]")).toBeNull();
+    // No message over the page: a toast says the round went and that the page updates by itself.
+    expect(document.querySelector("[data-completion-state]")).toBeNull();
+    for (let attempt = 0; attempt < 10 && !toastText().includes("Round 1 sent"); attempt += 1) await settle(10);
+    expect(toastText()).toContain("Round 1 sent");
+    expect(toastText()).toContain("This page updates by itself when Claude Code replies.");
     // The tab stays: the comment is still in the panel, sent, one line more; the header counts the round.
     expect(card("annRetry")?.querySelector('[data-comment-meta-status="delivered"]')?.textContent).toBe("Delivered");
     expect(card("annRetry")?.querySelector('[data-comment-meta-round]')?.textContent).toBe("Round 1");
@@ -336,6 +341,29 @@ describe.if(hasDom)("the review loop on an annotate screen", () => {
     expect(box("annRetry")).not.toBeNull();
     // The review is closed: the page is there to be read, its boxes and list take no write.
     expect(document.querySelector("[data-review-loop-boxes] [data-sent-resolve], [data-review-loop-boxes] [data-sent-reply-to], [data-comment-meta-resolve], [data-comment-meta-send]")).toBeNull();
+  });
+
+  test("Done that the server keeps reopenable: its message's Reopen review takes the review up again in the tab", async () => {
+    doneReopenable = true;
+    await mountAndRestore();
+    await pressPrimary();
+    expect(posts.map((post) => post.path)).toEqual(["/api/threads/send"]);
+    // Nothing left to send: Done ends the review, and the server says the tab may reopen it.
+    await press("[data-decision-primary]");
+    for (let attempt = 0; attempt < 10 && !document.querySelector("[data-completion-over-page]"); attempt += 1) await settle(10);
+    const over = document.querySelector<HTMLElement>("[data-completion-over-page]");
+    expect(over?.getAttribute("data-completion-state")).toBe("done");
+    expect(over?.querySelector("[data-completion-back]")?.textContent).toBe("Reopen review");
+    expect(document.querySelector("[data-review-loop-boxes] [data-sent-resolve]")).toBeNull();
+    await press("[data-completion-back]");
+    for (let attempt = 0; attempt < 10 && document.querySelector("[data-completion-state]"); attempt += 1) await settle(10);
+    expect(posts.map((post) => post.path)).toEqual(["/api/threads/send", "/api/feedback", "/api/threads/reopen"]);
+    // The review again: no message, the box takes writes, and the next Done is a decision again.
+    expect(document.querySelector("[data-completion-state]")).toBeNull();
+    expect(document.querySelector('[data-review-loop-boxes] [data-sent-resolve="annRetry"]')).not.toBeNull();
+    await press("[data-decision-primary]");
+    for (let attempt = 0; attempt < 10 && posts.filter((post) => post.path === "/api/feedback").length < 2; attempt += 1) await settle(10);
+    expect(posts.filter((post) => post.path === "/api/feedback")).toHaveLength(2);
   });
 
   test("with the host gone, Send Feedback is today's decision again", async () => {

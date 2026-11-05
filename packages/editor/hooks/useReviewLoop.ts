@@ -3,7 +3,8 @@
  * `/plannotator-annotate`, plan review; #1116, experimental
  * "persistent-comments"): its state, read once from `GET /api/threads` and
  * then from the `review-threads` event (`receive`), and the page's writes
- * (`POST /api/threads/send`, `POST /api/threads/resolve`).
+ * (`POST /api/threads/send`, `POST /api/threads/resolve`), and the reopen of
+ * a review the person ended (`POST /api/threads/reopen`).
  *
  * Unavailable (the setting off, no host that carries sends, a target the
  * journal does not name), `state` stays null and the page is today's: one
@@ -20,6 +21,7 @@ import { EMPTY_REVIEW_LOOP_INDEX, indexReviewLoop, readReviewLoopState, type Rev
 export const REVIEW_THREADS_URL = '/api/threads';
 export const REVIEW_THREADS_SEND_URL = '/api/threads/send';
 export const REVIEW_THREADS_RESOLVE_URL = '/api/threads/resolve';
+export const REVIEW_THREADS_REOPEN_URL = '/api/threads/reopen';
 
 /** What a send did: its id and round when it went, or why it did not. */
 export interface ReviewLoopSendResult {
@@ -100,6 +102,12 @@ export interface ReviewLoop {
   retry: (sendId: string) => Promise<ReviewLoopSendResult | null>;
   canRetry: (sendId: string) => boolean;
   resolve: (id: string, resolved: boolean) => Promise<{ ok: boolean; error?: string }>;
+  /**
+   * Takes up the review the person ended here (its decision was reopenable):
+   * the server decides again and tells the agent. `final`: it can no longer be
+   * (the server stopped, or no longer keeps it), as against a host away for now.
+   */
+  reopen: () => Promise<{ ok: boolean; error?: string; final?: boolean }>;
   /** The agent's replies the person has not looked at. */
   isNew: (replyId: string) => boolean;
   markSeen: (replyIds: readonly string[]) => void;
@@ -228,6 +236,21 @@ export function useReviewLoop(options: { enabled: boolean }): ReviewLoop {
     return { ok: true };
   }, [receive]);
 
+  const reopen = useCallback(async (): Promise<{ ok: boolean; error?: string; final?: boolean }> => {
+    let response: Response;
+    try {
+      response = await fetch(REVIEW_THREADS_REOPEN_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    } catch {
+      return { ok: false, error: 'Its server has stopped: the page stays to read.', final: true };
+    }
+    if (!response.ok) {
+      const away = response.status === 409 && (await response.clone().json().catch(() => null) as { code?: unknown } | null)?.code === 'review_loop_unavailable';
+      return { ok: false, error: await errorOf(response), ...(away ? {} : { final: true }) };
+    }
+    receive(await response.json().catch(() => null));
+    return { ok: true };
+  }, [receive]);
+
   const isNew = useCallback((replyId: string) => !seen.has(replyId), [seen]);
   const markSeen = useCallback((replyIds: readonly string[]) => {
     const fresh = replyIds.filter((id) => !seen.has(id));
@@ -248,6 +271,7 @@ export function useReviewLoop(options: { enabled: boolean }): ReviewLoop {
     retry,
     canRetry,
     resolve,
+    reopen,
     isNew,
     markSeen,
     offsets,

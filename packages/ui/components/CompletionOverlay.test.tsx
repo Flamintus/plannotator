@@ -2,9 +2,9 @@
  * The message after a decision (`CompletionOverlay`). Without `onDismiss` it
  * is today's full-screen message. With it (the review loop, as crit's review
  * dialog), the message is a card over the page: a press outside it (not the
- * rest of the click that opened it), Escape, or "Back to the page" takes it
- * away; and while the review goes on in the tab (`reviewContinues`) it says
- * so and never starts closing the tab.
+ * rest of the click that opened it), Escape, or its button ("Back to the
+ * page", or `dismissLabel`: "Reopen review" where leaving it reopens the
+ * review) calls it.
  *
  * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
@@ -63,23 +63,7 @@ test.skipIf(!hasDom)('over the page: the rest of the opening click is ignored, a
   expect(dismissed).toBe(3);
 });
 
-test.skipIf(!hasDom)('while the review goes on in the tab, the card says so and the tab never closes, even set to close at once', async () => {
-  // "Close at once": a final message closes the tab as it opens; a round's must not.
-  memory.set('plannotator-auto-close', '0');
-  const closes: number[] = [];
-  const close = window.close;
-  window.close = () => void closes.push(1);
-  try {
-    const host = await draw(<overlay.CompletionOverlay submitted="feedback" title="Feedback Sent" subtitle="Round 1 sent." agentLabel="Claude Code" onDismiss={() => {}} reviewContinues />);
-    expect(host.querySelector('[data-completion-continues]')?.textContent).toContain('Claude Code answers under each comment');
-    await wait(50);
-    expect(closes).toEqual([]);
-    await act(async () => root!.unmount());
-    root = null;
-    await draw(<overlay.CompletionOverlay submitted="approved" title="Approved" subtitle="" agentLabel="Claude Code" onDismiss={() => {}} />);
-    await wait(50);
-    expect(closes).toEqual([1]);
-  } finally {
-    window.close = close;
-  }
+test.skipIf(!hasDom)('its button says what leaving the message does', async () => {
+  const host = await draw(<overlay.CompletionOverlay submitted="done" title="Done" subtitle="Claude Code was told the review is done." agentLabel="Claude Code" onDismiss={() => {}} dismissLabel="Reopen review" />);
+  expect(host.querySelector('[data-completion-back]')?.textContent).toBe('Reopen review');
 });
