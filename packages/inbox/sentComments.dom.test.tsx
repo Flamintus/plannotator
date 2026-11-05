@@ -528,6 +528,9 @@ test.skipIf(!hasDom)('with comment sends, a reply under a live thread goes on it
   expect(posted.some((p) => p.path.endsWith('/reply'))).toBe(false);
   await until(() => el.querySelector('[data-comment-rounds]')?.textContent === 'Round 2 · 1 open', 'round 2 under way');
   expect(el.querySelector('[data-finish-round]')).toBeNull();
+  // As on the screens: a toast says the round went and that the thread updates by itself.
+  await until(() => document.querySelector('[data-inbox-toast]')?.textContent?.includes('Round 1 sent') === true, 'the toast');
+  expect(document.querySelector('[data-inbox-toast]')!.textContent).toContain('This thread updates by itself when');
 }, 30_000);
 
 test.skipIf(!hasDom)("with comment sends, a draft comment on a file has Send on its card's foot: it goes alone, and the card says what became of it", async () => {

@@ -4336,9 +4336,13 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
     setSending(true);
     setError(null);
     try {
-      await inboxApi.sendComments(threadRef.current.thread_id, { mode: 'round', idempotency_key: (finishKey.current ??= newUuid()) });
+      const done = await inboxApi.sendComments(threadRef.current.thread_id, { mode: 'round', idempotency_key: (finishKey.current ??= newUuid()) });
       finishKey.current = null;
-      announce('Round finished.');
+      // As on the screens: the round went, and the agent's replies come here by themselves.
+      const round = done.sends[0]?.round;
+      const sent = { lead: round ? `Round ${round} sent` : 'Feedback sent', detail: `This thread updates by itself when ${replyTo} replies` };
+      if (onToast) onToast({ icon: 'check', ...sent });
+      else announce(`${sent.lead}. ${sent.detail}.`);
       await reloadFiles();
     } catch (cause) {
       setError(cause instanceof InboxApiError ? cause.message : 'The round did not finish. Press Send Feedback again.');
