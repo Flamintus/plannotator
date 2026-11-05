@@ -78,7 +78,7 @@ export interface SentCommentsParts<R extends SentThreadRecord = InboxAnnotationR
   replies: Map<string, SentReplyRow[]>;
   /** The sub-threads on each message (a comment, a reply or a sub-thread), by its id, as records: the sent ones, then the drafts. */
   subThreads: Map<string, R[]>;
-  /** The passages to mark in each message's words: its sub-threads still open (a draft too); a resolved one is not marked. */
+  /** The passages to mark in each message's words: all its sub-threads', open, resolved or draft, as the document keeps every comment's highlight. */
   passages: Map<string, TextPassage[]>;
   /** Each sent reply's round, by id: the person's, its send's; an agent's, the round under way when it wrote. */
   replyRounds: Map<string, number>;
@@ -100,8 +100,9 @@ export function sentCommentsParts<R extends SentThreadRecord, A>(view: ReviewThr
   const subThreadsOn = (host: string, subs: readonly ReviewThreadNode<A>[]) => {
     const list = subs.flatMap((sub) => byId.get(sub.id) ?? []);
     if (list.length > 0) parts.subThreads.set(host, list);
-    const open = subs.filter((sub) => sub.state !== 'resolved').map((sub) => ({ quote: sub.quote, offset: sub.parent?.quote_offset ?? 0 }));
-    if (open.length > 0) parts.passages.set(host, open);
+    // Every sub-thread's passage stays marked, resolved or not, as a comment's highlight stays in the document.
+    const marked = subs.map((sub) => ({ quote: sub.quote, offset: sub.parent?.quote_offset ?? 0 }));
+    if (marked.length > 0) parts.passages.set(host, marked);
     for (const sub of subs) walk(sub);
   };
   const walk = (node: ReviewThreadNode<A>) => {

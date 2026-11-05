@@ -52,7 +52,7 @@ export type ReplyInput = { text: string; mentions?: readonly string[] };
 export type SubThreadSave = (parentId: string, passage: TextPassage, comment: ReplyInput) => Promise<boolean>;
 
 /**
- * A message's words, with its open sub-threads' passages marked; `bodyOf`: words a passage can be selected in.
+ * A message's words, with its sub-threads' passages marked; `bodyOf`: words a passage can be selected in.
  * `from` and `to`: the piece of them drawn here, when the message is drawn in pieces (`piece`), its sub-threads' boxes
  * between its blocks (`placeOnMessage`).
  */
