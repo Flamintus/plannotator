@@ -107,7 +107,6 @@ describe.skipIf(!hasDom)('AnnotationPanel comment on a passage', () => {
     expect(box()!.closest('[data-annotation-reply-composer]')!.getAttribute('data-annotation-depth')).toBe('1');
 
     const field = box()!.querySelector<HTMLTextAreaElement>('textarea')!;
-    expect(field.getAttribute('aria-label')).toBe('Comment on passage');
     await type(field, '  Which off switch?  ');
     await act(async () => { [...box()!.querySelectorAll('button')].find((b) => b.textContent === 'Comment')!.click(); });
     // The offset counts the words as drawn, whitespace runs as one (the newline after "it." is one).

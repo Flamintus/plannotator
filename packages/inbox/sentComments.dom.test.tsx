@@ -32,6 +32,7 @@ import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { InboxAnnotationRecord, InboxAttachmentState } from '@plannotator/core/inbox-types';
+import { configStore } from '@plannotator/ui/config';
 
 const hasDom = typeof document !== 'undefined';
 const { InboxApp } = (hasDom ? await import('./App') : {}) as typeof import('./App');
@@ -243,7 +244,7 @@ test.skipIf(!hasDom)("a sent comment on a file stays in its panel with its round
   const card = () => document.querySelector(`[data-annotation-id="sent-file-1"]`);
   await until(() => card() !== null, "the sent comment's card");
   expect(card()!.querySelector('[data-sent-round="1"]')).not.toBeNull();
-  // No edit or delete: Reply and Resolve are its only buttons.
+  // No edit or delete: Reply and Resolve are its only buttons (the action labels are pinned on purpose).
   expect([...card()!.querySelectorAll('button')].map((button) => button.getAttribute('aria-label') ?? button.textContent)).toEqual(['Reply', 'Resolve']);
   await until(() => card()!.querySelector('[data-annotation-unanchored]') !== null, 'the Unanchored chip');
   await until(() => posted.some((p) => p.path.includes('/annotations/sent-file-1/unanchored') && p.body.unanchored === true), 'the unanchored mark sent');
@@ -275,6 +276,7 @@ test.skipIf(!hasDom)('resolved from its box, a sent comment leaves its words and
   await until(() => row()?.hasAttribute('data-sent-folded') === true && highlight() === null, 'the resolved comment folded, its highlight gone');
   // Folded in place, under its paragraph: one line, its words and buttons out of view.
   expect(row()!.closest('[data-viewer-below-block]')).not.toBeNull();
+  // The folded line's state word, Resolved, is pinned on purpose (the line holds no Resolved chip to look for).
   expect(row()!.textContent).toContain('Resolved');
   expect(row()!.textContent).not.toContain('Why a minute?');
   expect(row()!.querySelector('[data-sent-resolve]')).toBeNull();
@@ -354,6 +356,31 @@ test.skipIf(!hasDom)("under the message, the agent's reply sits under its commen
   expect(thread()!.querySelector('textarea')).toBeNull();
   const model = JSON.parse((await loopback(`/api/inbox/threads/${sent}/attachments`)).text) as { annotations: InboxAnnotationRecord[] };
   expect(model.annotations.map((r) => [r.re, r.annotation.text, r.sent_reply_id])).toEqual([['rep-msg-1', 'Page me too.', null]]);
+
+  // The box saves on the comment composers' key: a plain Enter while "Enter saves a comment" is on, and ⌘/Ctrl+Enter
+  // always. It takes the key (prevented): the thread's Send skips a prevented key, so ⌘/Ctrl+Enter here never sends
+  // the drafts waiting under the comment.
+  const replyByKey = async (words: string, init: KeyboardEventInit) => {
+    act(() => el.querySelector<HTMLButtonElement>('[data-sent-comment="rep-msg-1"] [data-sent-reply-to]')!.click());
+    const box = el.querySelector<HTMLTextAreaElement>('[data-sent-replies="rep-msg-1"] textarea')!;
+    await type(box, words);
+    const key = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init });
+    await act(async () => {
+      box.dispatchEvent(key);
+    });
+    return key;
+  };
+  configStore.set('enterSavesComment', true);
+  try {
+    const enter = await replyByKey('And the lead.', {});
+    await until(() => thread()?.querySelectorAll('[data-sent-reply-draft]').length === 2, 'the second draft, saved by Enter');
+    expect(enter.defaultPrevented).toBe(true);
+  } finally {
+    configStore.set('enterSavesComment', false);
+  }
+  const chord = await replyByKey('And the backup.', { metaKey: true });
+  await until(() => thread()?.querySelectorAll('[data-sent-reply-draft]').length === 3, 'the third draft, saved by ⌘Enter');
+  expect(chord.defaultPrevented).toBe(true);
 }, 30_000);
 
 test.skipIf(!hasDom)("on a file, the agent's reply is a card under its comment's, never painted, and the person replies from the sent card", async () => {
@@ -487,7 +514,7 @@ test.skipIf(!hasDom)('a resolved comment stays unfolded, marked Resolved, while 
   act(() => sub()!.querySelector<HTMLButtonElement>('[data-sent-resolve="sub-res-s"]')!.click());
   await until(() => row()?.hasAttribute('data-sent-folded') === true, 'both folded');
   expect(sub()).toBeNull();
-  expect(row()!.textContent).toContain('1 sub-thread');
+  expect(row()!.querySelector('[data-sent-subthreads]')!.getAttribute('data-sent-subthreads')).toBe('1');
   expect(typeof (await storedRecord(sent, 'sub-res-s'))?.resolved_at).toBe('string');
 
   // Opened to be read, the sub-thread is folded too; the comment keeps its Reply: a reply under it opens it again.
