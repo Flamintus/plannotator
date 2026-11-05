@@ -72,6 +72,7 @@ import { isWSL } from "./browser";
 import { agentToolHostForServer, createAIRuntime } from "./ai-runtime";
 import { handleHostControl, resolveHostControlToken, type HostControl } from "./host-control";
 import { createServerReviewLoop, handleReviewLoopRequest, type ReviewLoopLaunch } from "./review-loop";
+import { readReviewEnd } from "@plannotator/shared/review-loop";
 import { countUnsentDraftComments } from "@plannotator/shared/host-control";
 import { isAIEndpointPath, isLongLivedAIEndpointPath, type AIEndpoints, type SessionBridge } from "@plannotator/ai";
 import { isArchiveDocumentMutation } from "@plannotator/shared/archive-mode";
@@ -203,6 +204,8 @@ export interface ServerResult {
      *  (`answersOnly: true` on /api/deny). Consumers pick the
      *  `plan.answered` prompt through `composePlanDeniedMessage`. */
     answersOnly?: boolean;
+    /** The review loop ran: how it ended (`readReviewEnd`), a line of its own for the agent. */
+    reviewEnd?: string;
   }>;
   /** Wait for user to close (archive mode only) */
   waitForDone?: () => Promise<void>;
@@ -354,12 +357,15 @@ export async function startPlannotatorServer(
     agentSwitch?: string;
     permissionMode?: string;
     answersOnly?: boolean;
+    /** The review loop ran: how it ended, a line of its own for the agent. */
+    reviewEnd?: string;
   }) => void;
   let decisionPromise: Promise<{
     approved: boolean;
     feedback?: string;
     savedPath?: string;
     agentSwitch?: string;
+    reviewEnd?: string;
     permissionMode?: string;
     answersOnly?: boolean;
   }>;
@@ -921,7 +927,8 @@ export async function startPlannotatorServer(
             // Use permission mode from client request if provided, otherwise fall back to hook input
             const effectivePermissionMode = requestedPermissionMode || permissionMode;
             decisionSettled = true;
-            resolveDecision({ approved: true, feedback, savedPath, agentSwitch, permissionMode: effectivePermissionMode });
+            const reviewEnd = readReviewEnd(rawApproveBody);
+            resolveDecision({ approved: true, feedback, savedPath, agentSwitch, permissionMode: effectivePermissionMode, ...(reviewEnd ? { reviewEnd } : {}) });
             // Approving ends the review loop's review: its journal goes.
             void reviewLoop.approved();
             return Response.json({ ok: true, savedPath });

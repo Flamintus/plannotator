@@ -6310,8 +6310,7 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
               )}
               {/* 👍 Looks good beside Reply: sent to the agent after the Undo window; hidden while a question waits.
                   Before the checklist: the actions first, the status after. */}
-              {/* Hidden while draft comments wait, as on a Send's foot: the Draft note keeps its place at the right. */}
-              {ackOffered && !waiting && !draftKept && sentComments.sendable.length === 0 && (
+              {ackOffered && !waiting && !draftKept && (
                 <Tip
                   content={
                     ackOn

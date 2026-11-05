@@ -1505,6 +1505,29 @@ describe("annotate server: approval notes", () => {
   });
 });
 
+// The review loop: a decision says how the review ended (`reviewEnd`), Done's and Close's included, so the CLI's
+// result gives the agent that line; one too long or not a string is dropped; today's bodies carry none.
+describe("annotate server: the review loop's end of review", () => {
+  test("Done and Close carry reviewEnd into the decision; a bad one is dropped", async () => {
+    const done = await startAnnotateServer({ markdown: "# Test", filePath: join(tmpdir(), "review-end-done.md"), htmlContent: MINIMAL_HTML });
+    const closed = await startAnnotateServer({ markdown: "# Test", filePath: join(tmpdir(), "review-end-close.md"), htmlContent: MINIMAL_HTML });
+    const bad = await startAnnotateServer({ markdown: "# Test", filePath: join(tmpdir(), "review-end-bad.md"), htmlContent: MINIMAL_HTML });
+    try {
+      const line = "Review ended (Done): every comment thread is resolved. Nothing more is asked.";
+      await fetch(`${done.url}/api/feedback`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ feedback: "x", annotations: [], nothingToSend: true, reviewEnd: line }) });
+      expect(await done.waitForDecision()).toMatchObject({ nothingToSend: true, reviewEnd: line });
+      await fetch(`${closed.url}/api/exit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewEnd: "Review closed; 1 comment thread stays open: c1. Nothing more is asked." }) });
+      expect(await closed.waitForDecision()).toMatchObject({ exit: true, reviewEnd: "Review closed; 1 comment thread stays open: c1. Nothing more is asked." });
+      await fetch(`${bad.url}/api/exit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewEnd: "x".repeat(3000) }) });
+      expect((await bad.waitForDecision()).reviewEnd).toBeUndefined();
+    } finally {
+      done.stop();
+      closed.stop();
+      bad.stop();
+    }
+  });
+});
+
 describe("annotate server: client lease", () => {
   let savedPort: string | undefined;
   let savedRemote: string | undefined;

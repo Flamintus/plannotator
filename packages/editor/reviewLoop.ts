@@ -100,13 +100,14 @@ export function reviewLoopOpenThreads(index: ReviewLoopIndex): string[] {
  * comment thread resolved, or the ids still open. Null when nothing was ever
  * sent in the loop (today's decision says it all).
  */
-export function reviewLoopEndState(index: ReviewLoopIndex, ending: 'approved' | 'done'): string | null {
+export function reviewLoopEndState(index: ReviewLoopIndex, ending: 'approved' | 'done' | 'closed'): string | null {
   if (index.count === null) return null;
   const open = reviewLoopOpenThreads(index);
   const threads = open.length === 0 ? 'every comment thread is resolved' : `${open.length === 1 ? '1 comment thread stays' : `${open.length} comment threads stay`} open: ${open.join(', ')}`;
-  if (ending === 'approved') return open.length === 0 ? `Review approved: ${threads}.` : `Review approved; ${threads}.`;
-  // Done reads as feedback to the agent's host: say plainly there is nothing to do.
-  return `The person ended the review (Done): ${threads}. This is not a request: there is nothing to change or answer.`;
+  const lead = ending === 'approved' ? 'Review approved' : ending === 'done' ? 'Review ended (Done)' : 'Review closed';
+  // The host gives it as a line of its own (`reviewEnd`), outside any feedback prompt.
+  const rest = ending === 'approved' ? '' : ' Nothing more is asked.';
+  return `${lead}${open.length === 0 ? ':' : ';'} ${threads}.${rest}`;
 }
 
 /** An annotation not yet sent: the page's own, minus what the loop says went. The same list when nothing went (the loop off). */
