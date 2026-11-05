@@ -18,6 +18,7 @@ import {
   INBOX_BRIDGE_POLL_PATH,
   INBOX_COMMENTS_POLL_FIELD,
   INBOX_WAKE_INSTRUCTION,
+  inboxCommentsOnlyWakeLine,
   inboxCommentsWakeLine,
   inboxWakeText,
   parseInboxBridgeCommands,
@@ -147,9 +148,10 @@ test("a send now reaches its session on the wake: a reply under the send's id, w
   expect(command!.body).toContain("(id c-1)");
   expect(command!.body).toContain("One store first.");
   expect(command!.body).toContain(`on message ${sent.message_id}`);
-  // Comments alone: the comments line is the wake's instruction, never "their answer to you".
+  // Comments alone: a round is not a message; the wake is one line naming the send, the comments stay out, never "their answer to you".
   const wake = inboxWakeText(command!);
-  expect(wake).toContain(inboxCommentsWakeLine(command!.comments!));
+  expect(wake).toContain(inboxCommentsOnlyWakeLine(command!.comments!, send!.id));
+  expect(wake).not.toContain("One store first.");
   expect(wake).not.toContain(INBOX_WAKE_INSTRUCTION);
   // No message was written for it.
   expect(server.store.thread(sent.thread_id)!.messages).toHaveLength(1);
@@ -245,6 +247,13 @@ test("read_thread and reply_to take a send's id: the agent reads its thread and 
 
   const read = await call(alpha, "read_thread", { message_id: send!.id, agent_session: A.agent_session });
   expect(read.structured.comment_sends.map((s: { id: string }) => s.id)).toEqual([send!.id]);
+  // What the send carries comes first, as the wake used to carry it: the entry under its id, with its words.
+  const [first] = read.text.split("\n\nThread ");
+  expect(first).toContain("(id c-1)");
+  expect(first).toContain("One store first.");
+  // A read by the thread's id carries no send's text first.
+  const byThread = await call(alpha, "read_thread", { thread_id: sent.thread_id, agent_session: A.agent_session });
+  expect(byThread.text.startsWith("Thread ")).toBe(true);
   const answer = await call(alpha, "send_message", { reply_to: send!.id, body: "Lyon goes first.", comment_replies: [{ comment_id: "c-1", text: "Lyon goes first, a week alone." }], ...A });
   expect(answer.structured.thread_id).toBe(sent.thread_id);
   expect(server.store.commentReplies(sent.thread_id).map((reply) => reply.re)).toEqual(["c-1"]);
@@ -327,7 +336,9 @@ test("a send to a Codex thread goes in through codex queue, once, and its id set
   expect(queued).toHaveLength(1);
   const message = queued[0]!.args.find((a) => a.startsWith("--message="))!.slice("--message=".length);
   expect(message.split("\n")[0]).toContain(`(${send!.id})`);
-  expect(message).toContain("(id c-1)");
+  // One line, no comment in it: Codex reads them with read_thread by the send's id.
+  expect(message).toContain(`read_thread (message_id ${send!.id})`);
+  expect(message).not.toContain("(id c-1)");
   // The thread's next turn calls a tool (one that reads nothing): that is the delivery.
   await call(client, "search", { query: "stores", project_path: project }, { ...meta, "x-codex-turn-metadata": { ...meta["x-codex-turn-metadata"], turn_started_at_unix_ms: Date.now() + 5 } });
   for (let waited = 0; waited < 2000 && !sendOf(server, send!.id).delivery; waited += 25) await Bun.sleep(25);

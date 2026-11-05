@@ -237,10 +237,12 @@ function hostOf($: Engine, debugPath: string | null): Host {
     toast: (text) => $.ui.toast(text),
     messages: async () => {
       const messages = await $.session.messages()
-      return (Array.isArray(messages) ? messages : []).map((message: { role: 'user' | 'assistant'; text: string }) => ({
-        role: message.role,
-        text: typeof message.text === 'string' ? message.text : '',
-      }))
+      return (Array.isArray(messages) ? messages : []).map((message: { role: 'user' | 'assistant'; text: string; toolResults?: unknown[] }) => {
+        const text = typeof message.text === 'string' ? message.text : ''
+        // A user row of tool results alone is no prompt: a round's turn goes on through it (recentAssistantTexts).
+        const toolResult = message.role === 'user' && Array.isArray(message.toolResults) && message.toolResults.length > 0 && !text.trim()
+        return { role: message.role, text, ...(toolResult ? { toolResult } : {}) }
+      })
     },
     fetch: (url, init) => $.http.fetch(url, init),
     abortTurn: (turnId) => $.turn.abort({ turnId }),

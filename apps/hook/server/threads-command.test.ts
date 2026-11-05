@@ -36,14 +36,23 @@ const call = async (action: string, args: Record<string, unknown>) => {
 };
 
 describe("a client's side through the CLI", () => {
-  test("comments, a Finish whose text tells the agent how to reply and read, the delivery, a resolution, the close", async () => {
+  test("comments, a Finish whose one line tells the agent how to read and reply, the delivery, a resolution, the close", async () => {
     await call("comment", { id: "c1", on: { kind: "message", message_id: "m1" }, quote: "Lyon store", text: "Two stores." });
     await call("comment", { id: "c2", on: { kind: "message", message_id: "m1" }, text: "Shorter intro." });
     const sent = await call("send", { mode: "round" });
     expect(sent.review).toBe(key());
     expect(sent.send.comments).toEqual(["c1", "c2"]);
-    expect(sent.text).toContain("(id c1)");
-    expect(sent.text).toContain(`plannotator reply --review ${key()} <id> <<'END'`);
+    // A round is not a message: one line, headed as a host heads a send, the comments read with threads.
+    expect(sent.text.split("\n")).toHaveLength(1);
+    expect(sent.text).toStartWith(`Plannotator: your last messages (${key()}) — Round 1 done · 2 comments. `);
+    expect(sent.text).toContain(`\`plannotator threads --review ${key()}\``);
+    expect(sent.text).toContain(`\`plannotator reply --review ${key()} <id>\``);
+    expect(sent.text).not.toContain("Two stores.");
+    // The agent's read: the round it has not answered first (each comment by id, how to reply), then every thread.
+    const read = (await threads(["--review", key()])).out;
+    expect(read).toContain("(id c1)\n> Two stores.");
+    expect(read).toContain(`plannotator reply --review ${key()} <id> <<'END'`);
+    expect(read.indexOf("(id c1)")).toBeLessThan(read.indexOf("- c1 (open"));
     expect((await call("delivered", { sends: [sent.send.id] })).sends[0].delivery).toBeTruthy();
     const view = await call("view", {});
     expect([view.review, view.view.v, view.view.round, view.view.threads.map((t: { status: string }) => t.status)]).toEqual([key(), 1, 2, ["delivered", "delivered"]]);

@@ -40,9 +40,12 @@ import {
   reviewReplyId,
   reviewRoundNow,
   reviewSendId,
+  reviewAnchorPlace,
   reviewSendText,
+  reviewSendWakeText,
   reviewText,
   reviewThreadView,
+  reviewThreadViewText,
   reviewThreads,
   type ReviewAgent,
   type ReviewAgentReply,
@@ -518,7 +521,13 @@ export interface ReviewCommentInput {
   quote_offset?: number;
   /** The client's own drawing data, kept as it is. */
   annotation?: Record<string, unknown>;
+  /** Lines under its heading in what the agent reads of its round (an attached image's path, an element). */
+  notes?: string[];
 }
+
+/** The most lines a comment's `notes` hold, and the longest one. */
+const NOTES_MAX = 20;
+const NOTE_MAX = 2_000;
 
 /** The person's sent comment, reply or sub-thread a reply or a sub-thread can be under, by id, with the thread it belongs to. */
 function sentMessage(state: ReviewJournalState, id: string): { thread: ReviewComment; words: string } | null {
@@ -565,6 +574,9 @@ export function writeReviewComment(options: ReviewJournalOptions, ref: ReviewJou
     }
     if (input.type !== undefined && input.type !== "comment" && input.type !== "deletion") throw new ReviewJournalError("invalid", 'type: "comment" or "deletion".');
     if (input.annotation !== undefined && (!input.annotation || typeof input.annotation !== "object" || Array.isArray(input.annotation))) throw new ReviewJournalError("invalid", "annotation: an object.");
+    const notes = input.notes === undefined ? [] : input.notes;
+    if (!Array.isArray(notes) || notes.length > NOTES_MAX || notes.some((line) => typeof line !== "string" || line.length > NOTE_MAX)) throw new ReviewJournalError("invalid", `notes: at most ${NOTES_MAX} lines of ${NOTE_MAX} characters.`);
+    const kept = notes.map((line) => line.trim()).filter(Boolean);
     const known = review.comments.find((comment) => comment.id === id);
     if (known && known.sent_reply_id !== null) throw new ReviewJournalError("conflict", `${id} was sent: it is not edited.`);
     if (known && known.removed_at !== null) throw new ReviewJournalError("conflict", `${id} was removed.`);
@@ -584,6 +596,7 @@ export function writeReviewComment(options: ReviewJournalOptions, ref: ReviewJou
       removed_at: null,
       sent_reply_id: null,
       ...(input.annotation && typeof input.annotation === "object" ? { annotation: input.annotation } : {}),
+      ...(kept.length > 0 ? { notes: kept } : {}),
     };
     if (input.re !== undefined) {
       const thread = threadOf(review, input.re);
@@ -842,17 +855,67 @@ export function reviewJournalView(
   return reviewThreadView(REVIEW_COMMENT_READING, { records, agentReplies: review.replies, sends: review.sends, ...view });
 }
 
-/** What the agent reads of these sends (oldest first), the person's words first, then how to answer (`how`). */
-export function reviewJournalSendText(state: ReviewJournalState, sendIds: readonly string[], options: { root: string; how: ReviewReplyHow; detail?: (record: ReviewComment) => ReviewEntryDetail }): string {
+/** What the agent reads of these sends (oldest first), the person's words first, then how to answer (`how`); each comment with the lines its client wrote under it (`notes`). */
+export function reviewJournalSendText(state: ReviewJournalState, sendIds: readonly string[], options: { root: string; how: ReviewReplyHow }): string {
   const sends = state.sends.filter((send) => sendIds.includes(send.id)).sort((a, b) => a.created_at.localeCompare(b.created_at));
   const words = sends.flatMap((send) => (send.words ? [send.words] : [])).join("\n\n");
-  return reviewSendText(REVIEW_COMMENT_READING, { sends, records: state.comments, agentReplies: state.replies, root: options.root, words, detail: options.detail, how: options.how });
+  const detail = (record: ReviewComment): ReviewEntryDetail => (record.notes?.length ? { notes: record.notes } : {});
+  return reviewSendText(REVIEW_COMMENT_READING, { sends, records: state.comments, agentReplies: state.replies, root: options.root, words, detail, how: options.how });
+}
+
+/**
+ * The sends the agent has not answered yet, oldest first: one that carried a
+ * comment, reply or sub-thread with no reply of the agent's in its thread
+ * since the send; one that carried none (only the round's words, or the
+ * threads still open named) while the agent has written no reply since.
+ */
+export function reviewJournalPendingSends(state: ReviewJournalState): ReviewSend[] {
+  const answeredSince = (thread: string | null, at: string) => state.replies.some((reply) => (thread === null || reply.re === thread) && reply.created_at > at);
+  return state.sends
+    .filter((send) => {
+      const carried = state.comments.filter((record) => record.sent_reply_id === send.id && record.removed_at === null);
+      if (carried.length === 0) return !answeredSince(null, send.created_at);
+      return carried.some((record) => !answeredSince(threadOf(state, record.id)?.id ?? record.id, send.created_at));
+    })
+    .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+}
+
+/** What a review is on, in words: a file's path, an agent session's last messages, a plan. */
+export function reviewTargetLine(target: ReviewTarget | null): string {
+  if (!target) return "(target unknown)";
+  if (target.kind === "last") return `the last messages of ${target.host} session ${target.session}`;
+  if (target.kind === "file") return target.path;
+  return `plan ${target.slug} (${target.project})`;
+}
+
+/**
+ * What an agent reads of a review (`plannotator threads --review`, the tool's
+ * `threads`): the sends it has not answered yet, as `reviewJournalSendText`
+ * composes them (the round's words, each comment with its notes, the threads
+ * still open, how to answer), then every thread that was sent. A send's wake
+ * is one line that points here (`reviewJournalWakeText`). With nothing
+ * waiting, the threads alone, as before.
+ */
+export function reviewJournalAgentRead(state: ReviewJournalState | null, options: { root: string; how: ReviewReplyHow; agentName?: (author: ReviewAgent) => string }): string {
+  const view = reviewThreadViewText(reviewJournalView(state, { sent: true, ...(options.agentName ? { agentName: options.agentName } : {}) }), reviewAnchorPlace, options.root);
+  const pending = state ? reviewJournalPendingSends(state) : [];
+  if (!state || pending.length === 0) return view;
+  const how = { ...options.how, read: "Their words and your replies are under Every thread, below." };
+  const sent = reviewJournalSendText(state, pending.map((send) => send.id), { root: options.root, how });
+  return `${sent}\n\n# Every thread\n\n${view}`;
+}
+
+/** The line these sends wake the agent with, after its host's heading (`reviewSendWakeText`); what they carry is read with `threads`. */
+export function reviewJournalWakeText(state: ReviewJournalState, sendIds: readonly string[], how: ReviewReplyHow): string {
+  const sends = state.sends.filter((send) => sendIds.includes(send.id)).sort((a, b) => a.created_at.localeCompare(b.created_at));
+  return reviewSendWakeText({ sends, how: { wake: how.wake ?? how.read } });
 }
 
 /** How an agent answers a review through the CLI (`plannotator reply`, `plannotator threads`). */
 export function reviewCliHow(key: string): ReviewReplyHow {
   return {
     read: `\`plannotator threads --review ${key}\` shows their words and replies.`,
+    wake: `Read the round with \`plannotator threads --review ${key}\` and answer under each id with \`plannotator reply --review ${key} <id>\`.`,
     reply: [
       "Reply under each id in Plannotator, not in chat: what you changed, your answer, or why you did not do it. Only the person resolves a comment.",
       `    plannotator reply --review ${key} <id> <<'END'`,

@@ -97,6 +97,8 @@ export interface ReviewComment extends ReviewCommentFields {
   updated_at: string;
   /** The client's own drawing data (a Plannotator annotation, for instance), opaque to the rules. */
   annotation?: Record<string, unknown>;
+  /** Lines under the comment's heading in what the agent reads of its round (an attached image's path, an element), as the client wrote them. */
+  notes?: string[];
 }
 
 /** What the rules read of an agent's reply under a comment. */
@@ -781,11 +783,14 @@ export const REVIEW_OPEN_THREADS_NAMED = 20;
  *   saying where their words and replies are ("read_thread has their words
  *   and replies.");
  * - `reply`: how to answer under an id, the section's last paragraph when
- *   there is something to answer; none when the agent's own tools already say.
+ *   there is something to answer; none when the agent's own tools already say;
+ * - `wake`: the same in one sentence, for the line a send wakes the agent
+ *   with (`reviewSendWakeText`): how to read the round and answer under ids.
  */
 export interface ReviewReplyHow {
   read: string;
   reply?: string;
+  wake?: string;
 }
 
 /**
@@ -836,6 +841,22 @@ export function reviewSendText<R extends ReviewCommentFields, A>(
   const reply = input.how.reply && !nothing ? [input.how.reply] : [];
   const section = [`# ${REVIEW_SEND_TITLE}`, intro, ...entries, ...open, ...reply].join("\n\n");
   return words ? `${words}\n\n${section}` : section;
+}
+
+/**
+ * The line a send wakes the agent with, after its host's heading
+ * (`Plannotator: notes.md (pn-3f2a9c) — Round 2 done · 3 comments.`): a
+ * round is not a message (#1116), so the agent's conversation gets one line
+ * saying how to read the round and answer under its ids (`how.wake`), and to
+ * end the turn with no message in chat. What the round carries (the person's
+ * words, each comment, the threads still open) is read with `threads`, where
+ * `reviewSendText` composes it. A round with nothing to read says so.
+ */
+export function reviewSendWakeText(input: { sends: readonly Pick<ReviewSend, "mode" | "comments" | "words">[]; how: { wake: string } }): string {
+  const empty = input.sends.every((send) => send.comments.length === 0 && !send.words?.trim());
+  if (empty) return "No comment is open: nothing to answer. End your turn without a message in chat.";
+  const now = input.sends.at(-1)?.mode === "now" ? " Answer now: the round is still open." : "";
+  return `${input.how.wake}${now} Then end your turn without a message in chat: the person reads your replies in Plannotator.`;
 }
 
 // ──────────── The thread view ────────────

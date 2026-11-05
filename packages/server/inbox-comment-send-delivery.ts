@@ -173,7 +173,8 @@ export function wakeCommandOf(
   const { store } = context;
   if (item.message && item.sends.length === 0) return options.messageCommand(item.message);
   const records = store.sentAnnotations(item.thread_id);
-  const comments = inboxCommentsWake(item.sends, records);
+  // `read`: read_thread on the send's id shows what the sends carry (commentSendReadText), so a wake on them alone may leave them out.
+  const comments = { ...inboxCommentsWake(item.sends, records), read: true };
   const receiver = session ?? item.sends[0]!.to.session;
   const now = options.sendNow && item.sends.some((send) => sendNowAsked(send, receiver)) ? { now: true } : {};
   if (item.message) {
@@ -255,6 +256,21 @@ export function commentSendReplyTarget(store: InboxStore, id: string | undefined
   const send = store.commentSend(id.trim());
   if (!send) throw new InboxError("message_not_found", `No message or comment send ${id}.`);
   return send.with_message ?? send.thread_id;
+}
+
+/**
+ * What read_thread shows first when its `message_id` is a comment send's id
+ * (a wake on comments alone names them by it and carries none of them: a
+ * round is not a message): that send and the later ones of its thread to the
+ * same session, as the wake used to carry them (`commentSendsText`: each
+ * entry with its lines and notes, the threads still open, the skills block).
+ * Null for any other id.
+ */
+export function commentSendReadText(context: InboxCommentSendDeliveryContext, id: string | undefined, reader: string | null): string | null {
+  const named = id && isInboxCommentSendId(id.trim()) ? context.store.commentSend(id.trim()) : null;
+  if (!named) return null;
+  const sends = context.store.commentSends(named.thread_id).filter((send) => send.to.session === named.to.session && send.created_at >= named.created_at);
+  return commentSendsText(context, sends, "", reader);
 }
 
 /**

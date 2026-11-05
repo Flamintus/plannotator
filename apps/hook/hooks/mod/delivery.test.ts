@@ -190,18 +190,19 @@ describe('splitShellWords', () => {
   })
 })
 
-// The review loop: a screen's send becomes a turn headed like a decision.
+// The review loop: a screen's send becomes one line, headed like a decision (a round is not a message).
 describe('sendDeliveryFor', () => {
-  const send = { text: '# Comments on your work\n\nThe person finished round 2. Answer under each id.', mode: 'round' as const, round: 2, comments: 3 }
+  const send = { text: 'Read it with the plannotator tool\'s "threads" action.', mode: 'round' as const, round: 2, comments: 3 }
 
-  test('headed with the review, its round and its target; a plan review says how the revised plan comes back', () => {
-    const annotate = sendDeliveryFor(send, { subject: 'notes.md', sessionId: 'pn-3f2a9c', target: '/repo/notes.md', overflowPath: '/l/feedback.md', plan: false })
-    const [heading, target] = annotate.text.split('\n')
-    expect(heading).toBe('Plannotator: notes.md (pn-3f2a9c) — Round 2 done · 3 comments.')
-    expect(target).toBe('Target: /repo/notes.md')
-    expect(annotate.text).toContain(send.text)
-    expect(annotate.text).not.toContain(PLAN_ROUND_NEXT_STEP)
-    expect(sendDeliveryFor(send, { subject: 'Plan', sessionId: 'pn-3f2a9c', overflowPath: '/l/feedback.md', plan: true }).text.endsWith(PLAN_ROUND_NEXT_STEP)).toBe(true)
+  test('one line: the review and its round, then the server\'s line; a plan review says how the revised plan comes back', () => {
+    const annotate = sendDeliveryFor(send, { subject: 'notes.md', sessionId: 'pn-3f2a9c', overflowPath: '/l/feedback.md', plan: false })
+    expect(annotate.text).toBe(`Plannotator: notes.md (pn-3f2a9c) — Round 2 done · 3 comments. ${send.text}`)
+    expect(sendDeliveryFor(send, { subject: 'Plan', sessionId: 'pn-3f2a9c', overflowPath: '/l/feedback.md', plan: true }).text.endsWith(`\n\n${PLAN_ROUND_NEXT_STEP}`)).toBe(true)
+  })
+
+  test("an older CLI's whole round goes under the heading", () => {
+    const whole = { ...send, text: '# Comments on your work\n\nThe person finished round 2. Answer under each id.' }
+    expect(sendDeliveryFor(whole, { subject: 'notes.md', sessionId: 'pn-3f2a9c', overflowPath: '/l/feedback.md', plan: false }).text).toBe(`Plannotator: notes.md (pn-3f2a9c) — Round 2 done · 3 comments.\n\n${whole.text}`)
   })
 
   test('a send past the inline limit goes to the overflow file, which Claude is told to read', () => {

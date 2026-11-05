@@ -31,7 +31,7 @@ import { InboxError } from "@plannotator/shared/inbox/schema";
 import type { InboxSendResult, InboxStore } from "@plannotator/shared/inbox/store";
 import type { InboxAttachment, InboxListRow } from "@plannotator/core/inbox-types";
 import { registerInboxGuideTools } from "./inbox-guides";
-import { commentSendReplyTarget } from "./inbox-comment-send-delivery";
+import { commentSendReadText, commentSendReplyTarget } from "./inbox-comment-send-delivery";
 import { lastContactOf, noteSessionRead, staleThreadOf, staleThreadText } from "./inbox-session-reads";
 import { INBOX_BODY_CUT_BYTES, INBOX_EARLIER_PERSON_BYTES, INBOX_THREAD_WINDOW, clip, shortTime, sizeText, windowedThread, windowedThreadText } from "./inbox-mcp-read";
 import { registerInboxSearchTool } from "./inbox-mcp-search";
@@ -306,6 +306,8 @@ export interface InboxMcpContext {
    * Absent: off.
    */
   persistentCommentsOn?: () => boolean;
+  /** Whether the person's Shape is on: its skills are in the catalog a comment send's text names (inbox-comment-send-delivery.ts). Absent: off. */
+  shapeOn?: () => boolean;
 }
 
 
@@ -1130,7 +1132,9 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
     },
     async (input, ctx) =>
       guarded(async () => {
-        // A comment send's id (a wake names the person's comments by it) reads its thread.
+        // A comment send's id (a wake names the person's comments by it) reads its thread, what it carries first.
+        const sendText = context.persistentCommentsOn?.() ? commentSendReadText({ store, codeReviewOn: context.codeReviewOn, shapeOn: context.shapeOn }, input.message_id, input.agent_session?.trim() || null) : null;
+        const withSend = (text: string) => (sendText ? `${sendText}\n\n${text}` : text);
         input = { ...input, message_id: commentSendReplyTarget(store, input.message_id, context.persistentCommentsOn?.() === true) };
         const threadId = threadOf(store, input);
         if (threadId) {
@@ -1157,7 +1161,7 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
             const replies = thread.messages.filter((m) => m.author.kind === "person").length;
             const sentComments = context.persistentCommentsOn?.() ? threadComments(store, threadId) : { comments: [], sends: [] };
             return ok(
-              `Thread ${threadId}${thread.subject ? ` (${thread.subject})` : ""}: ${thread.messages.length} message${thread.messages.length === 1 ? "" : "s"}, ${replies} from the person${thread.resolved_at ? ", resolved" : ""}.${naming?.line ?? ""}`,
+              withSend(`Thread ${threadId}${thread.subject ? ` (${thread.subject})` : ""}: ${thread.messages.length} message${thread.messages.length === 1 ? "" : "s"}, ${replies} from the person${thread.resolved_at ? ", resolved" : ""}.${naming?.line ?? ""}`),
               {
                 thread,
                 url,
@@ -1185,7 +1189,7 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
           // The comments the person sent (experimental): a ranged read lists those its replies carried and the unanchored ones.
           const sent = context.persistentCommentsOn?.() ? threadComments(store, threadId, input.after !== undefined || input.before !== undefined ? seen : null) : { comments: [], elsewhere: 0, sends: [] };
           const header = [...steps, ...threadCommentsText(sent, result.thread.project.root, reader)];
-          return okComplete(windowedThreadText(result, order, naming?.line ?? "", header), {
+          return okComplete(withSend(windowedThreadText(result, order, naming?.line ?? "", header)), {
             ...result,
             ...(naming?.structured ?? {}),
             ...lists,

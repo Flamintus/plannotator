@@ -605,6 +605,22 @@ describe('the plannotator tool', () => {
     expect(host.files.get(`${launchDirOf(last!)}/stdin`)).toBe('Here is the design.')
   })
 
+  test("last opens on the newest real message with the review loop on; off, on the newest text as before", async () => {
+    const round = 'Plannotator: notes.md (pn-3f2a9c) — Round 2 done · 3 comments. Read the round with …'
+    const loop = { ...SESSION, reviewLoop: { toolReply: () => true } }
+    for (const [session, newest] of [[loop, 'Here is the design.'], [SESSION, 'Replied under the comments.']] as const) {
+      const host = fakeHost()
+      serveOnLaunch(host)
+      host.transcript = [
+        { role: 'assistant', text: 'Here is the design.' },
+        { role: 'user', text: round },
+        { role: 'assistant', text: 'Replied under the comments.' },
+      ]
+      await new PlannotatorMod(host, session).runTool({ action: 'last' })
+      expect(host.files.get(`${launchDirOf(launches(host)[0]!)}/stdin`)).toBe(newest)
+    }
+  })
+
   test('a bad call and a startup failure are error results, and nothing stays open', async () => {
     const host = fakeHost()
     host.onRun = (call) => {
@@ -1818,5 +1834,51 @@ describe('the review loop: reply, threads, and last\'s next messages', () => {
     mod.onTurnComplete('turn-3', 'Second answer.', false)
     await host.tick()
     expect(pushed).toHaveLength(1)
+  })
+
+  test("a round is not a message: what the agent writes in a round's turn joins no picker, through its tool calls, up to the next prompt", async () => {
+    const host = fakeHost()
+    serveOnLaunch(host)
+    const pushed: { messages: { text: string }[] }[] = []
+    host.onFetch = (url, body) => {
+      if (url.endsWith('/api/host/messages')) {
+        pushed.push(body as { messages: { text: string }[] })
+        return { status: 200, ok: true, text: JSON.stringify({ messages: 2, changed: true }) }
+      }
+      return { status: 404, ok: false, text: '' }
+    }
+    host.transcript = [{ role: 'assistant', text: 'First answer.' }]
+    const mod = new PlannotatorMod(host, LOOP_SESSION)
+    await mod.runTool({ action: 'last' })
+    await host.tick()
+    // The screen's own newest message, pushed once.
+    mod.onTurnComplete('turn-0', 'First answer.', false)
+    await host.tick()
+    expect(pushed).toHaveLength(1)
+    const rounds = [
+      // A screen's send as this mod submits it, framed as the engine keeps a plugin's prompt.
+      'The plannotator plugin sent a message: Plannotator: notes.md (pn-3f2a9c) — Round 2 done · 3 comments. Read the round with …',
+      // The line a terminal client pastes.
+      'Plannotator: rollout.md (file-7acd212f03a2b3bc6b2f0e1a) — Round 1 still open · 1 comment. Read the round with …',
+      // The Inbox's wake on comments alone.
+      `Plannotator Inbox: Rollout (snd_${'0'.repeat(26)})\nThe person sent 2 comments on your work from the Plannotator Inbox; they finished round 1. …`,
+    ]
+    for (const [index, wake] of rounds.entries()) {
+      host.transcript = [
+        ...host.transcript,
+        { role: 'user', text: wake },
+        { role: 'assistant', text: 'Let me read the round.' },
+        { role: 'user', text: '', toolResult: true },
+        { role: 'assistant', text: `Replied under the comments (${index}).` },
+      ]
+      mod.onTurnComplete(`round-${index}`, 'Replied.', false)
+      await host.tick()
+    }
+    // Nothing new to pick: a round's words are no message.
+    expect(pushed).toHaveLength(1)
+    host.transcript = [...host.transcript, { role: 'user', text: 'And the deploy?' }, { role: 'assistant', text: 'Deploy on Tuesday.' }]
+    mod.onTurnComplete('turn-1', 'Deploy on Tuesday.', false)
+    await host.tick()
+    expect(pushed.at(-1)!.messages.map((message) => message.text)).toEqual(['Deploy on Tuesday.', 'First answer.'])
   })
 })

@@ -1088,7 +1088,6 @@ export class PlannotatorMod {
     const delivery = sendDeliveryFor(command, {
       subject: launch.subject,
       sessionId: sessionIdOf(launch),
-      ...(launch.target !== undefined ? { target: launch.target } : {}),
       // One file per send: a later send or the decision never overwrites one Claude has not read yet.
       overflowPath: /^snd_[0-9A-Z]{26}$/.test(command.sendId) ? `${launch.dir}/send-${command.sendId}.md` : fileIn(launch.dir, 'overflow'),
       plan: launch.kind === 'plan',
@@ -1111,7 +1110,7 @@ export class PlannotatorMod {
   private async pushLastMessages(): Promise<void> {
     const launches = this.openLaunches().filter((launch) => launch.kind === 'last' && launch.port && launch.bridgeToken && launch.leader)
     if (launches.length === 0) return
-    const picker = await pickerFile(recentAssistantTexts(await this.host.messages()), (value) => this.host.sha256(value))
+    const picker = await pickerFile(recentAssistantTexts(await this.host.messages(), undefined, { skipRounds: true }), (value) => this.host.sha256(value))
     const newest = picker.messages[0]?.messageId
     if (!newest) return
     for (const launch of launches) {
@@ -1316,7 +1315,8 @@ export class PlannotatorMod {
     let extra: string | undefined
     const side: { messages?: string } = {}
     if (kind === 'last') {
-      const texts = recentAssistantTexts(await this.host.messages())
+      // The review loop on: what the agent wrote in a round's turn is no message to pick.
+      const texts = recentAssistantTexts(await this.host.messages(), undefined, { skipRounds: this.session.reviewLoop !== undefined })
       const text = texts[0]
       if (!text) return { state: 'error', text: 'There is no assistant message to annotate yet.' }
       // stdin always carries the newest text: all an older CLI reads.

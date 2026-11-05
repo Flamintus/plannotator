@@ -54,23 +54,26 @@ export const PLAN_APPROVAL_NEXT_STEP =
  * back into the same review by the next ExitPlanMode (a revision, plan.ts).
  */
 export const PLAN_ROUND_NEXT_STEP =
-  'Once you have replied, if they asked for changes, revise the plan and call ExitPlanMode again: the new version opens in the same review. Stay in plan mode.'
+  'Before you end your turn, once you have replied: if they asked for changes, revise the plan and call ExitPlanMode again: the new version opens in the same review. Stay in plan mode.'
 
 /**
- * The turn a send of the review loop becomes (a screen's comments, composed
- * by its server, `send` on the session bridge): headed like a decision, with
- * the round and what it carries (`Plannotator: notes.md (pn-3f2a9c) — Round 2
- * done · 3 comments.`), then the server's text; past the inline limit, the
- * text goes to the launch's overflow file, which Claude is told to Read.
+ * The turn a send of the review loop becomes (a screen's comments, `send` on
+ * the session bridge): a round is not a message, so one line, headed like a
+ * decision with the round and what it carries (`Plannotator: notes.md
+ * (pn-3f2a9c) — Round 2 done · 3 comments.`) and no target lines (the review
+ * is the one this conversation opened), then the server's line saying how to
+ * read the round and answer; a server's text of several lines (an older CLI's
+ * whole round) goes under the heading. Past the inline limit, the text goes to
+ * the launch's overflow file, which Claude is told to Read.
  */
 export function sendDeliveryFor(
   send: { text: string; mode: 'now' | 'round'; round: number; comments: number },
-  context: { subject: string; sessionId?: string; target?: PlannotatorTarget; overflowPath: string; plan: boolean; inlineLimitBytes?: number },
+  context: { subject: string; sessionId?: string; overflowPath: string; plan: boolean; inlineLimitBytes?: number },
 ): { text: string; overflow?: { path: string; text: string } } {
-  const prefix = plannotatorDecisionHeading(context.subject, context.sessionId, plannotatorSendOutcome(send.mode, send.round, send.comments), context.target)
+  const prefix = plannotatorDecisionHeading(context.subject, context.sessionId, plannotatorSendOutcome(send.mode, send.round, send.comments))
   const nextStep = context.plan ? `\n\n${PLAN_ROUND_NEXT_STEP}` : ''
   const body = send.text.trim()
-  if (byteLength(body) <= (context.inlineLimitBytes ?? INLINE_LIMIT_BYTES)) return { text: `${prefix}\n\n${body}${nextStep}` }
+  if (byteLength(body) <= (context.inlineLimitBytes ?? INLINE_LIMIT_BYTES)) return { text: `${prefix}${body.includes('\n') ? '\n\n' : ' '}${body}${nextStep}` }
   return {
     text: `${prefix}\n\nTheir comments (${Math.ceil(byteLength(body) / 1024)} KB) are too long to include here. Read all of them with the Read tool before you continue: ${context.overflowPath}${nextStep}`,
     overflow: { path: context.overflowPath, text: `${body}\n` },

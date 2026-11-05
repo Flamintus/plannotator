@@ -82,7 +82,7 @@ describe("review loop on a screen", () => {
 
   test("a round's send is written, composed with the tool's way to answer, handed to the host, and marked delivered", async () => {
     const { carrier } = fakeCarrier({ toolReply: true });
-    const { loop, page, events } = loopOf({}, carrier);
+    const { loop, page, host, events } = loopOf({}, carrier);
     const answer = await page("POST", "/api/threads/send", {
       mode: "round",
       words: "Mostly fine.",
@@ -101,10 +101,17 @@ describe("review loop on a screen", () => {
     expect(carrier.delivered).toHaveLength(1);
     const [handed] = carrier.delivered;
     expect(handed!.info).toEqual({ mode: "round", round: 1, comments: 2 });
-    expect(handed!.text.startsWith("Mostly fine.")).toBe(true);
-    expect(handed!.text).toContain("(id c1)");
-    expect(handed!.text).toContain("Attached image: /tmp/shot.png");
-    expect(handed!.text).toContain('session "pn-3f2a9c"');
+    // A round is not a message: one line saying how to read it and answer with the tool, none of the round in it.
+    expect(handed!.text.split("\n")).toHaveLength(1);
+    expect(handed!.text).toContain('"threads" action');
+    expect(handed!.text).toContain("session pn-3f2a9c");
+    expect(handed!.text).not.toContain("Mostly fine.");
+    expect(handed!.text).not.toContain("(id c1)");
+    // The agent's read carries the round, the page's lines under a comment included, before every thread.
+    const read = ((await host("GET", "/api/host/threads"))!.body as { text: string }).text;
+    expect(read).toStartWith("On /repo/notes.md\nMostly fine.");
+    expect(read).toContain("(id c1)\nAttached image: /tmp/shot.png");
+    expect(read).toContain('session "pn-3f2a9c"');
     expect(events.some((event) => event.type === "review-threads")).toBe(true);
 
     // A retry of the same press writes nothing and hands the undelivered send over again.
@@ -120,10 +127,11 @@ describe("review loop on a screen", () => {
     loop.dispose();
   });
 
-  test("without the tool, the text says how to answer with the CLI", async () => {
+  test("without the tool, the line says how to read and answer with the CLI", async () => {
     const { carrier } = fakeCarrier();
     const { loop, page } = loopOf({}, carrier);
     await page("POST", "/api/threads/send", { mode: "now", comments: [{ id: "c1", on: onFile, quote: "q", text: "t" }] });
+    expect(carrier.delivered[0]!.text).toContain(`plannotator threads --review ${reviewJournalKey(target)}`);
     expect(carrier.delivered[0]!.text).toContain(`plannotator reply --review ${reviewJournalKey(target)}`);
     expect(carrier.delivered[0]!.info.mode).toBe("now");
     loop.dispose();
@@ -195,7 +203,7 @@ describe("review loop on a screen", () => {
     // The page's retry: the same press, handed over again with its notes.
     await page("POST", "/api/threads/send", { mode: "round", comments: [{ id: "c1", on: onFile, quote: "q", text: "t", notes: ["Attached image: /tmp/a.png"] }], idempotency_key: "press-1" });
     expect(carrier.delivered).toHaveLength(2);
-    expect(carrier.delivered[1]!.text).toContain("Attached image: /tmp/a.png");
+    expect(carrier.delivered[1]!.text).toBe(carrier.delivered[0]!.text);
     expect(((await page("GET", "/api/threads"))!.body as { failed?: unknown }).failed).toBeUndefined();
     loop.dispose();
   });
