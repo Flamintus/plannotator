@@ -14,7 +14,7 @@
  *
  * Protocol (both endpoints are POST + JSON):
  *
- *   POST /api/ai/bridge/poll   body { status?, modes?, waitMs?, interruptible? }
+ *   POST /api/ai/bridge/poll   body { status?, modes?, waitMs?, interruptible?, features? }
  *     Long-poll for commands. Answers as soon as there is something to do, or
  *     with an empty list after `waitMs` (clamped to 0..25s, default 25s).
  *     -> 200 { commands: BridgeCommand[], features: string[], closing?: true, superseded?: true }
@@ -28,10 +28,19 @@
  *        question event names a question that is no longer running.
  *
  *   Commands: { type: "ask", askId, text, mode } | { type: "cancel", askId }
- *             | { type: "interrupt", interruptId }.
+ *             | { type: "interrupt", interruptId }
+ *             | { type: "send", sendId, text, mode, round, comments }.
  *   A command is re-sent on a later poll until the host acknowledges it (any
- *   event for that question; `interrupted` for an interrupt), so the host must
- *   treat ids as idempotent.
+ *   event for that question; `interrupted` for an interrupt; `send` with any
+ *   state for a send), so the host must treat ids as idempotent.
+ *
+ *   Sends (the review loop of the screens, packages/shared/review-loop.ts):
+ *   the person's comments, composed for the agent, which the host submits to
+ *   its session as a turn. Only a host that lists `send` in its polls'
+ *   `features` gets one (an older host would never acknowledge it); `tool_reply`
+ *   there says its agent answers with the `plannotator` tool's `reply` action.
+ *   The host reports `{ type: "send", sendId, state: "received" }` at once,
+ *   then `delivered` once the turn is in the session, or `failed`.
  *
  * Auth: `Authorization: Bearer <token>`, where the token is a per-launch secret
  * the host generated and handed to the server process (env
@@ -78,14 +87,29 @@ export const SESSION_BRIDGE_MAX_POLL_MS = 25_000;
  *   `done` with the partial answer and the note appended, because an older
  *   server reads the unknown code as `failed` and its UI then replaces the
  *   partial answer with the error.
+ * - `send`: the `send` command and its events (the review loop's sends).
  */
-export const SESSION_BRIDGE_POLL_FEATURES: readonly string[] = ["taken_over"];
+export const SESSION_BRIDGE_POLL_FEATURES: readonly string[] = ["taken_over", "send"];
+
+/** What a host lists in its polls' `features`: it takes `send` commands, and its agent replies with the tool. */
+export const SESSION_BRIDGE_HOST_SEND_FEATURE = "send";
+export const SESSION_BRIDGE_HOST_TOOL_REPLY_FEATURE = "tool_reply";
 const MAX_EVENT_BODY_BYTES = 1_000_000;
+
+/** What a send carries besides its text, so a host can head its turn. */
+export interface BridgeSendInfo {
+	/** `round`: the person finished a round; `now`: sent at once, the round still open. */
+	mode: "now" | "round";
+	round: number;
+	/** The comments, replies and sub-threads it carries. */
+	comments: number;
+}
 
 export type BridgeCommand =
 	| { type: "ask"; askId: string; text: string; mode: SessionBridgeAskMode }
 	| { type: "cancel"; askId: string }
-	| { type: "interrupt"; interruptId: string };
+	| { type: "interrupt"; interruptId: string }
+	| ({ type: "send"; sendId: string; text: string } & BridgeSendInfo);
 
 export type BridgeHostEvent =
 	| { type: "status"; status: SessionBridgeStatus }
@@ -94,7 +118,31 @@ export type BridgeHostEvent =
 	| { type: "tool"; askId: string; name: string }
 	| { type: "done"; askId: string; answer: string }
 	| { type: "error"; askId: string; code: SessionBridgeErrorCode; message?: string }
-	| { type: "interrupted"; interruptId: string; ok: boolean; message?: string };
+	| { type: "interrupted"; interruptId: string; ok: boolean; message?: string }
+	| { type: "send"; sendId: string; state: "received" | "delivered" | "failed"; message?: string };
+
+/** What becomes of a send handed to the host. */
+export interface BridgeSendReport {
+	/** Its turn is in the session. */
+	delivered(): void;
+	/** The host could not put it in the session (or the bridge closed first). */
+	failed(message?: string): void;
+}
+
+/**
+ * The review loop's carrier on this bridge: sends to the host's session as
+ * turns, while a host that takes them polls.
+ */
+export interface PullSessionBridgeSends {
+	/** The host takes `send` commands (its last poll listed `send`) and has not gone. */
+	readonly ready: boolean;
+	/** The host's agent replies with the `plannotator` tool (`tool_reply`). */
+	readonly toolReply: boolean;
+	/** The host's session is in a turn. */
+	readonly busy: boolean;
+	/** Hand a send to the host; it waits here while no host polls. A send id given again is ignored. */
+	deliver(sendId: string, text: string, info: BridgeSendInfo, report: BridgeSendReport): void;
+}
 
 export interface PullSessionBridgeConfig {
 	token: string;
@@ -120,6 +168,8 @@ export interface PullSessionBridgeOptions extends PullSessionBridgeConfig {
 
 export interface PullSessionBridge {
 	readonly bridge: SessionBridge;
+	/** The review loop's sends (`send` commands). */
+	readonly sends: PullSessionBridgeSends;
 	/** The host has polled, so `status()` is what it reported, not a new bridge's `ready`. */
 	readonly connected: boolean;
 	/** Handle a request to one of the two bridge paths. `null` for any other path. */
@@ -207,6 +257,17 @@ interface OpenPoll {
 	timer: ReturnType<typeof setTimeout>;
 }
 
+interface PendingSend {
+	sendId: string;
+	text: string;
+	info: BridgeSendInfo;
+	report: BridgeSendReport;
+	/** The host acknowledged it (`received`): it is not sent again. */
+	received: boolean;
+	/** Last time the command was handed to a poll; 0 = never. */
+	sentAt: number;
+}
+
 export function createPullSessionBridge(options: PullSessionBridgeOptions): PullSessionBridge {
 	const now = options.now ?? (() => Date.now());
 	const connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
@@ -229,6 +290,10 @@ export function createPullSessionBridge(options: PullSessionBridgeOptions): Pull
 	let interruptSeq = 0;
 	let disposed = false;
 	let livenessTimer: ReturnType<typeof setInterval> | null = null;
+	/** What the last poll's host said it takes (`features`). */
+	let hostFeatures: ReadonlySet<string> = new Set();
+	/** Sends waiting for the host, by id, in the order given. */
+	const pendingSends = new Map<string, PendingSend>();
 
 	const isGone = (): boolean => {
 		if (disposed) return true;
@@ -295,6 +360,14 @@ export function createPullSessionBridge(options: PullSessionBridgeOptions): Pull
 		if (interrupt && due(interrupt.sentAt)) {
 			interrupt.sentAt = t;
 			commands.push({ type: "interrupt", interruptId: interrupt.interruptId });
+		}
+		// Only to a host that takes them: an older one would never acknowledge a send.
+		if (hostFeatures.has(SESSION_BRIDGE_HOST_SEND_FEATURE)) {
+			for (const send of pendingSends.values()) {
+				if (send.received || !due(send.sentAt)) continue;
+				send.sentAt = t;
+				commands.push({ type: "send", sendId: send.sendId, text: send.text, ...send.info });
+			}
 		}
 		return commands;
 	};
@@ -439,6 +512,8 @@ export function createPullSessionBridge(options: PullSessionBridgeOptions): Pull
 				if (typeof body.modes.transient === "boolean") modes.transient = body.modes.transient;
 			}
 			if (typeof body.interruptible === "boolean") interruptible = body.interruptible ? undefined : false;
+			// Each poll says what its host takes; a host that says nothing takes no send.
+			hostFeatures = new Set(Array.isArray(body.features) ? body.features.filter((feature): feature is string => typeof feature === "string") : []);
 		}
 		if (disposed) return pollReply({ commands: [], closing: true });
 		if (hostStatus === "gone") failForGone();
@@ -489,6 +564,17 @@ export function createPullSessionBridge(options: PullSessionBridgeOptions): Pull
 		if (event.type === "status") {
 			applyStatus(event.status);
 			if (hostStatus === "gone") failForGone();
+			return true;
+		}
+		if (event.type === "send") {
+			const send = typeof event.sendId === "string" ? pendingSends.get(event.sendId) : undefined;
+			if (!send) return true;
+			if (event.state === "received") send.received = true;
+			else if (event.state === "delivered" || event.state === "failed") {
+				pendingSends.delete(send.sendId);
+				if (event.state === "delivered") send.report.delivered();
+				else send.report.failed(typeof event.message === "string" && event.message ? event.message : undefined);
+			}
 			return true;
 		}
 		if (event.type === "interrupted") {
@@ -548,8 +634,30 @@ export function createPullSessionBridge(options: PullSessionBridgeOptions): Pull
 		return ok ? json({ ok: true }) : json({ ok: false, code: "ask_not_active" }, 409);
 	};
 
+	const sends: PullSessionBridgeSends = {
+		get ready() {
+			return hostFeatures.has(SESSION_BRIDGE_HOST_SEND_FEATURE) && !isGone();
+		},
+		get toolReply() {
+			return hostFeatures.has(SESSION_BRIDGE_HOST_TOOL_REPLY_FEATURE);
+		},
+		get busy() {
+			return status() === "busy";
+		},
+		deliver(sendId, text, info, report) {
+			if (disposed) {
+				report.failed("The review server is closing.");
+				return;
+			}
+			if (pendingSends.has(sendId)) return;
+			pendingSends.set(sendId, { sendId, text, info: { mode: info.mode, round: info.round, comments: info.comments }, report, received: false, sentAt: 0 });
+			flush();
+		},
+	};
+
 	return {
 		bridge,
+		sends,
 		get connected() {
 			return polled;
 		},
@@ -564,6 +672,8 @@ export function createPullSessionBridge(options: PullSessionBridgeOptions): Pull
 		dispose() {
 			if (disposed) return;
 			disposed = true;
+			// Nobody will deliver them now; the journal keeps them undelivered.
+			pendingSends.clear();
 			const poll = openPoll;
 			openPoll = null;
 			if (poll) {

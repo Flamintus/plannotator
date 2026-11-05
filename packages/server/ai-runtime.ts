@@ -12,6 +12,7 @@ import {
   type AIEndpoints,
   type PiSDKConfig,
   type PullSessionBridgeConfig,
+  type PullSessionBridgeSends,
   type QwenSDKConfig,
   type SessionBridge,
   type SessionBridgeHost,
@@ -24,6 +25,12 @@ import type { SessionTailnetGate } from "./session-tailnet";
 
 export interface AIRuntime {
   endpoints: AIEndpoints;
+  /**
+   * The review loop's carrier: the pull bridge's sends to the host's session
+   * (packages/shared/review-loop.ts). Null without a pull bridge (an
+   * in-process bridge, remote mode, no host).
+   */
+  sends: PullSessionBridgeSends | null;
   dispose: () => void;
 }
 
@@ -328,6 +335,7 @@ export async function createAIRuntime(options: CreateAIRuntimeOptions = {}): Pro
 
   return {
     endpoints: served,
+    sends: pullBridge?.sends ?? null,
     dispose: () => {
       // Detach first: tearing the sessions down must not stop a turn the
       // session is already running for us (the decision goes to that session).

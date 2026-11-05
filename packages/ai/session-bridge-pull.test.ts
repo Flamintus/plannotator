@@ -403,10 +403,10 @@ describe("pull session bridge", () => {
     const first = call(SESSION_BRIDGE_POLL_PATH, { method: "POST", body: JSON.stringify({ waitMs: 5_000 }) }, auth);
     await new Promise((resolve) => setTimeout(resolve, 10));
     const second = call(SESSION_BRIDGE_POLL_PATH, { method: "POST", body: JSON.stringify({ waitMs: 5_000 }) }, auth);
-    expect(await (await first).json()).toEqual({ commands: [], superseded: true, features: ["taken_over"] });
+    expect(await (await first).json()).toEqual({ commands: [], superseded: true, features: ["taken_over", "send"] });
     await new Promise((resolve) => setTimeout(resolve, 10));
     pull.dispose();
-    expect(await (await second).json()).toEqual({ commands: [], closing: true, features: ["taken_over"] });
+    expect(await (await second).json()).toEqual({ commands: [], closing: true, features: ["taken_over", "send"] });
     expect(pull.bridge.status()).toBe("gone");
   });
 
@@ -422,6 +422,56 @@ describe("pull session bridge", () => {
     session.abort();
     await run.done;
     expect(pull.bridge.status()).not.toBe("gone");
+  });
+});
+
+describe("sends (the review loop's carrier)", () => {
+  const auth = { authorization: `Bearer ${TOKEN}`, host: HOST };
+  const bridgeOf = () => {
+    const pull = createPullSessionBridge({ token: TOKEN, host: "claude-code", modes: { turn: true, transient: false }, resendAfterMs: 30, goneAfterMs: 2_000 });
+    cleanups.push(() => pull.dispose());
+    const poll = async (body: Record<string, unknown>) =>
+      (await (await pull.handle(new Request(`http://${HOST}${SESSION_BRIDGE_POLL_PATH}`, { method: "POST", headers: auth, body: JSON.stringify({ waitMs: 0, ...body }) }))!).json()) as {
+        commands: { type: string; sendId?: string; text?: string; mode?: string; round?: number; comments?: number }[];
+      };
+    const event = (body: Record<string, unknown>) =>
+      pull.handle(new Request(`http://${HOST}${SESSION_BRIDGE_EVENT_PATH}`, { method: "POST", headers: auth, body: JSON.stringify(body) }))!;
+    return { pull, poll, event };
+  };
+
+  test("a send goes only to a host that takes sends, and is sent again until it is received", async () => {
+    const { pull, poll, event } = bridgeOf();
+    const outcome: string[] = [];
+    pull.sends.deliver("snd_1", "# Comments on your work", { mode: "round", round: 1, comments: 2 }, { delivered: () => outcome.push("delivered"), failed: (message) => outcome.push(`failed ${message}`) });
+    // An older host (no features): the send waits, never handed to it.
+    expect((await poll({ status: "ready" })).commands).toEqual([]);
+    expect(pull.sends.ready).toBe(false);
+    const first = await poll({ status: "ready", features: ["send"] });
+    expect(first.commands).toEqual([{ type: "send", sendId: "snd_1", text: "# Comments on your work", mode: "round", round: 1, comments: 2 }]);
+    expect(pull.sends.ready).toBe(true);
+    expect(pull.sends.toolReply).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect((await poll({ status: "ready", features: ["send"] })).commands.map((command) => command.sendId)).toEqual(["snd_1"]);
+    await event({ type: "send", sendId: "snd_1", state: "received" });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect((await poll({ status: "busy", features: ["send", "tool_reply"] })).commands).toEqual([]);
+    expect(pull.sends.busy).toBe(true);
+    expect(pull.sends.toolReply).toBe(true);
+    expect(outcome).toEqual([]);
+    await event({ type: "send", sendId: "snd_1", state: "delivered" });
+    expect(outcome).toEqual(["delivered"]);
+  });
+
+  test("a send the host could not put in the session is reported failed, once", async () => {
+    const { pull, poll, event } = bridgeOf();
+    const outcome: string[] = [];
+    const report = { delivered: () => outcome.push("delivered"), failed: (message?: string) => outcome.push(`failed: ${message}`) };
+    pull.sends.deliver("snd_2", "text", { mode: "now", round: 2, comments: 1 }, report);
+    pull.sends.deliver("snd_2", "text", { mode: "now", round: 2, comments: 1 }, report);
+    expect((await poll({ features: ["send"] })).commands.length).toBe(1);
+    await event({ type: "send", sendId: "snd_2", state: "failed", message: "refused" });
+    await event({ type: "send", sendId: "snd_2", state: "delivered" });
+    expect(outcome).toEqual(["failed: refused"]);
   });
 });
 

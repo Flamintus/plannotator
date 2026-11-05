@@ -5,13 +5,15 @@ import { Readable } from "node:stream";
 import { isAIEndpointPath } from "../generated/ai/endpoints.ts";
 import { resolveCommandFromWhichOutput } from "../generated/ai/providers/command-path.ts";
 import type { SessionBridge } from "../generated/ai/session-bridge.ts";
-import type { PullSessionBridgeConfig } from "../generated/ai/session-bridge-pull.ts";
+import type { PullSessionBridgeConfig, PullSessionBridgeSends } from "../generated/ai/session-bridge-pull.ts";
 import { isLoopbackHostHeader } from "../generated/loopback-host.ts";
 import { handleApiNotFound, json, toWebRequest } from "./helpers.ts";
 import { getLocalUrlHostname } from "./network.ts";
 
 export interface PiAIRuntime {
 	endpoints: Record<string, (req: Request) => Promise<Response>>;
+	/** The review loop's carrier: the pull bridge's sends (mirrors packages/server/ai-runtime.ts); null without one. */
+	sends: PullSessionBridgeSends | null;
 	dispose: () => void;
 }
 
@@ -194,6 +196,7 @@ export async function createPiAIRuntime(options: CreatePiAIRuntimeOptions = {}):
 					isLoopbackHostHeader(req.headers.get("host"), options.getServerPort?.(), localHostname),
 				...(pullBridge ? { pullBridge } : {}),
 			}),
+			sends: pullBridge?.sends ?? null,
 			dispose: () => {
 				// Detach first: tearing the sessions down must not stop a turn the
 				// Pi session is already running for us (the decision goes there next).

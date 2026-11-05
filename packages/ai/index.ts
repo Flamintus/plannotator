@@ -130,13 +130,18 @@ export {
   SESSION_BRIDGE_MODES_ENV,
   SESSION_BRIDGE_MAX_POLL_MS,
   SESSION_BRIDGE_POLL_FEATURES,
+  SESSION_BRIDGE_HOST_SEND_FEATURE,
+  SESSION_BRIDGE_HOST_TOOL_REPLY_FEATURE,
 } from "./session-bridge-pull.ts";
 export type {
   BridgeCommand,
   BridgeHostEvent,
+  BridgeSendInfo,
+  BridgeSendReport,
   PullSessionBridge,
   PullSessionBridgeConfig,
   PullSessionBridgeOptions,
+  PullSessionBridgeSends,
 } from "./session-bridge-pull.ts";
 
 // Session manager
