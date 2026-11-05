@@ -5,11 +5,13 @@
  * cannot name that comment later; an id that follows the comment's place (its
  * number restarts in every section) instead of the comment. The guided
  * review's sections without ids stay the review app's export
- * (guideFeedback.test.ts).
+ * (guideFeedback.test.ts); and ui's id rule drifting from the store's, so a
+ * stored comment would reach the agent without its id.
  */
 import { describe, expect, test } from 'bun:test';
-import type { InboxAnnotationRecord, InboxAttachmentState } from '@plannotator/core/inbox-types';
+import { isInboxAnnotationId, type InboxAnnotationRecord, type InboxAttachmentState } from '@plannotator/core/inbox-types';
 import type { CodeAnnotation } from '@plannotator/ui/types';
+import { commentIdSuffix } from '@plannotator/ui/utils/parser';
 import { attachmentFeedback } from './attachments';
 
 const AT = '2026-11-04T10:00:00.000Z';
@@ -81,6 +83,11 @@ describe('comment ids in what a Send carries', () => {
   test('words on several lines keep their fence; the id ends the heading above it', () => {
     const text = send([onWords('ann-across', 'Ship it.\n\nThen tag it.')]);
     expect(text).toContain('### 1. Feedback on: (id ann-across)\n```\nShip it.\n\nThen tag it.\n```\n');
+  });
+
+  test('ui prints an id exactly when the store keeps it (parser.ts holds its own copy of the rule)', () => {
+    const ids = ['ann-code-1', 'global-1', '0f8b2c4e-91d3-4a57-b6e0-3c2d1f9a8e70', 'a:b.c_d-e', 'x'.repeat(200), 'x'.repeat(201), '', 'two words', 'a\nb', 'a/b', 'é', 'a)'];
+    for (const id of ids) expect([id, commentIdSuffix(id) !== '']).toEqual([id, isInboxAnnotationId(id)]);
   });
 
   test('the id is the comment\'s, not its place: a comment keeps it when another comes before it', () => {

@@ -598,7 +598,7 @@ function CapabilitiesSection({
                   <span className="ib-desc">
                     {experimental.persistent_comments.env !== null
                       ? `PLANNOTATOR_EXPERIMENTAL turns it ${experimental.persistent_comments.env ? 'on' : 'off'}.`
-                      : 'Comments you sent stay on the file and the message, by round, until you resolve them. Each round sends the open ones again, and agents read them with their ids.'}
+                      : 'Comments you sent stay on the file and the message, by round, and fold away once you resolve them. Each round sends the open ones again, and agents read them with their ids.'}
                   </span>
                 </span>
                 <span className="ib-ctl">
