@@ -312,8 +312,11 @@ test("PLANNOTATOR_EXPERIMENTAL decides over config.json, both ways, and Settings
     const experimental = async () => ((await (await fetch(`http://127.0.0.1:${server.port}/api/inbox/settings`)).json()) as { experimental: unknown }).experimental;
     expect(await experimental()).toEqual({ decision_mode: { on: true, env: true }, persistent_comments: { on: false, env: false } });
     expect((await post(server, "/api/inbox/annotations/c-any/unanchored", { unanchored: true })).status).toBe(409);
+    // Saved off in config.json, so "on" can come from the variable alone.
+    writeFileSync(join(dataDir, "config.json"), JSON.stringify({ experimental: { persistentComments: false } }));
     process.env.PLANNOTATOR_EXPERIMENTAL = " Persistent-Comments ";
     expect(await experimental()).toEqual({ decision_mode: { on: false, env: null }, persistent_comments: { on: true, env: true } });
+    expect((await post(server, "/api/inbox/annotations/c-any/unanchored", { unanchored: true })).status).toBe(404);
     // While the variable decides, the switch is locked: a save is refused and writes nothing.
     const config = readFileSync(join(dataDir, "config.json"), "utf8");
     const locked = await post(server, "/api/inbox/settings", { experimental: { persistent_comments: false } });
