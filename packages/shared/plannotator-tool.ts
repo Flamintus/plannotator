@@ -34,8 +34,9 @@
  * CLI's arguments, which open a bundle when every one is an existing file).
  * A host whose CLI predates bundles recognizes its refusal
  * (`isOlderCliBundleRefusal`) and answers
- * `PLANNOTATOR_TOOL_BUNDLE_UNAVAILABLE_TEXT`. Replying to a single comment is
- * not part of the contract yet: it comes back with the comment loop.
+ * `PLANNOTATOR_TOOL_BUNDLE_UNAVAILABLE_TEXT`. Replying under the person's
+ * comments is a variant a host that carries the review loop's sends
+ * registers (`reply` and `threads`, at the end of the contract).
  *
  * Gate: `gate: true` means the agent waits for the reviewer's sign-off, so a
  * host delivers a bare Approve as a message too (annotate adds an Approve
@@ -1003,12 +1004,16 @@ export function plannotatorToolLoopDescription(description: string): string {
 }
 
 /** A schema with the loop's actions: `reply` and `threads` in `action`, `replies`, and `session` for them too. */
-export function plannotatorToolLoopInputSchema<S extends { properties: { action: { enum: readonly string[] } } }>(schema: S): S {
+export function plannotatorToolLoopInputSchema<S extends { properties: { action: { enum: readonly string[]; description: string } } }>(schema: S): S {
   return {
     ...schema,
     properties: {
       ...schema.properties,
-      action: { ...schema.properties.action, enum: [...schema.properties.action.enum, 'reply', 'threads'] },
+      action: {
+        ...schema.properties.action,
+        enum: [...schema.properties.action.enum, 'reply', 'threads'],
+        description: `${schema.properties.action.description} reply: answer the person's comments in a review, under their ids; threads: read them.`,
+      },
       session: {
         type: 'string',
         description: 'close: the session id (pn-...) of a review opened in this conversation, or "all". reply, threads: the id of the review whose comments you answer or read.',

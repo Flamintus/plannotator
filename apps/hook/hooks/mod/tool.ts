@@ -948,12 +948,16 @@ export function plannotatorToolLoopDescription(description: string): string {
 }
 
 /** A schema with the loop's actions: `reply` and `threads` in `action`, `replies`, and `session` for them too. */
-export function plannotatorToolLoopInputSchema<S extends { properties: { action: { enum: readonly string[] } } }>(schema: S): S {
+export function plannotatorToolLoopInputSchema<S extends { properties: { action: { enum: readonly string[]; description: string } } }>(schema: S): S {
   return {
     ...schema,
     properties: {
       ...schema.properties,
-      action: { ...schema.properties.action, enum: [...schema.properties.action.enum, 'reply', 'threads'] },
+      action: {
+        ...schema.properties.action,
+        enum: [...schema.properties.action.enum, 'reply', 'threads'],
+        description: `${schema.properties.action.description} reply: answer the person's comments in a review, under their ids; threads: read them.`,
+      },
       session: {
         type: 'string',
         description: 'close: the session id (pn-...) of a review opened in this conversation, or "all". reply, threads: the id of the review whose comments you answer or read.',

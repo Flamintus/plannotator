@@ -497,10 +497,48 @@ several paths with its ambiguity error WITHOUT the bundle hint line
 a copy of `ANNOTATE_BUNDLE_HINT` pinned equal by `annotate-target.test.ts`); the
 mod then answers `PLANNOTATOR_TOOL_BUNDLE_UNAVAILABLE_TEXT` ("update Plannotator
 to open several files at once") for the tool, and for `/plannotator-annotate`
-when every word reads as a file path (`isSeveralFilePaths`). There is no
-`reply` action: it was reserved for live comments and always errored, so it
-was taken out of the schema; it comes back with the comment loop. (The design
-record is not in this repo; what matters is written here.)
+when every word reads as a file path (`isSeveralFilePaths`). The plain
+schema has no `reply` action: it was reserved for live comments and always
+errored, so it was taken out; it comes back with the review loop below, as a
+variant only that loop registers, without `resolve`. (The design record is not
+in this repo; what matters is written here.)
+
+**The review loop (experimental "persistent-comments").** With
+`PLANNOTATOR_EXPERIMENTAL=persistent-comments` or config.json
+`experimental.persistentComments` at the first `session.start`
+(`resolveReviewLoopEnabled` in `enabled.ts`, mirroring `resolveExperimental`;
+read once, like the tool switch), the mod carries a screen's rounds (server
+side: "The review loop on the screens" in `server-and-storage.md`):
+- Each review's bridge polls with `features: ["send"]`, plus `"tool_reply"`
+  once the `plannotator` tool is registered, so the server hands it the
+  person's sends (`send` commands). Each is acknowledged at once
+  (`received`), submitted as one plugin turn in order with the decisions
+  (`deliverSend`, on the same `delivering` chain), then reported `delivered`
+  or `failed`; a send given again is answered with its state and never put
+  in twice. The turn is headed like a decision (`sendDeliveryFor` in
+  `delivery.ts`: `Plannotator: notes.md (pn-3f2a9c) — Round 2 done · 3
+  comments.` from `plannotatorSendOutcome`, then the `Target:` line), the
+  server's text after it; over 12 KB the text goes to the launch's
+  `feedback.md`. A plan review's send ends with `PLAN_ROUND_NEXT_STEP`:
+  reply under each id, then revise the plan and call ExitPlanMode again,
+  which arrives as a revision in the same review.
+- The tool is registered with `plannotatorToolLoopDescription` /
+  `plannotatorToolLoopInputSchema` over the tailscale variant: `reply {
+  session, replies: [{ id, text }] }` and `threads { session }`, parsed first
+  by `parsePlannotatorToolLoopInput`, answered for the reviews this session
+  opened through their server's host paths (`/api/host/threads/reply`,
+  `/api/host/threads`; `runLoopAction`). An uncoded 404 or a page is an older
+  CLI (`PLANNOTATOR_TOOL_LOOP_UNAVAILABLE_TEXT`); `review_loop_off` says the
+  review has no threads. No action resolves.
+- Each main turn's non-aborted end hands every open `last` review this
+  process watches the session's recent messages (`pickerFile`, newest first)
+  on `/api/host/messages`, once per new newest message (`messagePushed`): the
+  agent's answer joins the screen's picker, and nothing is selected for the
+  person.
+Off, the polls name no feature and the tool's schema and description are the
+tailscale variant's, byte for byte. Tests: `bridge.test.ts` (sends over the
+real server half), `controller.test.ts` (reply, threads, `last`'s messages,
+the host paths equal to the servers'), `delivery.test.ts`, `enabled.test.ts`.
 
 **Agent-run CLI commands are taken over (Bash).** Because the tool is deferred
 and the skill also documents the CLI, Claude sometimes runs
