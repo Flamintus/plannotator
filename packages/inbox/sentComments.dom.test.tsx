@@ -310,22 +310,30 @@ test.skipIf(!hasDom)("under the message, the agent's reply sits under its commen
   const model = JSON.parse((await loopback(`/api/inbox/threads/${sent}/attachments`)).text) as { annotations: InboxAnnotationRecord[] };
   expect(model.annotations.map((r) => [r.re, r.annotation.text, r.sent_reply_id])).toEqual([['rep-msg-1', 'Page me too.', null]]);
 
-  // The box saves on the comment composers' key: with "Enter saves a comment" on, a plain Enter. The key is taken
-  // (prevented), so the thread's Send, which skips a prevented key, never sends the draft waiting under the comment.
+  // The box saves on the comment composers' key: a plain Enter while "Enter saves a comment" is on, and ⌘/Ctrl+Enter
+  // always. It takes the key (prevented): the thread's Send skips a prevented key, so ⌘/Ctrl+Enter here never sends
+  // the drafts waiting under the comment.
+  const replyByKey = async (words: string, init: KeyboardEventInit) => {
+    act(() => el.querySelector<HTMLButtonElement>('[data-sent-comment="rep-msg-1"] [data-sent-reply-to]')!.click());
+    const box = el.querySelector<HTMLTextAreaElement>('[data-sent-replies="rep-msg-1"] textarea')!;
+    await type(box, words);
+    const key = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init });
+    await act(async () => {
+      box.dispatchEvent(key);
+    });
+    return key;
+  };
   configStore.set('enterSavesComment', true);
   try {
-    act(() => el.querySelector<HTMLButtonElement>('[data-sent-comment="rep-msg-1"] [data-sent-reply-to]')!.click());
-    const again = el.querySelector<HTMLTextAreaElement>('[data-sent-replies="rep-msg-1"] textarea')!;
-    await type(again, 'And the lead.');
-    const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
-    await act(async () => {
-      again.dispatchEvent(enter);
-    });
-    await until(() => thread()?.querySelectorAll('[data-sent-reply-draft]').length === 2, 'the second draft, saved by the key');
+    const enter = await replyByKey('And the lead.', {});
+    await until(() => thread()?.querySelectorAll('[data-sent-reply-draft]').length === 2, 'the second draft, saved by Enter');
     expect(enter.defaultPrevented).toBe(true);
   } finally {
     configStore.set('enterSavesComment', false);
   }
+  const chord = await replyByKey('And the backup.', { metaKey: true });
+  await until(() => thread()?.querySelectorAll('[data-sent-reply-draft]').length === 3, 'the third draft, saved by ⌘Enter');
+  expect(chord.defaultPrevented).toBe(true);
 }, 30_000);
 
 test.skipIf(!hasDom)("on a file, the agent's reply is a card under its comment's, never painted, and the person replies from the sent card", async () => {
