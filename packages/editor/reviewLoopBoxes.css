@@ -69,7 +69,8 @@ button.ib-sentb-quote:hover, button.ib-sentb-quote:focus-visible { color: var(--
 .ib-sentb-new { background: color-mix(in oklab, var(--primary) 22%, var(--card)); color: var(--foreground); font-weight: 600; }
 .ib-sentb-live { background: color-mix(in oklab, var(--primary) 12%, var(--card)); color: var(--foreground); }
 /* An open sub-thread's passage, marked in the message's words; the box a reply or a comment on a passage is written in. */
-.ib-sentc-mark { background: color-mix(in oklab, var(--primary) 18%, transparent); color: inherit; border-radius: 2px; }
+.ib-sentc-mark { background: oklch(0.70 0.18 60 / 0.3); border-bottom: 2px solid var(--accent); color: inherit; border-radius: 2px; }
+.light .ib-sentc-mark { background: oklch(0.70 0.20 60 / 0.15); }
 .ib-sentc-boxquote { margin: 0; font-size: var(--ib-fs-12, 12px); color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ib-sentc-box { display: grid; gap: 4px; padding: 4px 6px; }
 .ib-sentb-boxrow > .ib-sentc-box { padding: 8px 12px; }
