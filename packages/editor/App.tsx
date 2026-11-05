@@ -277,7 +277,7 @@ import { useAnnotationJump } from './hooks/useAnnotationJump';
 import { planRevisionBlocker, usePlanRevisions, type PlanRevisionSnapshot } from './hooks/usePlanRevisions';
 import { useReviewLoop } from './hooks/useReviewLoop';
 import { useReviewLoopPanel } from './components/ReviewLoopPanel';
-import { mergeHostMessages, reviewLoopCommentInputs, reviewLoopEndState, withoutSent, type ReviewLoopCommentInput } from './reviewLoop';
+import { mergeHostMessages, reviewLoopCommentInputs, reviewLoopEndState, reviewLoopOpenThreads, withoutSent, type ReviewLoopCommentInput } from './reviewLoop';
 import type { ReviewAnchor, ReviewThreadNode } from '@plannotator/core/review-threads';
 import { AgentNudgeBanner } from './components/AgentNudgeBanner';
 import { useDocumentWebMcp } from './webmcp/useDocumentWebMcp';
@@ -4619,6 +4619,7 @@ const App: React.FC = () => {
   // …" row: the body is a bare approval, so no notes reach the agent even on
   // a host that would deliver them.
   const handleApprove = async (options?: { discardFeedback?: boolean }): Promise<boolean> => {
+    if (askBeforeEndingWithOpenThreads('approved', () => headerHandlersRef.current.handleApprove(options))) return false;
     setIsSubmitting(true);
     sendStarted();
     let sentFeedback: string | undefined;
@@ -4744,6 +4745,52 @@ const App: React.FC = () => {
     } finally {
       sendSettled();
     }
+  };
+
+  // ── The end of a review with comment threads still open (personal version, own/ branch) ──
+  /**
+   * Approve or Done while sent comment threads are still open (the bench's R4
+   * and R6): as crit's "Resolve all & approve", the person may resolve them
+   * all and end the review, go back to them, or end it with them open (the
+   * agent then reads which stay open). Only under the loop with its host.
+   */
+  const [openThreadsEnd, setOpenThreadsEnd] = useState<{ ending: 'approved' | 'done'; ids: string[]; proceed: () => Promise<boolean> } | null>(null);
+  const endConfirmedRef = useRef(false);
+  /** The loop's view as last drawn: the end waits for the resolutions to be in it, so the agent reads them. */
+  const drawnLoopIndexRef = useRef(reviewLoop.index);
+  drawnLoopIndexRef.current = reviewLoop.index;
+  const askBeforeEndingWithOpenThreads = (ending: 'approved' | 'done', proceed: () => Promise<boolean>): boolean => {
+    if (endConfirmedRef.current || !reviewLoop.connected) return false;
+    const ids = reviewLoopOpenThreads(reviewLoop.index);
+    if (ids.length === 0) return false;
+    setOpenThreadsEnd({ ending, ids, proceed });
+    return true;
+  };
+  /** Ends the review as asked, past the question. */
+  const endReviewAnyway = (proceed: () => Promise<boolean>) => {
+    setOpenThreadsEnd(null);
+    endConfirmedRef.current = true;
+    try {
+      void proceed();
+    } finally {
+      endConfirmedRef.current = false;
+    }
+  };
+  /** Resolves every open thread, then ends the review; a thread that did not resolve stops it, said so. */
+  const resolveAllAndEnd = async (asked: { ids: string[]; proceed: () => Promise<boolean> }) => {
+    setOpenThreadsEnd(null);
+    for (const id of asked.ids) {
+      const result = await reviewLoop.resolve(id, true);
+      if (!result.ok) {
+        toast.error('Not every comment was resolved', { description: result.error });
+        return;
+      }
+    }
+    // The decision reads the page as drawn: wait (briefly) until the resolutions are.
+    for (let tries = 0; tries < 40 && asked.ids.some((id) => reviewLoopOpenThreads(drawnLoopIndexRef.current).includes(id)); tries += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    endReviewAnyway(asked.proceed);
   };
 
   // ── The review loop's rounds (experimental "persistent-comments") ──────────
@@ -4960,6 +5007,9 @@ const App: React.FC = () => {
      *  path only, since the empty-menu collapse removed the framed note. */
     approvalFraming?: boolean;
   }): Promise<boolean> => {
+    // Done (nothing left to send) is an end of the review too.
+    if (!options?.discardAnnotations && !options?.approvalFraming && !hasFeedbackToSend
+      && askBeforeEndingWithOpenThreads('done', () => headerHandlersRef.current.handleAnnotateFeedback(options))) return false;
     setIsSubmitting(true);
     sendStarted();
     let sentFeedback: string | undefined;
@@ -5071,6 +5121,7 @@ const App: React.FC = () => {
      *  transport cannot deliver what the reviewer chose to discard. */
     discardAnnotations?: boolean;
   }): Promise<boolean> => {
+    if (askBeforeEndingWithOpenThreads('approved', () => headerHandlersRef.current.handleAnnotateApprove(options))) return false;
     setIsSubmitting(true);
     sendStarted();
     let sentFeedback: string | undefined;
@@ -8715,6 +8766,23 @@ const App: React.FC = () => {
             onShowComments={agentHasComments && !isPanelOpen ? () => { setIsPanelOpen(true); setAgentNudge(null); } : undefined}
           />
         )}
+
+        {/* Personal version: Approve or Done with comment threads still open. */}
+        <ConfirmDialog
+          isOpen={openThreadsEnd !== null}
+          onClose={() => setOpenThreadsEnd(null)}
+          onConfirm={() => { if (openThreadsEnd) void resolveAllAndEnd(openThreadsEnd); }}
+          title={openThreadsEnd ? (openThreadsEnd.ids.length === 1 ? '1 comment thread is still open' : `${openThreadsEnd.ids.length} comment threads are still open`) : ''}
+          message={openThreadsEnd?.ending === 'done' ? 'Resolve them all and finish the review, or go back to them.' : 'Resolve them all and approve, or go back to them.'}
+          subMessage={openThreadsEnd ? (
+            <button type="button" data-open-threads-end="anyway" className="text-xs text-muted-foreground underline-offset-4 hover:underline" onClick={() => endReviewAnyway(openThreadsEnd.proceed)}>
+              {openThreadsEnd.ending === 'done' ? 'Finish with them open' : 'Approve with them open'}
+            </button>
+          ) : undefined}
+          confirmText={openThreadsEnd?.ending === 'done' ? 'Resolve all & finish' : 'Resolve all & approve'}
+          cancelText="Go back"
+          showCancel
+        />
 
         {/* The review loop's round: "Feedback Sent" over the page; the review goes on under it. */}
         {roundOverlay && !submitted && (

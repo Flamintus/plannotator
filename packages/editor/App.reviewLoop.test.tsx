@@ -351,4 +351,38 @@ describe.if(hasDom)("the review loop on an annotate screen", () => {
     expect(document.querySelector("[data-completion-state]")?.getAttribute("data-completion-state")).toBe("denied");
     expect(document.querySelector("[data-completion-over-page]")).toBeNull();
   });
+
+  test("personal version: Done with a thread still open asks first; Go back sends nothing, Resolve all & finish resolves it and tells the agent", async () => {
+    await mountAndRestore();
+    await pressPrimary();
+    await press("[data-completion-back]");
+    posts = [];
+    const dialog = () => document.querySelector<HTMLElement>("[data-plannotator-confirm-dialog]");
+    const button = (words: string) => Array.from(dialog()?.querySelectorAll<HTMLButtonElement>("button") ?? []).find((b) => b.textContent?.trim() === words);
+
+    await press("[data-decision-primary]");
+    expect(dialog()?.textContent).toContain("1 comment thread is still open");
+    await act(async () => { button("Go back")!.click(); });
+    await settle();
+    expect(dialog()).toBeNull();
+    expect(posts).toEqual([]);
+
+    await press("[data-decision-primary]");
+    await act(async () => { button("Resolve all & finish")!.click(); });
+    for (let attempt = 0; attempt < 20 && !posts.some((post) => post.path === "/api/feedback"); attempt += 1) await settle(10);
+    expect(posts.map((post) => post.path)).toEqual(["/api/threads/resolve", "/api/feedback"]);
+    expect(posts[1]!.body.feedback).toBe("Review done: every comment thread is resolved. Nothing more is asked.");
+  });
+
+  test("personal version: Finish with them open ends the review as asked, and the agent reads which stay open", async () => {
+    await mountAndRestore();
+    await pressPrimary();
+    await press("[data-completion-back]");
+    posts = [];
+    await press("[data-decision-primary]");
+    await press("[data-open-threads-end=\"anyway\"]");
+    for (let attempt = 0; attempt < 20 && !posts.some((post) => post.path === "/api/feedback"); attempt += 1) await settle(10);
+    expect(posts.map((post) => post.path)).toEqual(["/api/feedback"]);
+    expect(posts[0]!.body.feedback).toBe("Review done; 1 comment thread stays open: annRetry. Nothing more is asked.");
+  });
 });
