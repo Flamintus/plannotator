@@ -1095,7 +1095,7 @@ export function plannotatorSendOutcome(mode: 'now' | 'round', round: number, com
 
 /** The result of a `reply` call. */
 export function plannotatorToolRepliedText(sessionId: string, ids: readonly string[]): string {
-  return `Replied under ${ids.join(', ')} in ${sessionId}. The person sees your replies in the open review and alone resolves a comment; their next comments arrive as a message that names ${sessionId}.`
+  return `Replied under ${ids.join(', ')} in ${sessionId}. The person sees your replies in the open review and alone resolves a comment; their next comments arrive as one line that names ${sessionId}.`
 }
 
 /** `reply` or `threads` on a review whose Plannotator has no comment threads (an older one). */

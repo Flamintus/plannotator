@@ -173,7 +173,8 @@ export function wakeCommandOf(
   const { store } = context;
   if (item.message && item.sends.length === 0) return options.messageCommand(item.message);
   const records = store.sentAnnotations(item.thread_id);
-  const comments = inboxCommentsWake(item.sends, records);
+  // `read`: read_thread on the send's id shows what the sends carry (commentSendReadText), so a wake on them alone may leave them out.
+  const comments = { ...inboxCommentsWake(item.sends, records), read: true };
   const receiver = session ?? item.sends[0]!.to.session;
   const now = options.sendNow && item.sends.some((send) => sendNowAsked(send, receiver)) ? { now: true } : {};
   if (item.message) {

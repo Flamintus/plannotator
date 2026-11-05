@@ -958,9 +958,10 @@ export interface InboxReplyCommand {
    * round stays open; `round`: the person finished it); how many comments,
    * replies and sub-threads they carry. The body holds their text. Comments
    * alone: the command's `id` is the oldest send's, which `reply_to` and
-   * read_thread's `message_id` take; the wake is `inboxCommentsOnlyWakeLine`
-   * and leaves the body out (a round is not a message: read_thread with that
-   * id shows it). With the person's words: the command is their message's,
+   * read_thread's `message_id` take; when the Inbox says read_thread with
+   * that id shows what the sends carry (`read: true`), the wake is
+   * `inboxCommentsOnlyWakeLine` and leaves the body out (a round is not a
+   * message), else (an older Inbox) the comments line and the body. With the person's words: the command is their message's,
    * the text follows the words, and the wake adds `inboxCommentsWakeLine`. Sends waiting
    * in one thread go together only to a connection whose poll said it
    * returns `sends` with `delivered` (`INBOX_COMMENTS_POLL_FIELD`); any other
@@ -968,7 +969,7 @@ export interface InboxReplyCommand {
    * connection ignores the field and delivers the command as a reply.
    * Absent on every other command.
    */
-  comments?: { sends: string[]; round: number; mode: 'now' | 'round'; count: number }
+  comments?: { sends: string[]; round: number; mode: 'now' | 'round'; count: number; read?: boolean }
 }
 
 /**
@@ -1011,13 +1012,13 @@ export function inboxCommentsOnlyWakeLine(comments: { round?: unknown; mode?: un
   return `${commentsWakeWhat(comments)} Read them with ${tool} read_thread (message_id ${id}) and answer under each id with ${tool} send_message: comment_replies and no body. Then end your turn without a message in chat: the person reads your replies in the Inbox.`
 }
 
-/** A command's `comments`, when it reads as one: its sends' ids, round, mode and count. */
-function wakeComments(value: unknown): { sends: string[]; round: number; mode: 'now' | 'round'; count: number } | null {
+/** A command's `comments`, when it reads as one: its sends' ids, round, mode and count, and whether read_thread shows them by the send's id. */
+function wakeComments(value: unknown): { sends: string[]; round: number; mode: 'now' | 'round'; count: number; read: boolean } | null {
   if (!value || typeof value !== 'object') return null
-  const { sends, round, mode, count } = value as Record<string, unknown>
+  const { sends, round, mode, count, read } = value as Record<string, unknown>
   if (!Array.isArray(sends) || !sends.every((id) => typeof id === 'string') || (mode !== 'now' && mode !== 'round')) return null
   const whole = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0
-  return whole(round) && whole(count) ? { sends: sends as string[], round, mode, count } : null
+  return whole(round) && whole(count) ? { sends: sends as string[], round, mode, count, read: read === true } : null
 }
 
 /**
@@ -1365,8 +1366,9 @@ export function inboxWakeText(
     }
     return `Plannotator Inbox: ${subject} (${command.id})\n${INBOX_TAGGED_INSTRUCTION}\n${inboxTaggedLine(owner, command.id)}${commentsLine}\n\n${command.body}${closing}`
   }
-  // A round is not a message: the comments stay out of the wake, read_thread with the send's id shows them.
-  if (commentsOnly) return `Plannotator Inbox: ${subject} (${command.id})\n${inboxCommentsOnlyWakeLine(comments, command.id, toolName)}${closing}`
+  // A round is not a message: the comments stay out of the wake when read_thread with the send's id shows them (an older Inbox: the line and the body).
+  if (commentsOnly && comments.read) return `Plannotator Inbox: ${subject} (${command.id})\n${inboxCommentsOnlyWakeLine(comments, command.id, toolName)}${closing}`
+  if (commentsOnly) return `Plannotator Inbox: ${subject} (${command.id})${commentsLine}\n\n${command.body}${closing}`
   const others = Array.isArray(command.also_tagged)
     ? command.also_tagged
         .filter((name) => typeof name === 'string' && name.trim() !== '')

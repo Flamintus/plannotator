@@ -109,7 +109,7 @@ describe("review loop on a screen", () => {
     expect(handed!.text).not.toContain("(id c1)");
     // The agent's read carries the round, the page's lines under a comment included, before every thread.
     const read = ((await host("GET", "/api/host/threads"))!.body as { text: string }).text;
-    expect(read).toStartWith("Mostly fine.");
+    expect(read).toStartWith("On /repo/notes.md\nMostly fine.");
     expect(read).toContain("(id c1)\nAttached image: /tmp/shot.png");
     expect(read).toContain('session "pn-3f2a9c"');
     expect(events.some((event) => event.type === "review-threads")).toBe(true);

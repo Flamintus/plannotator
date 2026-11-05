@@ -283,6 +283,27 @@ describe('register', () => {
     expect(reachedBeneath).toEqual(['frontend-status'])
   })
 
+  // A round is not a message (#1116): with the review loop on, /plannotator-last opens on the newest
+  // real message, past a round's turn, whose tool results are rows with no words of their own.
+  test("the review loop on: last opens past a round's turn, through its tool results", async ($: any, on: any) => {
+    const w = world(on, { env: { PLANNOTATOR_EXPERIMENTAL: 'persistent-comments' } })
+    on('session.messages', () => ({
+      value: [
+        { role: 'assistant', text: 'Here is the design.', toolUses: [] },
+        { role: 'user', text: 'The plannotator plugin sent a message: Plannotator: notes.md (pn-3f2a9c) — Round 1 done · 2 comments. Read the round with …', toolUses: [] },
+        { role: 'assistant', text: 'Reading the round.', toolUses: [] },
+        { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'tu-1', text: 'Session: pn-3f2a9c', isError: false }] },
+        { role: 'assistant', text: 'Replied under both.', toolUses: [] },
+      ],
+    }))
+    await $.session.start(SESSION)
+
+    await $.command.run({ command: 'plannotator-last', args: '', origin: { kind: 'composer' } })
+
+    const launch = w.runs.find((argv) => argv[3] === 'plannotator-launch')!
+    expect(w.files.get(`${launch[4]}/stdin`)).toBe('Here is the design.')
+  })
+
   test('knob off (PLANNOTATOR_CLAUDE_MOD=0): inert. ExitPlanMode and the skills reach the classic flow; nothing is registered or set', async ($: any, on: any) => {
     const w = world(on, { modEnv: '0' })
     on('tool.call', () => ({ result: 'the classic flow ran' }))

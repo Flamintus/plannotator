@@ -97,6 +97,8 @@ export interface ReviewComment extends ReviewCommentFields {
   updated_at: string;
   /** The client's own drawing data (a Plannotator annotation, for instance), opaque to the rules. */
   annotation?: Record<string, unknown>;
+  /** Lines under the comment's heading in what the agent reads of its round (an attached image's path, an element), as the client wrote them. */
+  notes?: string[];
 }
 
 /** What the rules read of an agent's reply under a comment. */

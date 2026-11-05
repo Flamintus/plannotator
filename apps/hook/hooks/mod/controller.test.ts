@@ -605,6 +605,22 @@ describe('the plannotator tool', () => {
     expect(host.files.get(`${launchDirOf(last!)}/stdin`)).toBe('Here is the design.')
   })
 
+  test("last opens on the newest real message with the review loop on; off, on the newest text as before", async () => {
+    const round = 'Plannotator: notes.md (pn-3f2a9c) — Round 2 done · 3 comments. Read the round with …'
+    const loop = { ...SESSION, reviewLoop: { toolReply: () => true } }
+    for (const [session, newest] of [[loop, 'Here is the design.'], [SESSION, 'Replied under the comments.']] as const) {
+      const host = fakeHost()
+      serveOnLaunch(host)
+      host.transcript = [
+        { role: 'assistant', text: 'Here is the design.' },
+        { role: 'user', text: round },
+        { role: 'assistant', text: 'Replied under the comments.' },
+      ]
+      await new PlannotatorMod(host, session).runTool({ action: 'last' })
+      expect(host.files.get(`${launchDirOf(launches(host)[0]!)}/stdin`)).toBe(newest)
+    }
+  })
+
   test('a bad call and a startup failure are error results, and nothing stays open', async () => {
     const host = fakeHost()
     host.onRun = (call) => {
@@ -1835,6 +1851,10 @@ describe('the review loop: reply, threads, and last\'s next messages', () => {
     const mod = new PlannotatorMod(host, LOOP_SESSION)
     await mod.runTool({ action: 'last' })
     await host.tick()
+    // The screen's own newest message, pushed once.
+    mod.onTurnComplete('turn-0', 'First answer.', false)
+    await host.tick()
+    expect(pushed).toHaveLength(1)
     const rounds = [
       // A screen's send as this mod submits it, framed as the engine keeps a plugin's prompt.
       'The plannotator plugin sent a message: Plannotator: notes.md (pn-3f2a9c) — Round 2 done · 3 comments. Read the round with …',
@@ -1854,8 +1874,8 @@ describe('the review loop: reply, threads, and last\'s next messages', () => {
       mod.onTurnComplete(`round-${index}`, 'Replied.', false)
       await host.tick()
     }
-    // At most the message the screen opened with, never a round's words.
-    expect(pushed.flatMap((body) => body.messages.map((message) => message.text))).toEqual(pushed.length > 0 ? ['First answer.'] : [])
+    // Nothing new to pick: a round's words are no message.
+    expect(pushed).toHaveLength(1)
     host.transcript = [...host.transcript, { role: 'user', text: 'And the deploy?' }, { role: 'assistant', text: 'Deploy on Tuesday.' }]
     mod.onTurnComplete('turn-1', 'Deploy on Tuesday.', false)
     await host.tick()

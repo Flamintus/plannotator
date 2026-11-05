@@ -42,6 +42,7 @@ import {
   reviewJournalKey,
   reviewJournalView,
   reviewJournalWakeText,
+  reviewTargetLine,
   sendReviewComments,
   writeReviewComment,
   type ReviewCommentInput,
@@ -89,13 +90,6 @@ async function readStdin(stream: ReadableStream<Uint8Array>): Promise<string | n
   return new TextDecoder().decode(Buffer.concat(chunks));
 }
 
-/** How a review's target reads in a list or a heading. */
-function targetLine(target: ReviewTarget | null): string {
-  if (!target) return "(target unknown)";
-  if (target.kind === "last") return `the last messages of ${target.host} session ${target.session}`;
-  if (target.kind === "file") return target.path;
-  return `plan ${target.slug} (${target.project})`;
-}
 
 /** How a review is named in its wake's heading: a file from the folder the client runs in, the last messages, the plan. */
 function wakeSubject(target: ReviewTarget | null, root: string): string {
@@ -163,7 +157,7 @@ export async function runThreadsCommand(argv: readonly string[], deps: ThreadsCo
       const reviews = listReviewJournals(deps.dataDir);
       if (json) io.out(JSON.stringify(reviews));
       else if (reviews.length === 0) io.out("No review has threads.");
-      else for (const review of reviews) io.out(`${review.key}  ${targetLine(review.target)}: round ${review.round}, ${review.open} open, ${review.drafts} draft${review.drafts === 1 ? "" : "s"}`);
+      else for (const review of reviews) io.out(`${review.key}  ${reviewTargetLine(review.target)}: round ${review.round}, ${review.open} open, ${review.drafts} draft${review.drafts === 1 ? "" : "s"}`);
       return 0;
     }
     if (!isReviewJournalKey(key)) throw new ReviewJournalError("invalid", `Not a review key: ${key}. \`plannotator threads\` lists the reviews.`);
@@ -172,7 +166,7 @@ export async function runThreadsCommand(argv: readonly string[], deps: ThreadsCo
     // What was sent: the person's drafts are theirs until a send carries them.
     if (json) io.out(JSON.stringify({ review: key, target: state.target, ...reviewJournalView(state, { sent: true, agentName: inboxAgentName }) }));
     // The sends the agent has not answered first (a send's wake is one line that points here), then every thread.
-    else io.out(`Review ${key}, on ${targetLine(state.target)}\n${reviewJournalAgentRead(state, { root: deps.cwd, how: reviewCliHow(key), agentName: inboxAgentName })}`);
+    else io.out(`Review ${key}, on ${reviewTargetLine(state.target)}\n${reviewJournalAgentRead(state, { root: deps.cwd, how: reviewCliHow(key), agentName: inboxAgentName })}`);
     return 0;
   });
 }

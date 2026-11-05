@@ -10,7 +10,7 @@ import { INBOX_TAGGED_INSTRUCTION, INBOX_WAKE_INSTRUCTION, inboxCommentsOnlyWake
 const base = { type: "reply" as const, thread_id: "msg_01THREAD", subject: "Rollout", body: "# Comments on your work\n\n### 1. Comment … (id c-1)\n> One store first." };
 
 test("comments alone: a round is not a message, so one line says the round, reads the comments by the send's id, and the body stays out", () => {
-  const comments = { sends: ["snd_01A"], round: 2, mode: "now" as const, count: 1 };
+  const comments = { sends: ["snd_01A"], round: 2, mode: "now" as const, count: 1, read: true };
   const now = inboxWakeText({ ...base, id: "snd_01A", comments });
   const lines = now.split("\n");
   expect(lines[1]).toBe(inboxCommentsOnlyWakeLine(comments, "snd_01A"));
@@ -23,6 +23,10 @@ test("comments alone: a round is not a message, so one line says the round, read
   // The tool as the host registered it; an unusable name falls back to the plain one.
   expect(inboxWakeText({ ...base, id: "snd_01A", comments }, "mcp__plannotator__plannotator_inbox")).toContain("mcp__plannotator__plannotator_inbox read_thread (message_id snd_01A)");
   expect(inboxCommentsOnlyWakeLine(comments, "snd_01A", "no such tool")).toBe(inboxCommentsOnlyWakeLine(comments, "snd_01A"));
+  // An older Inbox, whose read_thread does not show a send's comments by its id: the comments line and the body, as before.
+  const older = inboxWakeText({ ...base, id: "snd_01A", comments: { ...comments, read: undefined } });
+  expect(older.split("\n")[1]).toBe(inboxCommentsWakeLine(comments));
+  expect(older).toContain(base.body);
 });
 
 test("with the person's words: their reply's instruction stays, the comments line follows it", () => {

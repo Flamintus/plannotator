@@ -137,13 +137,16 @@ describe("the person's side", () => {
 
   test("a round is not a message: its wake is one line, and the agent's read carries what it has not answered before every thread", () => {
     const how = { read: "READ.", reply: "REPLY.", wake: "WAKE." };
-    writeReviewComment(opts(), ref, { id: "c1", on: onMessage, text: "one" });
+    writeReviewComment(opts(), ref, { id: "c1", on: onMessage, text: "one", notes: ["Attached image: /tmp/c1.png", " "] });
+    expect(refused(() => writeReviewComment(opts(), ref, { id: "c9", on: onMessage, text: "x", notes: "no" as unknown as string[] }))).toBe("invalid");
     const first = sendReviewComments(opts(), ref, { mode: "now", ids: ["c1"] });
     let state = readReviewJournal(dataDir, ref)!;
+    expect(state.comments[0]!.notes).toEqual(["Attached image: /tmp/c1.png"]);
     expect(reviewJournalWakeText(state, [first.send.id], how)).toStartWith("WAKE. Answer now");
     expect(reviewJournalWakeText(state, [first.send.id], how)).not.toContain("one");
-    const read = reviewJournalAgentRead(state, { root, how, detail: (record) => ({ notes: [`notes of ${record.id}`] }) });
-    expect(read.indexOf("(id c1)\nnotes of c1\n> one")).toBeGreaterThan(-1);
+    // The comment's notes, as its client wrote them, under its heading.
+    const read = reviewJournalAgentRead(state, { root, how });
+    expect(read.indexOf("(id c1)\nAttached image: /tmp/c1.png\n> one")).toBeGreaterThan(-1);
     expect(read).toContain("REPLY.");
     expect(read.indexOf("(id c1)")).toBeLessThan(read.indexOf("- c1 (open"));
     // Answered: the read is the threads alone, as before; the next round waits again.
@@ -157,6 +160,12 @@ describe("the person's side", () => {
     expect(reviewJournalPendingSends(state).map((send) => send.id)).toEqual([finish.send.id]);
     expect(reviewJournalAgentRead(state, { root, how })).not.toContain("(id c1)");
     expect(reviewJournalAgentRead(null, { root, how })).toBe("Round 1: no comment yet.");
+    // A send that came while the agent answered the one before stays waiting: its own comment has no reply yet.
+    writeReviewComment(opts(), ref, { id: "c3", on: onMessage, text: "three" });
+    const late = sendReviewComments(opts(), ref, { mode: "now", ids: ["c3"] });
+    replyInReview(opts(), ref, [{ id: "c2", text: "done too" }]);
+    state = readReviewJournal(dataDir, ref)!;
+    expect(reviewJournalPendingSends(state).map((send) => send.id)).toEqual([late.send.id]);
     // A round with nothing to read, words included, says so.
     expect(reviewJournalWakeText({ ...state, sends: [{ ...finish.send, comments: [], words: null }] }, [finish.send.id], how)).toStartWith("No comment is open");
     expect(reviewJournalWakeText({ ...state, sends: [{ ...finish.send, comments: [], words: "Edits." }] }, [finish.send.id], how)).toStartWith("WAKE.");
