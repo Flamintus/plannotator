@@ -82,12 +82,11 @@ const QUOTE_MAX = 20_000;
 
 /** A refusal: `code` for a program, `message` for a person or an agent. */
 export class ReviewJournalError extends Error {
-  constructor(
-    readonly code: "not_found" | "invalid" | "conflict" | "locked",
-    message: string,
-  ) {
+  readonly code: "not_found" | "invalid" | "conflict" | "locked";
+  constructor(code: ReviewJournalError["code"], message: string) {
     super(message);
     this.name = "ReviewJournalError";
+    this.code = code;
   }
 }
 
