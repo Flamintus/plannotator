@@ -796,7 +796,8 @@ export interface ExportAnnotationsOptions {
 }
 
 /** The short ids Plannotator mints for comments (a UUID, `global-…`, the
- *  Inbox's `ann-code-…`): the same shape the Inbox store accepts. */
+ *  Inbox's `ann-code-…`): the same shape the Inbox store accepts (core's
+ *  `isInboxAnnotationId`; packages/inbox/commentIds.test.ts keeps them equal). */
 const COMMENT_ID_RE = /^[A-Za-z0-9_.:-]{1,200}$/;
 
 /** ` (id <annotation id>)`, the end of an exported entry's heading, or ''
