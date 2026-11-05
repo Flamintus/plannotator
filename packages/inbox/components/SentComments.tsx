@@ -9,8 +9,9 @@
  *
  * Each thread is a box in the document's flow, as crit's: right under the
  * block its passage starts in (ui Viewer `belowBlock`), in an agent's message
- * and in a Markdown or text file; the ones whose passage was not found at
- * the end, said so. At its head the passage and its round, Reply and Resolve;
+ * and in a Markdown or text file, placed by ui's `sentThreadSlots` as on the
+ * screens; at the end, a comment on the whole file, then the ones whose
+ * passage was not found, Unanchored. At its head the passage and its round, Reply and Resolve;
  * then its messages: the comment, and the replies under it, the agents'
  * (`comment_replies`, written with their message) and the person's (a draft
  * until the next Send carries it), each with who wrote it and its round. A
@@ -81,15 +82,14 @@ import {
 import type { TextPassage } from '@plannotator/core/passage';
 import type { InboxAnnotationRecord, InboxCommentReplyRecord } from '@plannotator/core/inbox-types';
 import type { Annotation, Block } from '@plannotator/ui/types';
-import { SentSendButton, SentStatusChip, SentThreads, useSentThreadsView, type ReplyInput, type SubThreadSave } from '@plannotator/ui/components/inbox-thread/SentThreads';
+import { SentChips, SentSendButton, sentThreadSlots, useSentThreadsView, type ReplyInput, type SubThreadSave } from '@plannotator/ui/components/inbox-thread/SentThreads';
 import type { PassageToolbarOptions } from '@plannotator/ui/components/PassageToolbar';
 import { passageCommentFields } from '@plannotator/ui/utils/passageSelection';
-import { CommentListMeta } from '@plannotator/ui/components/inbox-thread/CommentListMeta';
+import { SentListLine } from '@plannotator/ui/components/inbox-thread/CommentListMeta';
 import type { SentCommentsTree } from '@plannotator/ui/components/inbox-thread/sentCommentsTree';
-import { Icon } from '@plannotator/ui/components/inbox-thread/icons';
 import { InboxApiError, inboxApi, type AttachmentsModel } from '../api';
 import { annotationOf, isFileComment } from '../attachments';
-import { agentReplyAnnotation, commentOfCard, followCodeLines, placeThreads, sentCommentsParts, sentUnanchoredChanges, withSentWrites } from '../sentComments';
+import { agentReplyAnnotation, commentOfCard, followCodeLines, sentCommentsParts, sentUnanchoredChanges, withSentWrites } from '../sentComments';
 import { newUuid } from '../uuid';
 import { useTagConnections } from './TagPicker';
 
@@ -362,19 +362,7 @@ export function useSentComments(input: {
     const list = boxesByMessage.get(messageId);
     if (!list) return undefined;
     const actions = live && canResolve ? { onResolve: resolve, onReply: reply, onSubThread: subThread, ...(sendAction ? { onSend: sendAction } : {}) } : {};
-    return (blocks: readonly Block[]) => {
-      const { byBlock, rest } = placeThreads(list, new Set(blocks.map((block) => block.id)));
-      const threadsOn = (key: string, records: readonly InboxAnnotationRecord[], lost?: boolean) => (
-        <SentThreads key={key} group={`${messageId}:${key}`} records={records} tree={tree} view={view} lost={lost} onOpen={onOpen} passageToolbar={MESSAGE_TOOLBAR} {...actions} />
-      );
-      return {
-        below: (block: Block) => {
-          const on = byBlock.get(block.id);
-          return on ? threadsOn(block.id, on) : null;
-        },
-        after: rest.length > 0 ? threadsOn('end', rest, true) : null,
-      };
-    };
+    return (blocks: readonly Block[]) => sentThreadSlots(list, blocks, { group: messageId, tree, view, onOpen, passageToolbar: MESSAGE_TOOLBAR, ...actions });
   };
   return {
     records,
@@ -410,8 +398,8 @@ export function useSentComments(input: {
  * (`panelAnnotations`), and one opened again is painted again (`repaint`);
  * replies, the agents' and the person's, and sub-threads are cards under the
  * message they are on, never painted; words selected in a sent card offer a
- * comment on that passage (`onCommentPassage`), and its open sub-threads'
- * passages are marked in its words (`cardPassages`); and what the pane finds
+ * comment on that passage (`onCommentPassage`), and its sub-threads'
+ * passages, resolved or not, are marked in its words (`cardPassages`); and what the pane finds
  * of their words is reported once per comment and file read (`view.key`), so
  * a reload of the records never sends it again.
  */
@@ -461,7 +449,7 @@ export function useSentFileComments(input: {
   const folded = useMemo(() => inboxCommentsHiddenUnderFolded(replyIds, inboxCommentSitsUnder(fileRecords, agentHere), foldedIds), [replyIds, fileRecords, agentHere, foldedIds]);
   /** The thread's replies, sub-threads and passages: this file's are looked up in it by id. */
   const sentTree = sent?.tree ?? NO_TREE;
-  /** The passages marked in each card's words: its sub-threads still open. */
+  /** The passages marked in each card's words: its sub-threads', resolved or not. */
   const passagesOn = sentTree.passages;
   const text = view?.text;
   const codeLines = useMemo(() => (isCode && text !== undefined && sentIds.size > 0 ? text.split('\n') : null), [isCode, text, sentIds]);
@@ -522,17 +510,8 @@ export function useSentFileComments(input: {
           return (
             <>
               {own}
-              <span className="ib-sentc-chip" data-sent-round={round}>
-                Round {round}
-              </span>
-              <SentStatusChip status={statuses?.get(annotation.id)} />
-              {resolvedIds.has(annotation.id) && (
-                // As the boxes': "✓ Resolved" in the success colour.
-                <span className="ib-sentc-chip ib-sentb-resolved" data-sent-resolved="">
-                  <Icon name="check" size={11} />
-                  Resolved
-                </span>
-              )}
+              {/* What a box's head says, in the same chips. */}
+              <SentChips round={round} status={statuses?.get(annotation.id)} resolved={resolvedIds.has(annotation.id)} />
             </>
           );
         };
@@ -565,21 +544,16 @@ export function useSentFileComments(input: {
   const onResolve = sent?.onResolve;
   const onSend = readOnly ? undefined : sent?.onSend;
   const sendableHere = useMemo(() => new Set(onSend ? drafts.filter((r) => r.path === path && r.version === version && isInboxCommentSendable(r)).map((r) => r.id) : []), [onSend, drafts, path, version]);
-  /** Flat: ui's `CommentListMeta` under each comment, as the screens' panel and the comments list. */
+  /** Flat: ui's list line under each comment (`SentListLine`), as the screens' panel and the comments list. */
   const flatFooter = (annotation: Annotation): ReactNode => {
-    const record = sentById.get(annotation.id);
-    if (!record) {
-      if (!draftIds.has(annotation.id)) return null;
-      return <CommentListMeta draft {...(!readOnly && onSend && sendableHere.has(annotation.id) ? { onSend: () => onSend(annotation.id) } : {})} />;
-    }
-    const thread = !isInboxCommentReply(record);
+    const record = sentById.get(annotation.id) ?? (draftIds.has(annotation.id) ? fileRecords.find((r) => r.id === annotation.id) : undefined);
+    if (!record) return null;
     return (
-      <CommentListMeta
-        round={rounds.get(record.id)}
-        status={statuses?.get(record.id)}
-        resolved={thread ? resolvedIds.has(record.id) : undefined}
-        replies={thread ? (sent?.tree.replies.get(record.id)?.length ?? 0) : 0}
-        {...(thread && !readOnly && onResolve ? { onResolve: (resolved: boolean) => onResolve(record, resolved) } : {})}
+      <SentListLine
+        entry={{ id: record.id, sent_reply_id: record.sent_reply_id, reply: isInboxCommentReply(record) }}
+        tree={sentTree}
+        {...(!readOnly && onSend && sendableHere.has(record.id) ? { onSend: () => onSend(record.id) } : {})}
+        {...(!readOnly && onResolve ? { onResolve: (resolved: boolean) => onResolve(record, resolved) } : {})}
       />
     );
   };
@@ -650,27 +624,17 @@ export function useSentFileComments(input: {
     },
     [reportUnanchored],
   );
-  const fileTree = sentTree;
   /**
    * The threads on the document drawn (its blocks), for its viewer (`below`,
-   * ui Viewer `belowBlock`) and after it (`after`: the ones whose passage was
-   * not found). Undefined: no sent comment here.
+   * ui Viewer `belowBlock`) and after it (`after`: a comment on the whole
+   * file, then the ones whose passage was not found). Undefined: no sent
+   * comment here.
    */
   const slotsFor = (blocks: readonly Block[]) => {
     if (roots.length === 0) return undefined;
     const movedHere = moved.key === (view?.key ?? '') ? moved.blocks : undefined;
-    const { byBlock, rest } = placeThreads(roots, new Set(blocks.map((block) => block.id)), { moved: movedHere });
     const actions = live ? { onResolve, onReply: sent?.onReply, onSubThread, ...(onSend ? { onSend } : {}) } : {};
-    const threadsOn = (key: string, records: readonly InboxAnnotationRecord[], lost?: boolean) => (
-      <SentThreads key={key} group={`file:${key}`} records={records} tree={fileTree} view={threadsView} lost={lost} passageToolbar={FILE_TOOLBAR} {...actions} />
-    );
-    return {
-      below: (block: Block) => {
-        const on = byBlock.get(block.id);
-        return on ? threadsOn(block.id, on) : null;
-      },
-      after: rest.length > 0 ? threadsOn('end', rest, true) : null,
-    };
+    return sentThreadSlots(roots, blocks, { group: 'file', tree: sentTree, view: threadsView, passageToolbar: FILE_TOOLBAR, ...actions }, { moved: movedHere });
   };
 
   return {

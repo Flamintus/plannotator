@@ -18,10 +18,12 @@
  * deletion, a quick label's).
  */
 import type { ReviewThreadsState } from '@plannotator/core/external-annotation';
+import { passageOffset } from '@plannotator/core/passage';
 import type { ReviewAnchor, ReviewReplyNode, ReviewThreadNode, ReviewThreadView } from '@plannotator/core/review-threads';
 import { AnnotationType, type Annotation } from '@plannotator/ui/types';
 import { PASSAGE_ANNOTATION_PREFIX } from '@plannotator/ui/utils/annotationOwnsHighlight';
 import type { PassageMark } from '@plannotator/ui/utils/passageSelection';
+import { subThreadMark } from '@plannotator/ui/components/inbox-thread/sentCommentsTree';
 
 /** The loop as the page reads it while it is available. */
 export type ReviewLoopState = Extract<ReviewThreadsState, { available: true }>;
@@ -207,7 +209,11 @@ export function reviewLoopCards(input: {
   return out;
 }
 
-/** The passages to mark in a card's words: the open sub-threads on it, sent (the view) or the page's drafts; a deletion's as one. */
+/**
+ * The passages to mark in a card's words: every sub-thread on it, resolved or not, as the document keeps every
+ * comment's highlight, sent (the view, marked as the boxes mark them: `subThreadMark`) or the page's drafts; a
+ * deletion's as one.
+ */
 export function reviewLoopPassages(input: {
   index: ReviewLoopIndex;
   /** The page's sub-thread drafts. */
@@ -221,17 +227,16 @@ export function reviewLoopPassages(input: {
   const add = (on: string, passage: PassageMark) => out.set(on, [...(out.get(on) ?? []), passage]);
   for (const element of input.index.elements.values()) {
     const node = element.node as ReviewThreadNode;
-    if (element.kind !== 'thread' || element.under === null || node.state !== 'open' || !node.parent) continue;
-    add(element.under, { quote: node.quote, offset: node.parent.quote_offset, ...(node.type === 'deletion' ? { deletion: true } : {}) });
+    if (element.kind !== 'thread' || element.under === null || !node.parent) continue;
+    add(element.under, subThreadMark(node));
   }
   for (const draft of input.drafts) {
     if (!draft.inReplyTo || !isPassageAnnotation(draft)) continue;
     const known = input.offsets.get(draft.id);
     const words = input.wordsOf(draft.inReplyTo) ?? '';
     const found = words.indexOf(draft.originalText);
-    // An offset counts whitespace runs as one and drops the leading run (@plannotator/core/passage).
-    const offset = found >= 0 ? words.slice(0, found).replace(/^\s+/, '').replace(/\s+/g, ' ').length : 0;
-    add(draft.inReplyTo, { quote: draft.originalText, offset: known ?? offset, ...(draft.type === AnnotationType.DELETION ? { deletion: true } : {}) });
+    const offset = known ?? (found >= 0 ? passageOffset(words, found) : 0);
+    add(draft.inReplyTo, { quote: draft.originalText, offset, ...(draft.type === AnnotationType.DELETION ? { deletion: true } : {}) });
   }
   return out;
 }

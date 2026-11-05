@@ -16,7 +16,7 @@
  */
 import { findPassage, passageOffset, type TextPassage } from '@plannotator/core/passage';
 import { AnnotationType, type Annotation } from '../types';
-import type { QuickLabel } from './quickLabels';
+import { quickLabelText, THUMBS_UP_LABEL, type QuickLabel } from './quickLabels';
 
 export const PASSAGE_BODY_ATTRIBUTE = 'data-passage-body';
 /** On each piece of a body drawn in pieces (a message's words cut by the sub-threads' boxes between its blocks). */
@@ -103,7 +103,7 @@ export const DELETION_COMMENT: PassageComment = { text: '', type: AnnotationType
 
 /** A quick label on a passage: a comment whose words are the label's emoji and text, with its tip, as on a document's words. */
 export function quickLabelComment(label: QuickLabel): PassageComment {
-  return { text: `${label.emoji} ${label.text}`, type: AnnotationType.COMMENT, isQuickLabel: true, ...(label.tip ? { quickLabelTip: label.tip } : {}) };
+  return { text: quickLabelText(label), type: AnnotationType.COMMENT, isQuickLabel: true, ...(label.tip ? { quickLabelTip: label.tip } : {}) };
 }
 
 /** The fields a passage comment gives its annotation beyond its words: its type and its label, as a document's comment carries them. */
@@ -113,6 +113,21 @@ export function passageCommentFields(comment: PassageComment): { type: Annotatio
     ...(comment.isQuickLabel ? { isQuickLabel: true } : {}),
     ...(comment.quickLabelTip ? { quickLabelTip: comment.quickLabelTip } : {}),
   };
+}
+
+/**
+ * What kind of comment an annotation is, the toolbar's actions read back (`DELETION_COMMENT`, `quickLabelComment`,
+ * Comment), at any depth and on any client: a deletion; 👍 Looks good, by its exact words (as other clients write it,
+ * plannotator-tui's journal among them); another quick label, by its words; else a comment.
+ */
+export type CommentKind = { kind: 'comment' } | { kind: 'deletion' } | { kind: 'looks-good' } | { kind: 'label'; words: string };
+
+export function commentKind(annotation: { type?: unknown; text?: unknown; isQuickLabel?: unknown }): CommentKind {
+  if (annotation.type === AnnotationType.DELETION) return { kind: 'deletion' };
+  const words = typeof annotation.text === 'string' ? annotation.text.trim() : '';
+  if (words === quickLabelText(THUMBS_UP_LABEL)) return { kind: 'looks-good' };
+  if (annotation.isQuickLabel === true && words !== '') return { kind: 'label', words };
+  return { kind: 'comment' };
 }
 
 /** A passage a body marks; `deletion`: its comment asks for the words to go, marked as a document marks a deletion. */

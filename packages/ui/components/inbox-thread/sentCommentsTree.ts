@@ -7,13 +7,16 @@
  * rounds from `inboxCommentRounds`, the resolved ids from `inboxCommentState`
  * (with `inboxCommentLastReplies`) and the messages with an open sub-thread under them from
  * `inboxOpenSubThreadPaths`; `placeThreads` names the block each thread goes
- * under (`Viewer`'s `belowBlock`), and `placeOnMessage` the block of a
- * message's words each sub-thread goes under.
+ * under (`Viewer`'s `belowBlock`; `isGeneralThread`, a comment on the whole
+ * document, at its end), and `placeOnMessage` the block of a message's words
+ * each sub-thread goes under: one placement at every depth.
  *
  * A host that keeps no records of its own (the screens' review loop, any
  * client of the neutral thread view of `@plannotator/core/review-threads`)
  * builds the same props from that view alone, with its own drafts beside it
- * (`sentThreadsFromView`), so every web client draws the same boxes.
+ * (`sentThreadsFromView`), so every web client draws the same boxes. Both
+ * read the view by one walk (`walkThreadView`), and a message's passages are
+ * marked by one rule (`subThreadMark`), the screens' cards included.
  */
 
 import type { InboxCommentSendStatus } from '@plannotator/core/inbox-comment-sends';
@@ -98,33 +101,68 @@ export interface SentCommentsParts<R extends SentThreadRecord = InboxAnnotationR
  */
 export function sentCommentsParts<R extends SentThreadRecord, A>(view: ReviewThreadView<A>, records: readonly R[]): SentCommentsParts<R> {
   const byId = new Map(records.map((record) => [record.id, record]));
-  const parts: SentCommentsParts<R> = { replies: new Map(), subThreads: new Map(), passages: new Map(), replyRounds: new Map(), statuses: new Map(), live: new Set() };
-  const subThreadsOn = (host: string, subs: readonly ReviewThreadNode<A>[]) => {
-    const list = subs.flatMap((sub) => byId.get(sub.id) ?? []);
-    if (list.length > 0) parts.subThreads.set(host, list);
-    // Every sub-thread's passage stays marked, resolved or not, as a comment's highlight stays in the document.
-    const marked = subs.map(subThreadMark);
-    if (marked.length > 0) parts.passages.set(host, marked);
-    for (const sub of subs) walk(sub);
+  const { replies, subThreads, passages, replyRounds, statuses, live } = walkThreadView(view, (node) => byId.get(node.id));
+  return { replies, subThreads, passages, replyRounds, statuses, live };
+}
+
+/**
+ * The one walk of a thread view that every host's boxes are read from (`sentCommentsParts`, `sentThreadsFromView`),
+ * at any depth: each thread's replies (the person's named `person`), the sub-threads on each message (`recordOf`'s
+ * records, then the host's drafts), the passages each message marks (every sub-thread's, resolved or not, as the
+ * document keeps every comment's highlight, then the host's drafts'), the rounds (a thread's by what carried it, a
+ * person's sent reply's by its send too, and each sent reply's by id), what became of each send, the live and the
+ * resolved threads, and the threads with something open under them (a sub-thread open, or a draft of the host's).
+ */
+function walkThreadView<A, R extends SentThreadRecord>(
+  view: ReviewThreadView<A>,
+  recordOf: (node: ReviewThreadNode<A>) => R | undefined,
+  options: { person?: string; drafts?: SentViewDrafts<R> } = {},
+) {
+  const { person = 'You', drafts = {} } = options;
+  const out = {
+    replies: new Map<string, SentReplyRow[]>(),
+    subThreads: new Map<string, R[]>(),
+    passages: new Map<string, PassageMark[]>(),
+    replyRounds: new Map<string, number>(),
+    rounds: new Map<string, number>(),
+    statuses: new Map<string, InboxCommentSendStatus>(),
+    live: new Set<string>(),
+    resolved: new Set<string>(),
+    openBelow: new Set<string>(),
   };
-  const walk = (node: ReviewThreadNode<A>) => {
-    if (node.status) parts.statuses.set(node.id, node.status);
-    if (node.live) parts.live.add(node.id);
-    if (node.replies.length > 0) {
-      parts.replies.set(
-        node.id,
-        node.replies.map((reply) => ({ id: reply.id, who: reply.author_name ?? 'You', round: reply.draft ? undefined : reply.round, text: reply.text, at: reply.at, draft: reply.draft })),
-      );
-    }
+  /** Whether anything under a thread, at any depth, is open. */
+  const walk = (node: ReviewThreadNode<A>): boolean => {
+    if (!node.draft) out.rounds.set(node.reply_id, node.round);
+    if (node.state === 'resolved') out.resolved.add(node.id);
+    if (node.status) out.statuses.set(node.id, node.status);
+    if (node.live) out.live.add(node.id);
+    const own = drafts.replies?.get(node.id) ?? [];
+    const rows: SentReplyRow[] = node.replies.map((reply) => ({ id: reply.id, who: reply.author_name ?? person, round: reply.draft ? undefined : reply.round, text: reply.text, at: reply.at, draft: reply.draft }));
+    if (rows.length + own.length > 0) out.replies.set(node.id, [...rows, ...own]);
+    let open = own.length > 0;
+    const on = (message: string, subs: readonly ReviewThreadNode<A>[]) => {
+      const added = drafts.subThreads?.get(message) ?? [];
+      const list = [...subs.flatMap((sub) => recordOf(sub) ?? []), ...added];
+      if (list.length > 0) out.subThreads.set(message, list);
+      if (added.length > 0) open = true;
+      const marked = [...subs.map(subThreadMark), ...(drafts.passages?.get(message) ?? [])];
+      if (marked.length > 0) out.passages.set(message, marked);
+      for (const sub of subs) if (walk(sub) || sub.state !== 'resolved') open = true;
+    };
     for (const reply of node.replies) {
-      if (!reply.draft) parts.replyRounds.set(reply.id, reply.round);
-      if (reply.status) parts.statuses.set(reply.id, reply.status);
-      subThreadsOn(reply.id, reply.sub_threads);
+      if (!reply.draft) {
+        out.replyRounds.set(reply.id, reply.round);
+        if (reply.author.kind !== 'agent' && reply.message_id !== '') out.rounds.set(reply.message_id, reply.round);
+      }
+      if (reply.status) out.statuses.set(reply.id, reply.status);
+      on(reply.id, reply.sub_threads);
     }
-    subThreadsOn(node.id, node.sub_threads);
+    on(node.id, node.sub_threads);
+    if (open) out.openBelow.add(node.id);
+    return open;
   };
   for (const node of view.threads) walk(node);
-  return parts;
+  return out;
 }
 
 /**
@@ -152,6 +190,15 @@ export function placeThreads<R extends SentThreadRecord>(
 }
 
 /**
+ * A comment on the whole document: no passage, and neither a sub-thread (its passage is in a message) nor a comment
+ * on part of an image or an element (no words, but a place). It goes at the document's end, never Unanchored.
+ */
+export function isGeneralThread(record: SentThreadRecord): boolean {
+  const { originalText, type } = record.annotation;
+  return (originalText ?? '') === '' && typeof record.parent !== 'string' && (type === undefined || type === AnnotationType.GLOBAL_COMMENT);
+}
+
+/**
  * The blocks of a message's words as its box draws them (pre-wrapped): its
  * paragraphs, which blank lines part, each from its first line's start to its
  * last line's end in `text`.
@@ -176,7 +223,7 @@ export function messageBlocks(text: string): { start: number; end: number }[] {
 }
 
 /** A sub-thread's passage as its message marks it, from the thread view: where it starts, and whether it asks for the words to go. */
-function subThreadMark<A>(sub: ReviewThreadNode<A>): PassageMark {
+export function subThreadMark<A>(sub: Pick<ReviewThreadNode<A>, 'quote' | 'parent' | 'type'>): PassageMark {
   return { quote: sub.quote, offset: sub.parent?.quote_offset ?? 0, ...(sub.type === 'deletion' ? { deletion: true } : {}) };
 }
 
@@ -187,11 +234,11 @@ export function subThreadPassage(record: SentThreadRecord): TextPassage | undefi
   return { quote, offset: typeof record.quote_offset === 'number' && record.quote_offset >= 0 ? record.quote_offset : 0 };
 }
 
-/** A piece of a message's words as its box draws it (`from` to `to` in them), and what goes under it. */
+/** A piece of a message's words as its box draws it (`from` to `to` in them), and what goes under it (`found`: its passage is in the words). */
 export interface MessagePiece<T> {
   from: number;
   to: number;
-  under: T[];
+  under: { item: T; found: boolean }[];
 }
 
 /**
@@ -200,7 +247,8 @@ export interface MessagePiece<T> {
  * document its passage starts in: each under the block of the words
  * (`messageBlocks`) its passage starts in, several on one block in the order
  * of their passages (the order given when two start at the same place); one
- * whose passage is not found, at the message's end, after the others. The
+ * whose passage is not found, at the message's end, after the others, said
+ * so (`found` false: its box is Unanchored, as a thread's at a document's end). The
  * words are cut after each block something goes under, the blank lines that
  * part it from the next left out (the boxes part them); a message whose
  * sub-threads all go under its last block is one piece, its words whole.
@@ -211,14 +259,14 @@ export function placeOnMessage<T>(text: string, items: readonly T[], passageOf: 
   const placed = items.map((item, order) => {
     const passage = passageOf(item);
     const found = passage ? findPassage(text, passage) : null;
-    if (!found) return { item, order, block: last, at: Number.POSITIVE_INFINITY };
+    if (!found) return { item, order, block: last, at: Number.POSITIVE_INFINITY, found: false };
     let block = 0;
     while (block < last && blocks[block + 1]!.start <= found[0]) block++;
-    return { item, order, block, at: found[0] };
+    return { item, order, block, at: found[0], found: true };
   });
   placed.sort((a, b) => a.block - b.block || (a.at === b.at ? 0 : a.at < b.at ? -1 : 1) || a.order - b.order);
-  const under = new Map<number, T[]>();
-  for (const entry of placed) under.set(entry.block, [...(under.get(entry.block) ?? []), entry.item]);
+  const under = new Map<number, MessagePiece<T>['under']>();
+  for (const entry of placed) under.set(entry.block, [...(under.get(entry.block) ?? []), { item: entry.item, found: entry.found }]);
   const pieces: MessagePiece<T>[] = [];
   let from = 0;
   for (let block = 0; block < last; block++) {
@@ -232,11 +280,11 @@ export function placeOnMessage<T>(text: string, items: readonly T[], passageOf: 
 }
 
 /** The person's drafts a host keeps beside the neutral thread view (its own, not in the view yet). */
-export interface SentViewDrafts {
+export interface SentViewDrafts<R extends SentThreadRecord = SentThreadRecord> {
   /** The person's draft replies under each thread, by the thread's id, oldest first. */
   replies?: ReadonlyMap<string, readonly SentReplyRow[]>;
   /** The person's draft sub-threads on each message (a comment, a reply, a sub-thread), by its id. */
-  subThreads?: ReadonlyMap<string, readonly SentThreadRecord[]>;
+  subThreads?: ReadonlyMap<string, readonly R[]>;
   /** The passages of those draft sub-threads, by the message they are on. */
   passages?: ReadonlyMap<string, readonly PassageMark[]>;
 }
@@ -262,7 +310,7 @@ export function sentThreadsFromView<A>(
     person?: string;
   } = {},
 ): { threads: SentThreadRecord[]; tree: SentCommentsTree<SentThreadRecord> } {
-  const { annotationOf, drafts = {}, fresh, person = 'You' } = options;
+  const { annotationOf, drafts, fresh, person } = options;
   const recordOf = (node: ReviewThreadNode<A>): SentThreadRecord => ({
     id: node.id,
     annotation: annotationOf?.(node.id) ?? { originalText: node.quote, text: node.text, ...(node.type === 'deletion' ? { type: AnnotationType.DELETION } : {}) },
@@ -270,42 +318,7 @@ export function sentThreadsFromView<A>(
     ...(node.parent ? { parent: node.parent.id, quote_offset: node.parent.quote_offset } : {}),
     ...(node.unanchored ? { unanchored_at: 'unanchored' } : {}),
   });
-  const rounds = new Map<string, number>();
-  const resolved = new Set<string>();
-  const openBelow = new Set<string>();
-  const replies = new Map<string, SentReplyRow[]>();
-  const subThreads = new Map<string, SentThreadRecord[]>();
-  const passages = new Map<string, PassageMark[]>();
-  const statuses = new Map<string, InboxCommentSendStatus>();
-  const live = new Set<string>();
-  /** Whether anything under a thread, at any depth, is open: a sub-thread open or a draft of the host's. */
-  const walk = (node: ReviewThreadNode<A>): boolean => {
-    if (!node.draft) rounds.set(node.reply_id, node.round);
-    if (node.state === 'resolved') resolved.add(node.id);
-    if (node.status) statuses.set(node.id, node.status);
-    if (node.live) live.add(node.id);
-    const own = drafts.replies?.get(node.id) ?? [];
-    const rows: SentReplyRow[] = node.replies.map((reply) => ({ id: reply.id, who: reply.author_name ?? person, round: reply.draft ? undefined : reply.round, text: reply.text, at: reply.at, draft: reply.draft }));
-    if (rows.length + own.length > 0) replies.set(node.id, [...rows, ...own]);
-    let open = own.length > 0;
-    const on = (message: string, subs: readonly ReviewThreadNode<A>[]) => {
-      const list = [...subs.map(recordOf), ...(drafts.subThreads?.get(message) ?? [])];
-      if (list.length > 0) subThreads.set(message, list);
-      if ((drafts.subThreads?.get(message)?.length ?? 0) > 0) open = true;
-      // Every sub-thread's passage stays marked, resolved or not, as in the Inbox and the document.
-      const marked = [...subs.map(subThreadMark), ...(drafts.passages?.get(message) ?? [])];
-      if (marked.length > 0) passages.set(message, marked);
-      for (const sub of subs) if (walk(sub) || sub.state !== 'resolved') open = true;
-    };
-    for (const reply of node.replies) {
-      if (reply.status) statuses.set(reply.id, reply.status);
-      on(reply.id, reply.sub_threads);
-    }
-    on(node.id, node.sub_threads);
-    if (open) openBelow.add(node.id);
-    return open;
-  };
-  for (const node of view.threads) walk(node);
+  const { rounds, resolved, replies, subThreads, openBelow, passages, statuses, live } = walkThreadView(view, recordOf, { person, drafts });
   return {
     threads: view.threads.map(recordOf),
     tree: { rounds, resolved, replies, subThreads, openBelow, passages, statuses, live, ...(fresh ? { fresh } : {}) },

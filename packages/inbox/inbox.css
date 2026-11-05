@@ -7810,12 +7810,16 @@ dialog.ib-zx .ib-listcol.ib-zx-list { position: relative; inset: auto; visibilit
    Resolve; then its messages, the comment and each reply (who, round, words); a sub-thread is a box in the box, in the
    message whose passage it is on, under the block of its words the passage starts in, at the same indent at each level.
    A resolved thread with nothing open under it folds to one "Resolved" line; with an open sub-thread under it, it stays
-   open, marked Resolved. */
-.ib-sentb { display: grid; gap: 8px; margin: 6px 0 14px; font-size: var(--ib-fs-14, 14px); line-height: 1.5; color: var(--foreground); }
-.ib-sentb-lost { margin: 0; font-size: var(--ib-fs-12, 12px); color: var(--muted-foreground); }
+   open, marked Resolved.
+   A group of boxes is one element at every depth (a document block's threads, `.ib-sentb`; a message block's sub-threads,
+   `.ib-sentb-subs`): one rule gives every box, whatever its depth and its kind, the same room above and below. */
+.ib-sentb, .ib-sentb-subs { display: grid; gap: 8px; margin: 14px 0; }
+.ib-sentb { font-size: var(--ib-fs-14, 14px); line-height: 1.5; color: var(--foreground); }
 .ib-sentb-card { min-width: 0; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in oklch, var(--muted) 28%, var(--card)); overflow: hidden; }
 .ib-sentb-card[data-sent-draft] { border-style: dashed; }
 .ib-sentb-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 6px 8px 6px 10px; border-bottom: 1px solid var(--border); background: color-mix(in oklch, var(--muted) 60%, var(--card)); }
+/* A box that is all head (a deletion with no words) ends on the frame, not on a second line. */
+.ib-sentb-head:last-child { border-bottom: 0; }
 .ib-sentb-quote { flex: 1 1 14em; min-width: 0; margin: 0; padding: 1px 0 1px 8px; border: 0; border-left: 3px solid color-mix(in oklab, var(--primary) 55%, transparent); background: none; color: var(--muted-foreground); font: inherit; font-size: var(--ib-fs-13, 13px); text-align: left; }
 button.ib-sentb-quote { cursor: pointer; border-radius: 0 4px 4px 0; }
 button.ib-sentb-quote:hover, button.ib-sentb-quote:focus-visible { color: var(--foreground); background: color-mix(in oklab, var(--primary) 8%, transparent); }
@@ -7832,6 +7836,8 @@ button.ib-sentb-quote:hover, button.ib-sentb-quote:focus-visible { color: var(--
 /* A deletion (the person asks for the words to go, on the document or on a passage of a message): said at its head, its
    passage struck through as the document strikes a deletion's words. */
 .ib-sentb-deletion { background: color-mix(in oklab, var(--destructive) 14%, var(--card)); color: var(--destructive); font-weight: 600; }
+/* A 👍 Looks good says so at its head, in the success colour (a label says its own words, plainly). */
+.ib-sentb-good { background: color-mix(in oklab, var(--success, var(--primary)) 16%, var(--card)); color: var(--success, var(--foreground)); font-weight: 600; }
 .ib-sentb-card[data-sent-deletion] > .ib-sentb-head .ib-sentb-qt { text-decoration: line-through; text-decoration-color: var(--destructive); }
 /* A resolved thread kept open by a sub-thread under it: its own words quieter, the open sub-thread as it is. */
 :is(.ib-sentb-card[data-sent-resolved] > .ib-sentb-msg, .ib-sentb-card[data-sent-resolved] > .ib-sentb-replies > .ib-sentb-msg) > :is(.ib-sentb-meta, .ib-sentc-said),
@@ -7844,9 +7850,10 @@ button.ib-sentb-quote:hover, button.ib-sentb-quote:focus-visible { color: var(--
 .ib-sentc-who { flex: none; font-weight: 600; color: var(--foreground); }
 .ib-sentc-said { margin: 0; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 /* Sub-threads: boxes in the box, under the block of the message's words their passage starts in, at the same indent at
-   each level; the words go on below them. */
-.ib-sentb-subs { display: grid; gap: 8px; margin: 8px 0 2px; padding-left: 12px; border-left: 2px solid var(--border); }
-.ib-sentb-subs:not(:last-child) { margin-bottom: 8px; }
+   each level; the words go on below them. At the message's end the group keeps the same room below, the message's own
+   padding counted. */
+.ib-sentb-subs { padding-left: 12px; border-left: 2px solid var(--border); }
+.ib-sentb-msg > .ib-sentb-subs:last-child { margin-bottom: 6px; }
 .ib-sentb-subs > .ib-sentb-card { background: var(--card); }
 .ib-sentb-subs > .ib-sentb-card .ib-sentb-subs > .ib-sentb-card { background: color-mix(in oklch, var(--muted) 28%, var(--card)); }
 /* The folded thread: one line, "Resolved", its passage and how much it holds; a press opens it to be read. */

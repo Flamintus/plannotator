@@ -10,12 +10,14 @@
  * (it goes alone, at once) and Resolve or Reopen for a sent thread.
  *
  * One element for every list: the screens' annotations panel and the Inbox
- * window's comments list. Host-neutral (props only); drawn with Tailwind's
+ * window's comments list, each entry read from the boxes' tree by one
+ * mapping (`SentListLine`). Host-neutral (props only); drawn with Tailwind's
  * theme tokens, which both apps compile from ui's components.
  */
 import { useState, type ReactNode } from 'react';
 import type { InboxCommentSendStatus } from '@plannotator/core/inbox-comment-sends';
 import { SENT_STATUS_WORDS } from './SentThreads';
+import type { SentCommentsTree, SentThreadRecord } from './sentCommentsTree';
 
 /** "↳ 1 reply under the passage", "↳ 3 replies under the passage". */
 export function repliesUnderPassage(count: number): string {
@@ -73,6 +75,57 @@ function SendButton({ onSend, className }: { onSend: () => Promise<boolean>; cla
     >
       Send
     </button>
+  );
+}
+
+/** One entry of a flat list as the boxes' tree knows it: a comment or a sub-thread, or a reply (`reply`), and what carried it (null: a draft). */
+export interface SentListEntry {
+  id: string;
+  sent_reply_id: string | null;
+  reply?: boolean;
+}
+
+/**
+ * The line of one entry of a flat list, read from the boxes' tree (`SentCommentsTree`): the one reading of a
+ * comment's round, status, resolution and replies for every list (the Inbox's comments list and its file panel, the
+ * screens' column), so a list says what the comment's box says. A draft: "Not sent", and Send with `onSend`. A
+ * thread (a comment or a sub-thread): its round, its send's status (`withoutStatus`: the host says it did not
+ * arrive), "✓ Resolved" with Resolve or Reopen (`onResolve`) and the replies under its passage. A reply: its round
+ * and status. `children`: the host's own controls (a Retry).
+ */
+export function SentListLine({
+  entry,
+  tree,
+  onSend,
+  onResolve,
+  withoutStatus = false,
+  children,
+}: {
+  entry: SentListEntry;
+  tree: Pick<SentCommentsTree<SentThreadRecord>, 'rounds' | 'resolved' | 'replies' | 'statuses'>;
+  onSend?: () => Promise<boolean>;
+  onResolve?: (resolved: boolean) => void;
+  withoutStatus?: boolean;
+  children?: ReactNode;
+}) {
+  if (entry.sent_reply_id === null) {
+    return (
+      <CommentListMeta draft {...(onSend ? { onSend } : {})}>
+        {children}
+      </CommentListMeta>
+    );
+  }
+  const thread = entry.reply !== true;
+  return (
+    <CommentListMeta
+      round={tree.rounds.get(entry.sent_reply_id)}
+      status={withoutStatus ? undefined : tree.statuses?.get(entry.id)}
+      resolved={thread ? tree.resolved.has(entry.id) : undefined}
+      replies={thread ? (tree.replies.get(entry.id)?.length ?? 0) : 0}
+      {...(thread && onResolve ? { onResolve } : {})}
+    >
+      {children}
+    </CommentListMeta>
   );
 }
 

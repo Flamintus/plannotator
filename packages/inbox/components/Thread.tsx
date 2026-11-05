@@ -146,7 +146,7 @@ import { useSentComments } from './SentComments';
 import { unfoldOpenThreads } from '../sentComments';
 import { isInboxCommentSendable } from '@plannotator/core/inbox-comment-sends';
 import { isInboxCommentReply } from '@plannotator/core/inbox-comment-threads';
-import { CommentListMeta } from '@plannotator/ui/components/inbox-thread/CommentListMeta';
+import { SentListLine } from '@plannotator/ui/components/inbox-thread/CommentListMeta';
 
 export { routeSendAnnotations, sendTargetsOf, type SendTarget };
 
@@ -2531,24 +2531,19 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
     else if (listHome && (records.some((record) => record.id === id) || sentComments.records.some((record) => record.id === id))) setCommentsList((open) => ({ at: id, press: (open?.press ?? 0) + 1 }));
   };
   /**
-   * A comment's line in the list (experimental "persistent-comments"; ui's `CommentListMeta`, as the screens' panel):
-   * a draft "Not sent" (and Send, with comment sends); a sent one its round, what became of its send, its resolution
-   * with Resolve or Reopen, and how many replies are under its passage (read in its box). Off: no line.
+   * A comment's line in the list (experimental "persistent-comments"; ui's `SentListLine`, as the screens' panel and
+   * the file's): a draft "Not sent" (and Send, with comment sends); a sent one its round, what became of its send, its
+   * resolution with Resolve or Reopen, and how many replies are under its passage (read in its box). Off: no line.
    */
   const commentMeta = (record: InboxAnnotationRecord): React.ReactNode => {
     if (!files?.sent_comments) return null;
-    const tree = sentComments.tree;
-    const send = sentComments.send;
-    if (record.sent_reply_id === null) return <CommentListMeta draft {...(send && isInboxCommentSendable(record) ? { onSend: () => send(record.id) } : {})} />;
-    const thread = !isInboxCommentReply(record);
-    const resolve = sentComments.resolve;
+    const { send, resolve } = sentComments;
     return (
-      <CommentListMeta
-        round={tree.rounds.get(record.sent_reply_id)}
-        status={tree.statuses?.get(record.id)}
-        resolved={thread ? tree.resolved.has(record.id) : undefined}
-        replies={thread ? (tree.replies.get(record.id)?.length ?? 0) : 0}
-        {...(thread && resolve ? { onResolve: (resolved: boolean) => resolve(record, resolved) } : {})}
+      <SentListLine
+        entry={{ id: record.id, sent_reply_id: record.sent_reply_id, reply: isInboxCommentReply(record) }}
+        tree={sentComments.tree}
+        {...(send && isInboxCommentSendable(record) ? { onSend: () => send(record.id) } : {})}
+        {...(resolve ? { onResolve: (resolved: boolean) => resolve(record, resolved) } : {})}
       />
     );
   };

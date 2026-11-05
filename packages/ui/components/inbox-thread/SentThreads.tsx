@@ -1,31 +1,42 @@
 /**
  * The Plannotator Inbox's comment threads as boxes in a document's flow, as
  * crit's (its comments that stay after Send, experimental
- * "persistent-comments"), moved here unchanged from
- * packages/inbox/components/SentComments.tsx so a host of the shared thread
- * parts draws the same boxes. The host draws a group of threads under the
- * block their passage starts in (`placeThreads`, `Viewer`'s `belowBlock`) and
- * passes what it shows: the threads as core's records, their replies,
- * sub-threads and passages (`SentCommentsTree`, sentCommentsTree.ts), and the person's actions,
- * each absent when the person cannot take it. The look is the Inbox's
- * `ib-sentb-*` and `ib-sentc-*` rules, which stay in packages/inbox/inbox.css
- * and ship in @plannotator/ui/inbox-thread.css.
+ * "persistent-comments"), moved here from
+ * packages/inbox/components/SentComments.tsx so every web client draws the
+ * same boxes (the Inbox window, the screens' review loop). One code draws a
+ * box, a group of boxes and what a box's head says, at any depth and for any
+ * kind of comment: a thread on the document and a sub-thread on a message's
+ * words are the same box, the depth and the kind only parameters. A host
+ * places its threads with `sentThreadSlots` (under the block each passage
+ * starts in, `Viewer`'s `belowBlock`; at the document's end the general
+ * comments, then the Unanchored ones) and passes what it shows: the threads
+ * as core's records, their replies, sub-threads and passages
+ * (`SentCommentsTree`, sentCommentsTree.ts), and the person's actions, each
+ * absent when the person cannot take it. The look is the Inbox's `ib-sentb-*`
+ * and `ib-sentc-*` rules, which stay in packages/inbox/inbox.css and ship in
+ * @plannotator/ui/inbox-thread.css.
  *
- * At a box's head the passage and its round, Reply and Resolve; then its
- * messages: the comment, and the replies under it, each with who wrote it
- * and its round (a draft says Not sent). A sub-thread is a box in the box,
- * in the message whose passage it is on, under the block (paragraph) of its
- * words where the passage starts, as a thread sits under its block in the
- * document; its passage marked in those words. A resolved thread folds to
- * one "Resolved" line (a press opens it to be read) only once nothing under
- * it, at any depth, is open.
+ * At a box's head the passage and what the head says of it (`SentChips`: its
+ * kind when not a comment, Deletion, Looks good or its label; its round or
+ * Not sent, a draft's Send at any depth; its send's status, Live,
+ * ✓ Resolved, Unanchored), Reply and Resolve; then its messages: the comment, and the
+ * replies under it, each with who wrote it (a reply its status or New, never
+ * the round the head says). A sub-thread is a box in the box, in the message
+ * whose passage it is on, under the block (paragraph) of its words where the
+ * passage starts, as a thread sits under its block in the document, in a
+ * group of boxes like the document's (`BoxGroup`, one rule for the room
+ * above and below every box); its passage marked in those words; one whose
+ * passage is not found, at the message's end, Unanchored. A resolved thread
+ * folds to one "Resolved" line (a press opens it to be read) only once
+ * nothing under it, at any depth, is open.
  *
  * A sub-thread is a comment like one on the document's words: words selected
- * in a message offer the document's selection toolbar (`passageToolbar`, the
- * host's `Viewer` options: Delete, Comment, the quick labels, 👍 Looks good),
- * and each action makes the same kind of comment (`PassageComment`); a
- * deletion says so at its head ("Deletion", its passage struck through, as
- * the document strikes a deletion's words), on the document's threads too.
+ * in a message offer the document's selection toolbar (`PassageToolbar`, the
+ * one way to comment on a passage of a message, with the host's `Viewer`
+ * options: Delete, Comment, the quick labels, 👍 Looks good), and each action
+ * makes the same kind of comment (`PassageComment`); a deletion says so at
+ * its head ("Deletion", its passage struck through, as the document strikes
+ * a deletion's words), on the document's threads too.
  *
  * With comment sends (the host passes `onSend` and the tree's `statuses`,
  * `live` and `fresh`): a draft, the comment, a reply under one or a
@@ -35,19 +46,19 @@
  * person's next replies in it go on their own); and an agent's reply the
  * person has not seen yet is New.
  */
-import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { isInboxCommentThreadFolded, isInboxSubThread } from '@plannotator/core/inbox-comment-threads';
 import type { TextPassage } from '@plannotator/core/passage';
 import type { InboxAnnotationRecord } from '@plannotator/core/inbox-types';
 import type { InboxCommentSendStatus } from '@plannotator/core/inbox-comment-sends';
 import { useConfigValue } from '../../config';
 import { AnnotationType, type Annotation } from '../../types';
-import { PassageToolbar, type PassageToolbarOptions } from '../PassageToolbar';
-import { PASSAGE_BODY_ATTRIBUTE, PASSAGE_PIECE_ATTRIBUTE, passageRanges, selectedPassage, splitByRanges, type PassageComment, type PassageMark, type SelectedPassage } from '../../utils/passageSelection';
+import { PassageToolbar, usePassageOffer, type PassageToolbarOptions } from '../PassageToolbar';
+import { commentKind, PASSAGE_BODY_ATTRIBUTE, PASSAGE_PIECE_ATTRIBUTE, passageRanges, selectedPassage, splitByRanges, type CommentKind, type PassageComment, type PassageMark, type SelectedPassage } from '../../utils/passageSelection';
 import { isCommentSubmitKey } from '../../utils/commentSubmitKey';
 import { Icon } from './icons';
 import { shortLabel } from './shortLabel';
-import { placeOnMessage, subThreadPassage, type SentCommentsTree, type SentReplyRow, type SentThreadRecord } from './sentCommentsTree';
+import { isGeneralThread, placeOnMessage, placeThreads, subThreadPassage, type SentCommentsTree, type SentReplyRow, type SentThreadRecord } from './sentCommentsTree';
 
 const NO_RECORDS: readonly SentThreadRecord[] = [];
 const NO_IDS: ReadonlySet<string> = new Set();
@@ -134,23 +145,16 @@ const THREADS_ATTRIBUTE = 'data-sent-threads';
 export function useSentThreadsView(offering: boolean, folded: ReadonlySet<string>): SentThreadsView {
   const surface = useId();
   const [box, setBox] = useState<ListBox | null>(null);
-  const [offer, setOffer] = useState<SentThreadsView['offer']>(null);
   const [shownIds, setShown] = useState<ReadonlySet<string>>(NO_IDS);
-  const closeOffer = useCallback(() => setOffer(null), []);
-  useEffect(() => {
-    if (!offering) return;
-    const offerPassage = () => {
-      const selection = document.getSelection();
-      const range = selection && selection.rangeCount > 0 && !selection.isCollapsed ? selection.getRangeAt(0) : null;
-      const groupOf = (node: Node | null) => (node instanceof Element ? node : (node?.parentElement ?? null))?.closest<HTMLElement>(`[${THREADS_ATTRIBUTE}]`) ?? null;
-      const group = range ? (groupOf(range.startContainer) ?? groupOf(range.endContainer)) : null;
-      const key = group?.getAttribute(THREADS_ATTRIBUTE) ?? '';
-      const passage = group && key.startsWith(`${surface}:`) ? selectedPassage(group, selection) : null;
-      setOffer(passage ? { passage, group: key } : null);
-    };
-    document.addEventListener('mouseup', offerPassage);
-    return () => document.removeEventListener('mouseup', offerPassage);
-  }, [offering, surface]);
+  // The passage offered: one message's words inside a group of this surface's (the one way a passage is offered, ../PassageToolbar).
+  const { offer, close: closeOffer } = usePassageOffer<NonNullable<SentThreadsView['offer']>>(offering, (selection) => {
+    const range = selection && selection.rangeCount > 0 && !selection.isCollapsed ? selection.getRangeAt(0) : null;
+    const groupOf = (node: Node | null) => (node instanceof Element ? node : (node?.parentElement ?? null))?.closest<HTMLElement>(`[${THREADS_ATTRIBUTE}]`) ?? null;
+    const group = range ? (groupOf(range.startContainer) ?? groupOf(range.endContainer)) : null;
+    const key = group?.getAttribute(THREADS_ATTRIBUTE) ?? '';
+    const passage = group && key.startsWith(`${surface}:`) ? selectedPassage(group, selection) : null;
+    return passage ? { passage, group: key } : null;
+  });
   // Opened to be read while folded: a thread that unfolds on its own (opened again) leaves it.
   const shown = useMemo(() => {
     const kept = [...shownIds].filter((id) => folded.has(id));
@@ -167,11 +171,13 @@ export function useSentThreadsView(offering: boolean, folded: ReadonlySet<string
 }
 
 /**
- * What a group of threads does: bring a thread's passage into view (absent: its quote is words), and the person's
- * Resolve, Reply, comment on a passage and Send of one draft (each absent: none).
+ * What a group of threads does: bring a thread's passage into view (absent: its quote is words), the person's
+ * Resolve, Reply, comment on a passage and Send of one draft (each absent: none), and what a press in a box tells
+ * the host (`onLook`: it was looked at; called for the box pressed in and each box around it, at any depth).
  */
 interface SentThreadsActions<R extends SentThreadRecord = InboxAnnotationRecord> {
   onOpen?: (record: R) => void;
+  onLook?: (record: R) => void;
   onResolve?: (record: R, resolved: boolean) => void;
   onReply?: (commentId: string, reply: ReplyInput) => Promise<boolean>;
   onSubThread?: SubThreadSave;
@@ -200,6 +206,76 @@ export function SentStatusChip({ status }: { status: InboxCommentSendStatus | un
   );
 }
 
+/** A thread's round, or Not sent for a draft (none when it has neither). */
+function SentRoundChip({ draft, round }: { draft?: boolean; round?: number }) {
+  if (draft) return <span className="ib-sentc-chip">Not sent</span>;
+  return round === undefined ? null : (
+    <span className="ib-sentc-chip" data-sent-round={round}>
+      Round {round}
+    </span>
+  );
+}
+
+/** A thread's kind when it is not a comment (`commentKind`): Deletion, Looks good (in the success colour), or its label. */
+function SentKindChip({ kind }: { kind: CommentKind }) {
+  if (kind.kind === 'comment') return null;
+  const words = kind.kind === 'deletion' ? 'Deletion' : kind.kind === 'looks-good' ? 'Looks good' : kind.words;
+  const look = kind.kind === 'deletion' ? ' ib-sentb-deletion' : kind.kind === 'looks-good' ? ' ib-sentb-good' : '';
+  return (
+    <span className={`ib-sentc-chip${look}`} data-sent-kind={kind.kind} data-sent-deletion-chip={kind.kind === 'deletion' ? '' : undefined}>
+      {words}
+    </span>
+  );
+}
+
+/**
+ * What a thread's head says of it after its passage, at any depth and for any kind (a box's head, and a host's card,
+ * the Inbox file panel's): its kind when it is not a comment (Deletion, Looks good, its label), its round or Not sent,
+ * what became of its send, Live while open, ✓ Resolved in the success colour, and Unanchored when its passage was not
+ * found.
+ */
+export function SentChips({
+  kind,
+  draft = false,
+  round,
+  status,
+  live = false,
+  resolved = false,
+  unanchored = false,
+}: {
+  kind?: CommentKind;
+  draft?: boolean;
+  round?: number;
+  status?: InboxCommentSendStatus;
+  live?: boolean;
+  resolved?: boolean;
+  unanchored?: boolean;
+}) {
+  return (
+    <>
+      {kind && <SentKindChip kind={kind} />}
+      <SentRoundChip draft={draft} round={round} />
+      <SentStatusChip status={status} />
+      {live && !resolved && (
+        <span className="ib-sentc-chip ib-sentb-live" data-sent-live="" title="Your replies here go to the agent as you save them">
+          Live
+        </span>
+      )}
+      {resolved && (
+        <span className="ib-sentc-chip ib-sentb-resolved" data-sent-resolved-chip="">
+          <Icon name="check" size={11} />
+          Resolved
+        </span>
+      )}
+      {unanchored && (
+        <span className="ib-sentc-chip" data-sent-unanchored="">
+          Unanchored
+        </span>
+      )}
+    </>
+  );
+}
+
 /** A draft's Send: it goes alone, at once; disabled while it goes, and again only when it did not. The boxes' own, and a host's card. */
 export function SentSendButton({ id, onSend }: { id: string; onSend: (id: string) => Promise<boolean> }) {
   const [busy, setBusy] = useState(false);
@@ -225,94 +301,156 @@ export function SentSendButton({ id, onSend }: { id: string; onSend: (id: string
   );
 }
 
-/**
- * The threads on one block of a document (or, `lost`, the ones whose
- * passage was not found, at its end), each a box of its own, as crit's:
- * at its head the passage and the round, Reply and Resolve; then its
- * messages, the comment and each reply under it (who, round, words); a
- * sub-thread is a box in the box, in the message whose passage it is on,
- * under the block of its words the passage starts in (`placeOnMessage`),
- * at the same indent at each level, at any depth. A resolved thread folds to
- * one line ("Resolved", a press opens it to be read) only when nothing under
- * it, at any depth, is open; until then it stays unfolded, marked Resolved,
- * its open sub-threads in view. Reply opens a box at the thread's foot;
- * words selected in a sent message offer ui's selection toolbar, whose
- * Comment opens a box under the passage's block with the passage at its head. A
- * draft goes with the next Send, or alone by its own Send (`onSend`).
- *
- * The records are any client's (`SentThreadRecord`): the Inbox's own, or the
- * ones a host builds from the neutral thread view (`sentThreadsFromView`).
- * A resolved thread says so plainly: its passage's bar and its frame take
- * the success colour, a "✓ Resolved" chip at its head, its words dimmed.
- */
-export function SentThreads<R extends SentThreadRecord = InboxAnnotationRecord>({
-  group,
-  records,
-  tree,
-  view,
-  lost = false,
-  passageToolbar,
-  ...actions
-}: {
+/** What one group of boxes draws (`SentThreads`), and what a host gives `sentThreadSlots` for its document's groups. */
+export type SentThreadsProps<R extends SentThreadRecord = InboxAnnotationRecord> = {
   /** This group's key, inside its view's surface. */
   group: string;
   records: readonly R[];
   tree: SentCommentsTree<R>;
   view: SentThreadsView;
+  /** The ones whose passage was not found, at the document's end: each box Unanchored. */
   lost?: boolean;
   /**
    * The options of the document's own selection toolbar here (the host's `Viewer`'s): a passage of a message offers
    * the same actions, Delete and the labels making their sub-thread at once. Absent: Comment only, as before.
    */
   passageToolbar?: PassageToolbarOptions;
-} & SentThreadsActions<R>) {
+} & SentThreadsActions<R>;
+
+/**
+ * The threads on one block of a document (or, `lost`, the ones whose
+ * passage was not found, at its end, each Unanchored), each a box of its own,
+ * as crit's: at its head the passage and what the head says of it, Reply and
+ * Resolve; then its messages, the comment and each reply under it (who,
+ * words); a sub-thread is a box in the box, in the message whose passage it
+ * is on, under the block of its words the passage starts in
+ * (`placeOnMessage`), in a group like this one (`BoxGroup`), at the same
+ * indent at each level, at any depth. A resolved thread folds to one line
+ * ("Resolved", a press opens it to be read) only when nothing under it, at
+ * any depth, is open; until then it stays unfolded, marked Resolved, its open
+ * sub-threads in view. Reply opens a box at the thread's foot; words selected
+ * in a sent message offer ui's selection toolbar (`PassageToolbar`), whose
+ * Comment opens a box under the passage's block with the passage at its
+ * head. A draft goes with the next Send, or alone by its own Send (`onSend`).
+ *
+ * The records are any client's (`SentThreadRecord`): the Inbox's own, or the
+ * ones a host builds from the neutral thread view (`sentThreadsFromView`).
+ * A resolved thread says so plainly: its passage's bar and its frame take
+ * the success colour, a "✓ Resolved" chip at its head, its words dimmed.
+ */
+export function SentThreads<R extends SentThreadRecord = InboxAnnotationRecord>({ group, records, tree, view, lost = false, passageToolbar, ...actions }: SentThreadsProps<R>) {
   if (records.length === 0) return null;
   const key = `${view.surface}:${group}`;
   const { onSubThread } = actions;
+  const offer = view.offer?.group === key ? view.offer.passage : null;
   return (
-    <div className="ib-sentb" data-sent-threads={key} data-sent-comments="" data-sent-lost={lost ? '' : undefined} role="group" aria-label={lost ? 'Comments whose passage was not found' : 'Comments on this passage'}>
-      {lost && <p className="ib-sentb-lost">Passage not found</p>}
-      {records.map((record) => (
-        <SentThreadBox key={record.id} record={record} root={record} tree={tree} view={view} actions={actions} />
-      ))}
-      {view.offer?.group === key && onSubThread && (
+    <BoxGroup
+      items={records.map((record) => ({ record, lost }))}
+      context={{ tree, view, actions }}
+      attributes={{
+        [THREADS_ATTRIBUTE]: key,
+        'data-sent-comments': '',
+        'data-sent-lost': lost ? '' : undefined,
+        role: 'group',
+        'aria-label': lost ? 'Comments whose passage was not found' : 'Comments on this passage',
+      }}
+    >
+      {offer && onSubThread && (
         <PassageToolbar
-          passage={view.offer.passage}
+          passage={offer}
           options={passageToolbar}
-          onComment={(initialChar) => {
-            const passage = view.offer!.passage;
-            view.closeOffer();
-            document.getSelection()?.removeAllRanges();
-            view.setBox((open) => ({ at: passage.parentId, text: `${open?.text ?? ''}${initialChar ?? ''}`, opened: (open?.opened ?? 0) + 1, passage: { quote: passage.quote, offset: passage.offset } }));
-          }}
-          // Delete or a label: the comment is made at once, as on the document's words (a refusal is the host's to say).
-          onPreset={
-            passageToolbar
-              ? (comment) => {
-                  const passage = view.offer!.passage;
-                  view.closeOffer();
-                  document.getSelection()?.removeAllRanges();
-                  void onSubThread(passage.parentId, { quote: passage.quote, offset: passage.offset }, comment);
-                }
-              : undefined
+          onComment={(passage, initialChar) =>
+            view.setBox((open) => ({ at: passage.parentId, text: `${open?.text ?? ''}${initialChar ?? ''}`, opened: (open?.opened ?? 0) + 1, passage: { quote: passage.quote, offset: passage.offset } }))
           }
+          // Delete or a label: the comment is made at once, as on the document's words (a refusal is the host's to say).
+          onPreset={passageToolbar ? (passage, comment) => void onSubThread(passage.parentId, { quote: passage.quote, offset: passage.offset }, comment) : undefined}
           onClose={view.closeOffer}
         />
       )}
+    </BoxGroup>
+  );
+}
+
+/**
+ * Where a document's threads go, as every host draws them (the Inbox's messages and files, the screens): under the
+ * block each one's passage starts in (`below`, for `Viewer`'s `belowBlock`), and at the document's end (`after`) the
+ * general comments, then the ones whose passage was not found, Unanchored (`placeThreads`, `isGeneralThread`). `found`:
+ * what the viewer found of their words since (`placeThreads`). Each group is `SentThreads` with the host's `props`,
+ * its key `<props.group>:<block id | general | end>`.
+ */
+export function sentThreadSlots<R extends SentThreadRecord>(
+  records: readonly R[],
+  blocks: readonly { id: string }[],
+  props: Omit<SentThreadsProps<R>, 'records' | 'lost'>,
+  found?: Parameters<typeof placeThreads>[2],
+): { below: (block: { id: string }) => ReactNode; after: ReactNode } {
+  const { byBlock, rest } = placeThreads(records, new Set(blocks.map((block) => block.id)), found);
+  const general = rest.filter(isGeneralThread);
+  const lost = rest.filter((record) => !isGeneralThread(record));
+  const groupOf = (key: string, list: readonly R[], unfound?: boolean) => <SentThreads key={key} {...props} group={`${props.group}:${key}`} records={list} lost={unfound} />;
+  return {
+    below: (block) => {
+      const on = byBlock.get(block.id);
+      return on ? groupOf(block.id, on) : null;
+    },
+    after:
+      general.length + lost.length > 0 ? (
+        <>
+          {general.length > 0 && groupOf('general', general)}
+          {lost.length > 0 && groupOf('end', lost, true)}
+        </>
+      ) : null,
+  };
+}
+
+/** What every box of a surface shares: the tree its threads are read from, the surface's view and the person's actions. */
+interface BoxContext<R extends SentThreadRecord> {
+  tree: SentCommentsTree<R>;
+  view: SentThreadsView;
+  actions: SentThreadsActions<R>;
+}
+
+/**
+ * Boxes drawn together, at any depth: a document block's threads (`ib-sentb`), or the sub-threads under one block of
+ * a message's words (`on`, the message; `ib-sentb-subs`, indented). The same element and the same room above and below
+ * at every depth and for every kind of box; `children` after the boxes (the box commenting on a passage there, the
+ * selection toolbar). `root`: the boxes' thread's first comment, for a sub-thread group.
+ */
+function BoxGroup<R extends SentThreadRecord>({
+  on,
+  items,
+  root,
+  context,
+  attributes,
+  children,
+}: {
+  on?: string;
+  items: readonly { record: R; lost: boolean }[];
+  root?: R;
+  context: BoxContext<R>;
+  attributes?: Record<string, string | undefined>;
+  children?: ReactNode;
+}) {
+  return (
+    <div className={on === undefined ? 'ib-sentb' : 'ib-sentb-subs'} {...(on !== undefined ? { 'data-sent-subthreads': on } : {})} {...attributes}>
+      {items.map(({ record, lost }) => (
+        <SentThreadBox key={record.id} record={record} root={root ?? record} lost={lost} {...context} />
+      ))}
+      {children}
     </div>
   );
 }
 
-/** One thread (a comment, or a sub-thread; `root`: its thread's first comment), as a box. */
-function SentThreadBox<R extends SentThreadRecord>({ record, root, tree, view, actions }: { record: R; root: R; tree: SentCommentsTree<R>; view: SentThreadsView; actions: SentThreadsActions<R> }) {
+/** One thread (a comment, or a sub-thread; `root`: its thread's first comment), as a box; `lost`: placed where it is because its passage was not found. */
+function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, view, actions }: { record: R; root: R; lost: boolean } & BoxContext<R>) {
   const { rounds, resolved, replies, subThreads, openBelow, passages, statuses, live, fresh } = tree;
-  const { onOpen, onResolve, onReply, onSubThread, onSend } = actions;
+  const { onOpen, onLook, onResolve, onReply, onSubThread, onSend } = actions;
   const { box, setBox } = view;
   const id = record.id;
   const annotation = record.annotation as unknown as Annotation;
   const quote = annotation.originalText ?? '';
   /** A comment on the whole document: no passage (never one on part of an image or an element, which has no words either). */
-  const general = quote === '' && !isInboxSubThread(record) && (annotation.type === undefined || annotation.type === AnnotationType.GLOBAL_COMMENT);
+  const general = isGeneralThread(record);
   /** The person asks for the words to go: a deletion, on the document or on a passage of a message. */
   const deletion = annotation.type === AnnotationType.DELETION;
   const words = annotation.text ?? '';
@@ -323,7 +461,7 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, tree, view, a
   const foldable = isInboxCommentThreadFolded(id, resolved, openBelow);
   const folded = foldable && !view.shown.has(id);
   const under = replies.get(id) ?? [];
-  const roundChip = draft ? <span className="ib-sentc-chip">Not sent</span> : round !== undefined ? <span className="ib-sentc-chip" data-sent-round={round}>Round {round}</span> : null;
+  const context: BoxContext<R> = { tree, view, actions };
   const marks = {
     'data-sent-comment': id,
     'data-sent-subthread': isSub ? '' : undefined,
@@ -331,10 +469,12 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, tree, view, a
     'data-sent-resolved': isResolved ? '' : undefined,
     'data-sent-folded': folded ? '' : undefined,
   };
+  // A press in a box is a look at it (and, the press being in them too, at the boxes around it).
+  const look = onLook ? () => onLook(record) : undefined;
   if (folded) {
     const subs = countSubThreads(id, replies, subThreads);
     return (
-      <div className="ib-sentb-card" {...marks}>
+      <div className="ib-sentb-card" {...marks} onClickCapture={look}>
         <button type="button" className="ib-sentb-fold" aria-expanded={false} data-sent-unfold={id} onClick={() => view.toggleShown(id)}>
           <Icon name="chevR" size={12} />
           <span className="ib-sentb-state" data-sent-resolved-chip="">
@@ -342,7 +482,7 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, tree, view, a
             Resolved
           </span>
           <span className="ib-sentb-fquote">{general ? 'General comment' : `“${shortLabel(quote)}”`}</span>
-          {roundChip}
+          <SentRoundChip draft={draft} round={round} />
           <span className="ib-sentb-count" data-sent-messages={1 + under.length} data-sent-subthreads={subs}>
             {plural(1 + under.length, 'message')}
             {subs > 0 ? `, ${plural(subs, 'sub-thread')}` : ''}
@@ -369,8 +509,9 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, tree, view, a
   /**
    * A message's words (`selectable`: a passage of them can be commented on), with the sub-threads on them, each a box
    * in this box under the block of the words its passage starts in, as a thread sits under its block in the document,
-   * several on one block in their passages' order; the box commenting on a passage of them, under that passage's block,
-   * after the sub-threads there. A message whose sub-threads all sit under its last block is drawn whole, then them.
+   * several on one block in their passages' order, one whose passage is not found at the message's end, Unanchored;
+   * the box commenting on a passage of them, under that passage's block, after the sub-threads there. A message whose
+   * sub-threads all sit under its last block is drawn whole, then them.
    */
   const saidWithSubThreads = (messageId: string, text: string, selectable: boolean) => {
     const list: readonly R[] = subThreads.get(messageId) ?? [];
@@ -378,19 +519,16 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, tree, view, a
     const items: readonly (R | null)[] = composer ? [...list, null] : list;
     const pieces = placeOnMessage(text, items, (item) => (item ? subThreadPassage(item) : box?.passage));
     return pieces.map((piece, index) => {
-      const subs = piece.under.filter((item): item is R => item !== null);
-      const composerHere = piece.under.includes(null) ? composer : null;
+      const subs = piece.under.flatMap(({ item, found }) => (item ? [{ record: item, lost: !found }] : []));
+      const composerHere = piece.under.some(({ item }) => item === null) ? composer : null;
       // The last piece keeps its key, so what sits at the message's end stays as it is when a block above gets a box.
       return (
         <Fragment key={index === pieces.length - 1 ? 'end' : piece.to}>
           <Said text={text} from={piece.from} to={piece.to} piece={pieces.length > 1} bodyOf={selectable ? messageId : undefined} passages={passages.get(messageId)} />
           {(subs.length > 0 || composerHere) && (
-            <div className="ib-sentb-subs" data-sent-subthreads={messageId}>
-              {subs.map((sub) => (
-                <SentThreadBox key={sub.id} record={sub} root={root} tree={tree} view={view} actions={actions} />
-              ))}
+            <BoxGroup on={messageId} items={subs} root={root} context={context}>
               {composerHere}
-            </div>
+            </BoxGroup>
           )}
         </Fragment>
       );
@@ -401,7 +539,7 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, tree, view, a
   // A comment on the whole document has no passage: its head says so.
   const quoteText = general ? <span className="ib-sentb-qt ib-sentb-general">General comment</span> : <span className="ib-sentb-qt">“{quote}”</span>;
   return (
-    <div className="ib-sentb-card" {...marks} data-sent-draft={draft ? '' : undefined}>
+    <div className="ib-sentb-card" {...marks} data-sent-draft={draft ? '' : undefined} onClickCapture={look}>
       <div className="ib-sentb-head">
         {foldable && (
           <button type="button" className="ib-sentb-chev" aria-expanded={true} aria-label="Fold the resolved comment" data-sent-unfold={id} onClick={() => view.toggleShown(id)}>
@@ -416,29 +554,15 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, tree, view, a
           <span className="ib-sentb-quote">{quoteText}</span>
         )}
         <span className="ib-sentb-chips">
-          {deletion && (
-            <span className="ib-sentc-chip ib-sentb-deletion" data-sent-deletion-chip="">
-              Deletion
-            </span>
-          )}
-          {roundChip}
-          <SentStatusChip status={statuses?.get(id)} />
-          {live?.has(id) && !isResolved && (
-            <span className="ib-sentc-chip ib-sentb-live" data-sent-live="" title="Your replies here go to the agent as you save them">
-              Live
-            </span>
-          )}
-          {isResolved && (
-            <span className="ib-sentc-chip ib-sentb-resolved" data-sent-resolved-chip="">
-              <Icon name="check" size={11} />
-              Resolved
-            </span>
-          )}
-          {typeof record.unanchored_at === 'string' && (
-            <span className="ib-sentc-chip" data-sent-unanchored="">
-              Unanchored
-            </span>
-          )}
+          <SentChips
+            kind={commentKind(annotation)}
+            draft={draft}
+            round={round}
+            status={statuses?.get(id)}
+            live={live?.has(id)}
+            resolved={isResolved}
+            unanchored={lost || typeof record.unanchored_at === 'string'}
+          />
         </span>
         {draft && onSend && (
           <span className="ib-sentb-acts">

@@ -234,7 +234,8 @@ test.skipIf(!hasDom)("a sent comment whose passage is not drawn in the message i
   const lost = () => el.querySelector<HTMLElement>(`[data-message-id="${sent}"] [data-sent-lost]`);
   await until(() => lost()?.querySelector('[data-sent-comment="lost-msg-1"]') != null, 'the comment at the end');
   expect(lost()!.closest('[data-viewer-below-block]')).toBeNull();
-  expect(lost()!.querySelector('.ib-sentb-lost')).not.toBeNull();
+  // Said so on its box, as any box placed at the end because its passage was not found, at any depth.
+  expect(lost()!.querySelector('[data-sent-comment="lost-msg-1"] [data-sent-unanchored]')).not.toBeNull();
 }, 30_000);
 
 test.skipIf(!hasDom)("a sent comment on a file stays in its panel with its round, read-only, and is kept Unanchored once the agent's edit took its words away", async () => {

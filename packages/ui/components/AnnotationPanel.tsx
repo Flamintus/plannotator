@@ -24,7 +24,7 @@ import { imageRegionNumbers, RegionCardInfo, RegionNumber, regionOf } from './Im
 import { CHECKBOX_ANNOTATION_PREFIX } from '../utils/annotationOwnsHighlight';
 import type { TextPassage } from '@plannotator/core/passage';
 import { PASSAGE_BODY_ATTRIBUTE, passageRanges, selectedPassage, selectionWithin, splitByRanges, type PassageComment, type PassageMark, type SelectedPassage } from '../utils/passageSelection';
-import { PassageToolbar, type PassageToolbarOptions } from './PassageToolbar';
+import { PassageToolbar, usePassageOffer, type PassageToolbarOptions } from './PassageToolbar';
 
 /** What a region card (#2100) needs from its panel: each region's number on
  *  its image, and how to load the image for the crop thumbnail. */
@@ -426,9 +426,11 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
   const [replyDraft, setReplyDraft] = useState<{ parentId: string; text: string; opened: number; passage?: TextPassage } | null>(null);
   const canReply = onReply !== undefined && !readOnly;
   const canCommentPassage = onCommentPassage !== undefined && !readOnly;
-  // Words selected in a card's text: the toolbar that offers to comment on them.
-  const [passageOffer, setPassageOffer] = useState<SelectedPassage | null>(null);
-  const closePassageOffer = React.useCallback(() => setPassageOffer(null), []);
+  // Words selected in a card's text, let go anywhere (a drag past a card's last line ends outside the list): the
+  // toolbar that offers to comment on them, the one way a passage of a message is offered (./PassageToolbar).
+  const { offer: passageOffer, close: closePassageOffer } = usePassageOffer(canCommentPassage && isOpen, () =>
+    listRef.current ? selectedPassage(listRef.current) : null,
+  );
   // The card the box answers is gone (deleted here, removed by an agent):
   // its words go with it, as its box did.
   const replyParentGone = replyDraft !== null && !annotations.some((a) => a.id === replyDraft.parentId);
@@ -523,23 +525,11 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
     }
   }, [selectedId]);
 
-  // A selection let go that holds one card's words offers to comment on that passage; let go anywhere, since a drag
-  // past a card's last line ends outside the list.
-  useEffect(() => {
-    if (!canCommentPassage || !isOpen) return;
-    const doc = listRef.current?.ownerDocument ?? document;
-    const offer = () => setPassageOffer(listRef.current ? selectedPassage(listRef.current) : null);
-    doc.addEventListener('mouseup', offer);
-    return () => doc.removeEventListener('mouseup', offer);
-  }, [canCommentPassage, isOpen]);
-
   if (!isOpen) return null;
 
   const startReply = (parentId: string) => setReplyDraft((draft) => ({ parentId, text: draft?.text ?? '', opened: (draft?.opened ?? 0) + 1 }));
+  // The toolbar closed the offer and let the selection go (the words are quoted in the box now).
   const commentOnPassage = (passage: SelectedPassage, initialChar?: string) => {
-    setPassageOffer(null);
-    // The words are quoted in the box now; the selection would stand over them.
-    listRef.current?.ownerDocument.getSelection()?.removeAllRanges();
     setReplyDraft((draft) => ({
       parentId: passage.parentId,
       text: `${draft?.text ?? ''}${initialChar ?? ''}`,
@@ -926,17 +916,9 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
         <PassageToolbar
           passage={passageOffer}
           options={passageToolbar}
-          onComment={(initialChar) => commentOnPassage(passageOffer, initialChar)}
+          onComment={commentOnPassage}
           // Delete or a label: made at once, as on the document's words.
-          onPreset={
-            passageToolbar
-              ? (comment) => {
-                  setPassageOffer(null);
-                  listRef.current?.ownerDocument.getSelection()?.removeAllRanges();
-                  void onCommentPassage!(passageOffer.parentId, { quote: passageOffer.quote, offset: passageOffer.offset }, comment);
-                }
-              : undefined
-          }
+          onPreset={passageToolbar ? (passage, comment) => void onCommentPassage!(passage.parentId, { quote: passage.quote, offset: passage.offset }, comment) : undefined}
           onClose={closePassageOffer}
         />
       )}
