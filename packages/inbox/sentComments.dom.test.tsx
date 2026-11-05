@@ -276,7 +276,7 @@ test.skipIf(!hasDom)('resolved from its box, a sent comment leaves its words and
   await until(() => row()?.hasAttribute('data-sent-folded') === true && highlight() === null, 'the resolved comment folded, its highlight gone');
   // Folded in place, under its paragraph: one line, its words and buttons out of view.
   expect(row()!.closest('[data-viewer-below-block]')).not.toBeNull();
-  // The folded line's state word, Resolved, is pinned on purpose.
+  // The folded line's state word, Resolved, is pinned on purpose (the line holds no Resolved chip to look for).
   expect(row()!.textContent).toContain('Resolved');
   expect(row()!.textContent).not.toContain('Why a minute?');
   expect(row()!.querySelector('[data-sent-resolve]')).toBeNull();
@@ -506,7 +506,7 @@ test.skipIf(!hasDom)('a resolved comment stays unfolded, marked Resolved, while 
   act(() => sub()!.querySelector<HTMLButtonElement>('[data-sent-resolve="sub-res-s"]')!.click());
   await until(() => row()?.hasAttribute('data-sent-folded') === true, 'both folded');
   expect(sub()).toBeNull();
-  expect(row()!.textContent).toContain('1 sub-thread');
+  expect(row()!.querySelector('[data-sent-subthreads]')!.getAttribute('data-sent-subthreads')).toBe('1');
   expect(typeof (await storedRecord(sent, 'sub-res-s'))?.resolved_at).toBe('string');
 
   // Opened to be read, the sub-thread is folded too; the comment keeps its Reply: a reply under it opens it again.

@@ -734,7 +734,7 @@ function SentThreadBox({ record, root, tree, view, actions }: { record: InboxAnn
           </span>
           <span className="ib-sentb-fquote">“{shortLabel(quote)}”</span>
           {roundChip}
-          <span className="ib-sentb-count">
+          <span className="ib-sentb-count" data-sent-messages={1 + under.length} data-sent-subthreads={subs}>
             {plural(1 + under.length, 'message')}
             {subs > 0 ? `, ${plural(subs, 'sub-thread')}` : ''}
           </span>
