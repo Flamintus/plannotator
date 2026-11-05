@@ -950,3 +950,146 @@ export function plannotatorCommandToToolInput(
   const parsed = parsePlannotatorToolInput(call, parseOptions)
   return parsed.ok ? parsed.input : null
 }
+
+/*
+ * The review loop (#1116, experimental "persistent-comments"): with a host
+ * that carries the person's comments to the agent's session (the Claude Code
+ * mod's session bridge), a review stays open from one round to the next, and
+ * each send arrives as a message headed `Plannotator: notes.md (pn-3f2a9c) —
+ * Round 2 done · 3 comments.` (`plannotatorSendOutcome`). The agent answers
+ * under each comment by its id with `reply` and reads the threads with
+ * `threads`; no action of the agent's resolves: only the person does. A host
+ * that carries sends registers these two actions on top of its schema and
+ * description (`plannotatorToolLoopInputSchema`,
+ * `plannotatorToolLoopDescription`) and parses them with
+ * `parsePlannotatorToolLoopInput` before `parsePlannotatorToolInput`; every
+ * other host keeps its schema and description byte for byte.
+ */
+
+export type PlannotatorToolLoopAction = 'reply' | 'threads'
+
+/** One reply of the agent's, under the comment `id`. */
+export interface PlannotatorToolLoopReply {
+  id: string
+  text: string
+}
+
+export interface PlannotatorToolLoopInput {
+  action: PlannotatorToolLoopAction
+  /** The review's session id (`pn-` + 6 hex). */
+  session: string
+  /** reply: one per comment answered. */
+  replies?: PlannotatorToolLoopReply[]
+}
+
+/** The most replies one `reply` call takes, and the longest one, in characters (the review journal's own limit). */
+export const PLANNOTATOR_TOOL_MAX_REPLIES = 50
+export const PLANNOTATOR_TOOL_MAX_REPLY_TEXT = 10_000
+
+/** The action lines a host that carries sends adds to its description. */
+export const PLANNOTATOR_TOOL_LOOP_LINES: readonly string[] = [
+  '- action "reply": answer the person\'s comments in a review opened in this conversation, under each comment\'s id, when a message from it asks you to: `session` is the review\'s id (pn-...), `replies` a list of { id, text }, one per comment: what you changed, your answer, or why you did not do it. Not in chat. Only the person resolves a comment.',
+  '- action "threads": a review\'s comments by id, with your replies and what is still open; `session` is its id (pn-...).',
+]
+
+/** A description with the loop's action lines after the other dash lines (the actions, and the tailscale line when there is one). */
+export function plannotatorToolLoopDescription(description: string): string {
+  const lines = description.split('\n')
+  let last = -1
+  lines.forEach((line, index) => {
+    if (line.startsWith('- ')) last = index
+  })
+  return [...lines.slice(0, last + 1), ...PLANNOTATOR_TOOL_LOOP_LINES, ...lines.slice(last + 1)].join('\n')
+}
+
+/** A schema with the loop's actions: `reply` and `threads` in `action`, `replies`, and `session` for them too. */
+export function plannotatorToolLoopInputSchema<S extends { properties: { action: { enum: readonly string[] } } }>(schema: S): S {
+  return {
+    ...schema,
+    properties: {
+      ...schema.properties,
+      action: { ...schema.properties.action, enum: [...schema.properties.action.enum, 'reply', 'threads'] },
+      session: {
+        type: 'string',
+        description: 'close: the session id (pn-...) of a review opened in this conversation, or "all". reply, threads: the id of the review whose comments you answer or read.',
+      },
+      replies: {
+        type: 'array',
+        minItems: 1,
+        maxItems: PLANNOTATOR_TOOL_MAX_REPLIES,
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'The comment\'s id, as the message that sent it names it.' },
+            text: { type: 'string', description: 'Your reply under it.' },
+          },
+          required: ['id', 'text'],
+          additionalProperties: false,
+        },
+        description: 'reply: your replies, one per comment.',
+      },
+    },
+  }
+}
+
+export type PlannotatorToolLoopParse = { ok: true; input: PlannotatorToolLoopInput } | { ok: false; error: string }
+
+/**
+ * A `reply` or `threads` call, validated strictly; null for any other action
+ * (the host then parses the call with `parsePlannotatorToolInput`).
+ */
+export function parsePlannotatorToolLoopInput(value: unknown): PlannotatorToolLoopParse | null {
+  if (!isRecord(value) || (value.action !== 'reply' && value.action !== 'threads')) return null
+  const fail = (error: string): PlannotatorToolLoopParse => ({ ok: false, error: `Invalid plannotator call: ${error}.` })
+  const action = value.action
+  const fields = withoutEmptyOptionals(value)
+  for (const key of Object.keys(fields)) {
+    if (key !== 'action' && key !== 'session' && !(key === 'replies' && action === 'reply')) return fail(`action "${action}" takes no field "${key}"`)
+  }
+  const session = typeof fields.session === 'string' ? normalizePlannotatorSessionId(fields.session) : null
+  if (!session) return fail(`action "${action}" needs a session (the pn-... id of the review)`)
+  if (action === 'threads') return { ok: true, input: { action, session } }
+  if (!Array.isArray(fields.replies) || fields.replies.length === 0) return fail('action "reply" needs replies: a list of { id, text }')
+  if (fields.replies.length > PLANNOTATOR_TOOL_MAX_REPLIES) return fail(`at most ${PLANNOTATOR_TOOL_MAX_REPLIES} replies in one call`)
+  const replies: PlannotatorToolLoopReply[] = []
+  for (const [index, item] of fields.replies.entries()) {
+    if (!isRecord(item)) return fail(`replies[${index}] must be an object { id, text }`)
+    for (const key of Object.keys(item)) {
+      if (key !== 'id' && key !== 'text') return fail(`replies[${index}] has an unknown field "${key}"`)
+    }
+    if (typeof item.id !== 'string' || item.id.trim() === '') return fail(`replies[${index}].id must be a comment id`)
+    if (typeof item.text !== 'string' || item.text.trim() === '') return fail(`replies[${index}].text must not be empty`)
+    if (item.text.length > PLANNOTATOR_TOOL_MAX_REPLY_TEXT) return fail(`replies[${index}].text is longer than ${PLANNOTATOR_TOOL_MAX_REPLY_TEXT} characters`)
+    replies.push({ id: item.id.trim(), text: item.text })
+  }
+  return { ok: true, input: { action, session, replies } }
+}
+
+/**
+ * How the agent answers a send it got from this host's tool, the last lines
+ * of the send's text (`ReviewReplyHow` in packages/core/review-threads.ts).
+ */
+export function plannotatorToolReplyHow(sessionId: string): { read: string; reply: string } {
+  return {
+    read: `The plannotator tool's "threads" action (session ${sessionId}) shows their words and your replies.`,
+    reply: `Reply under each id in Plannotator, not in chat: call the plannotator tool with action "reply", session "${sessionId}" and replies [{ "id": …, "text": … }], one per comment: what you changed, your answer, or why you did not do it. Only the person resolves a comment.`,
+  }
+}
+
+function countWords(count: number, one: string): string {
+  return `${count} ${one}${count === 1 ? '' : 's'}`
+}
+
+/** The outcome a host heads a send with: `Round 2 done · 3 comments` (the person finished it), or `Round 2 still open · 1 comment` (sent at once). */
+export function plannotatorSendOutcome(mode: 'now' | 'round', round: number, comments: number): string {
+  return `Round ${round} ${mode === 'round' ? 'done' : 'still open'} · ${comments > 0 ? countWords(comments, 'comment') : 'no new comment'}`
+}
+
+/** The result of a `reply` call. */
+export function plannotatorToolRepliedText(sessionId: string, ids: readonly string[]): string {
+  return `Replied under ${ids.join(', ')} in ${sessionId}. The person sees your replies in the open review and alone resolves a comment; their next comments arrive as a message that names ${sessionId}.`
+}
+
+/** `reply` or `threads` on a review whose Plannotator has no comment threads (an older one). */
+export const PLANNOTATOR_TOOL_LOOP_UNAVAILABLE_TEXT =
+  'This review takes no replies from the tool: the installed Plannotator is older than its comment threads. Answer in chat, and ask the user to update Plannotator (`plannotator update`).'
