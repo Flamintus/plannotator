@@ -292,7 +292,8 @@ export function sentThreadsFromView<A>(
       const list = [...subs.map(recordOf), ...(drafts.subThreads?.get(message) ?? [])];
       if (list.length > 0) subThreads.set(message, list);
       if ((drafts.subThreads?.get(message)?.length ?? 0) > 0) open = true;
-      const marked = [...subs.filter((sub) => sub.state !== 'resolved').map(subThreadMark), ...(drafts.passages?.get(message) ?? [])];
+      // Every sub-thread's passage stays marked, resolved or not, as in the Inbox and the document.
+      const marked = [...subs.map(subThreadMark), ...(drafts.passages?.get(message) ?? [])];
       if (marked.length > 0) passages.set(message, marked);
       for (const sub of subs) if (walk(sub) || sub.state !== 'resolved') open = true;
     };

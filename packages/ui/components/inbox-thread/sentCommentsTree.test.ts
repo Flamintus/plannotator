@@ -80,7 +80,7 @@ describe('sentThreadsFromView', () => {
     expect(built.tree.replies.get('c2')?.map((row) => row.id)).toEqual(['d1']);
   });
 
-  test("the host's draft sub-threads and their passages join the view's; a resolved sub-thread's passage is not marked", () => {
+  test("the host's draft sub-threads and their passages join the view's; a resolved sub-thread's passage stays marked", () => {
     const done = thread('s1', { parent: { id: 'c1', quote_offset: 3 }, quote: 'old', state: 'resolved', folded: true });
     const built = sentThreadsFromView(view([thread('c1', { sub_threads: [done] })]), {
       drafts: {
@@ -89,7 +89,7 @@ describe('sentThreadsFromView', () => {
       },
     });
     expect(built.tree.subThreads.get('c1')?.map((record) => record.id)).toEqual(['s1', 'ann-passage-1']);
-    expect(built.tree.passages.get('c1')).toEqual([{ quote: 'new', offset: 9 }]);
+    expect(built.tree.passages.get('c1')?.map((mark) => mark.quote)).toEqual(['old', 'new']);
     expect(built.tree.openBelow.has('c1')).toBe(true);
   });
 
