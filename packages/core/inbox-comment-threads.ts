@@ -483,13 +483,22 @@ export function inboxCommentReplyAnnotation(comment: Pick<InboxAnnotationRecord,
  * The annotation of the person's sub-thread on a passage of `parent`: its
  * thread's first comment's place (as a reply's), the passage as its words
  * (`originalText`), and `inReplyTo` the parent, so a panel draws it under
- * that message's card with the passage at its head.
+ * that message's card with the passage at its head. Its kind is one a
+ * document's words take: a comment, a deletion (`type` "DELETION"), or a
+ * quick label's comment (`isQuickLabel`, its tip).
  */
 export function inboxSubThreadAnnotation(
   comment: Pick<InboxAnnotationRecord, "id" | "annotation">,
-  sub: { id: string; parent: string; quote: string; text: string; createdA: number; mentions?: readonly string[] },
+  sub: { id: string; parent: string; quote: string; text: string; createdA: number; mentions?: readonly string[]; type?: "COMMENT" | "DELETION"; isQuickLabel?: boolean; quickLabelTip?: string },
 ): Record<string, unknown> {
-  return { ...inboxCommentReplyAnnotation(comment, sub), originalText: sub.quote, inReplyTo: sub.parent };
+  return {
+    ...inboxCommentReplyAnnotation(comment, sub),
+    originalText: sub.quote,
+    inReplyTo: sub.parent,
+    ...(sub.type === "DELETION" ? { type: "DELETION" } : {}),
+    ...(sub.isQuickLabel ? { isQuickLabel: true } : {}),
+    ...(sub.quickLabelTip ? { quickLabelTip: sub.quickLabelTip } : {}),
+  };
 }
 
 /**

@@ -1376,8 +1376,15 @@ export const inboxApi = {
    */
   sendComments: (threadId: string, body: { mode: 'now' | 'round'; comment_ids?: readonly string[]; idempotency_key: string }) =>
     post<{ sends: InboxCommentSend[]; message: InboxMessageWire | null; replayed: boolean }>(inboxUrl(`/threads/${encodeURIComponent(threadId)}/comment-sends`), body),
-  /** The person's sub-thread on a passage of a message of a comment thread (`parentId`): a draft the next Send carries (experimental "persistent-comments"). */
-  saveSubThread: (parentId: string, sub: { id: string; text: string; quote: string; quote_offset: number; mentions?: readonly string[] }) =>
+  /**
+   * The person's sub-thread on a passage of a message of a comment thread (`parentId`): a draft the next Send carries
+   * (experimental "persistent-comments"). `type` and the label fields as a comment on a document's words has them: a
+   * deletion (a file's thread only, as a file's words), or a quick label's comment.
+   */
+  saveSubThread: (
+    parentId: string,
+    sub: { id: string; text: string; quote: string; quote_offset: number; mentions?: readonly string[]; type?: 'COMMENT' | 'DELETION'; isQuickLabel?: boolean; quickLabelTip?: string },
+  ) =>
     post<{ annotation: InboxAnnotationRecord }>(inboxUrl(`/annotations/${encodeURIComponent(parentId)}/subthreads`, undefined, machineOf(parentId)), { annotation: sub }),
   /** "Open in": the file as it is now, in a catalog app or the default app, by the attachment's id (on this computer only). */
   openIn: (attachmentId: string, appId: string) =>

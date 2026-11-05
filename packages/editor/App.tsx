@@ -7743,6 +7743,8 @@ const App: React.FC = () => {
       {...(reviewPanel
         ? {
             onCommentPassage: reviewPanel.onCommentPassage,
+            // A passage of a card's words offers what the document's words offer: an HTML page's toolbar is comment-only.
+            passageToolbar: isHtmlSurface ? { commentOnly: true } : {},
             cardPassages: reviewPanel.cardPassages,
             cardParts: reviewPanel.cardParts,
             renderCardHeader: reviewPanel.renderCardHeader,

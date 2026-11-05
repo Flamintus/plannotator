@@ -14,13 +14,14 @@
  * of the page like any comment until a send carries them: a reply threads
  * under its card (`inReplyTo`), a sub-thread on a passage of a card's words
  * is one whose id starts with `PASSAGE_ANNOTATION_PREFIX`, never painted on
- * the document.
+ * the document, of any kind a comment on the document is (a comment, a
+ * deletion, a quick label's).
  */
 import type { ReviewThreadsState } from '@plannotator/core/external-annotation';
-import type { TextPassage } from '@plannotator/core/passage';
 import type { ReviewAnchor, ReviewReplyNode, ReviewThreadNode, ReviewThreadView } from '@plannotator/core/review-threads';
 import { AnnotationType, type Annotation } from '@plannotator/ui/types';
 import { PASSAGE_ANNOTATION_PREFIX } from '@plannotator/ui/utils/annotationOwnsHighlight';
+import type { PassageMark } from '@plannotator/ui/utils/passageSelection';
 
 /** The loop as the page reads it while it is available. */
 export type ReviewLoopState = Extract<ReviewThreadsState, { available: true }>;
@@ -191,10 +192,11 @@ export function reviewLoopCards(input: {
     const at = replyNode ? Date.parse(replyNode.at) : idTime(thread.reply_id) ?? idTime(thread.replies[0]?.id ?? '') ?? 1;
     const author = agent ? (replyNode?.author_name ?? undefined) : input.person;
     const quote = element.kind === 'reply' ? thread.quote : (element.node as ReviewThreadNode).quote;
+    const deletion = element.kind === 'thread' && (element.node as ReviewThreadNode).type === 'deletion';
     out.push({
       ...place,
       id,
-      type: element.kind === 'thread' && element.under === null && quote === '' ? AnnotationType.GLOBAL_COMMENT : AnnotationType.COMMENT,
+      type: deletion ? AnnotationType.DELETION : element.kind === 'thread' && element.under === null && quote === '' ? AnnotationType.GLOBAL_COMMENT : AnnotationType.COMMENT,
       text: element.node.text,
       originalText: quote,
       createdA: Number.isFinite(at) ? at : 1,
@@ -205,7 +207,7 @@ export function reviewLoopCards(input: {
   return out;
 }
 
-/** The passages to mark in a card's words: the open sub-threads on it, sent (the view) or the page's drafts. */
+/** The passages to mark in a card's words: the open sub-threads on it, sent (the view) or the page's drafts; a deletion's as one. */
 export function reviewLoopPassages(input: {
   index: ReviewLoopIndex;
   /** The page's sub-thread drafts. */
@@ -214,13 +216,13 @@ export function reviewLoopPassages(input: {
   offsets: ReadonlyMap<string, number>;
   /** A card's words, to find a draft's passage in when its offset is not known. */
   wordsOf: (id: string) => string | undefined;
-}): Map<string, TextPassage[]> {
-  const out = new Map<string, TextPassage[]>();
-  const add = (on: string, passage: TextPassage) => out.set(on, [...(out.get(on) ?? []), passage]);
+}): Map<string, PassageMark[]> {
+  const out = new Map<string, PassageMark[]>();
+  const add = (on: string, passage: PassageMark) => out.set(on, [...(out.get(on) ?? []), passage]);
   for (const element of input.index.elements.values()) {
     const node = element.node as ReviewThreadNode;
     if (element.kind !== 'thread' || element.under === null || node.state !== 'open' || !node.parent) continue;
-    add(element.under, { quote: node.quote, offset: node.parent.quote_offset });
+    add(element.under, { quote: node.quote, offset: node.parent.quote_offset, ...(node.type === 'deletion' ? { deletion: true } : {}) });
   }
   for (const draft of input.drafts) {
     if (!draft.inReplyTo || !isPassageAnnotation(draft)) continue;
@@ -229,7 +231,7 @@ export function reviewLoopPassages(input: {
     const found = words.indexOf(draft.originalText);
     // An offset counts whitespace runs as one and drops the leading run (@plannotator/core/passage).
     const offset = found >= 0 ? words.slice(0, found).replace(/^\s+/, '').replace(/\s+/g, ' ').length : 0;
-    add(draft.inReplyTo, { quote: draft.originalText, offset: known ?? offset });
+    add(draft.inReplyTo, { quote: draft.originalText, offset: known ?? offset, ...(draft.type === AnnotationType.DELETION ? { deletion: true } : {}) });
   }
   return out;
 }
@@ -282,10 +284,12 @@ function blockLines(blocks: readonly { id: string; startLine?: number; content?:
 
 /**
  * The person's drafts as a send carries them, in order: a reply under a sent
- * thread (`re`), a sub-thread on a passage of a sent message (`parent`), and
- * any other annotation as a comment on the place it is on (`on`, its words,
- * a deletion or a comment; a general comment has no words). Images become
- * lines under the entry.
+ * thread (`re`, a comment), a sub-thread on a passage of a sent message
+ * (`parent`), and any other annotation as a comment on the place it is on
+ * (`on`, its words; a general comment has no words). A sub-thread and a
+ * comment on the place are of the kind the toolbar made, one rule for both:
+ * a deletion (`type`, its words optional) or a comment. Images become lines
+ * under the entry.
  */
 export function reviewLoopCommentInputs(
   groups: readonly { on: ReviewAnchor; annotations: readonly Annotation[]; blocks?: readonly { id: string; startLine?: number; content?: string }[] }[],
@@ -312,24 +316,25 @@ export function reviewLoopCommentInputs(
       const replyTo = annotation.inReplyTo && thread === null && !(isPassageAnnotation(annotation) && parentSent) ? [`In reply to comment ${annotation.inReplyTo}.`] : [];
       const notes = [...replyTo, ...entryLines, ...images];
       const base = { id: annotation.id, ...(notes.length > 0 ? { notes } : {}) };
+      const deletion = annotation.type === AnnotationType.DELETION;
+      /** Its kind and words: a deletion's words are its own or none; a comment always has some. */
+      const kind = deletion ? { type: 'deletion' as const, text: clip(annotation.text ?? '', TEXT_MAX) } : { text: words };
       if (annotation.inReplyTo && isPassageAnnotation(annotation) && parentSent) {
         const offset = context.offsets.get(annotation.id);
-        out.push({ ...base, parent: annotation.inReplyTo, quote: clip(annotation.originalText, QUOTE_MAX), text: words, ...(offset !== undefined ? { quote_offset: offset } : {}) });
+        out.push({ ...base, parent: annotation.inReplyTo, quote: clip(annotation.originalText, QUOTE_MAX), ...kind, ...(offset !== undefined ? { quote_offset: offset } : {}) });
         continue;
       }
       if (thread !== null) {
         out.push({ ...base, re: thread, text: words });
         continue;
       }
-      const deletion = annotation.type === AnnotationType.DELETION;
       const on = group.on;
       const lines = on.kind !== 'message' && !on.lines && annotation.type !== AnnotationType.GLOBAL_COMMENT ? blockLines(group.blocks, annotation.blockId) : null;
       out.push({
         ...base,
         on: lines && on.kind !== 'message' ? { ...on, lines } : on,
         quote: annotation.type === AnnotationType.GLOBAL_COMMENT ? '' : clip(annotation.originalText ?? '', QUOTE_MAX),
-        text: deletion ? clip(annotation.text ?? '', TEXT_MAX) : words,
-        ...(deletion ? { type: 'deletion' as const } : {}),
+        ...kind,
         annotation: annotation as unknown as Record<string, unknown>,
       });
     }

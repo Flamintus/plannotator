@@ -741,8 +741,9 @@ export interface ReviewEntryDetail {
  * named by its id, where it is and the words it is on:
  *
  * - a reply under a comment: "Reply under comment <id>, <place>";
- * - a sub-thread: "Comment on a passage of <message> (<place>)", and, when
- *   `messages` holds that message, the words around the passage (`In:`);
+ * - a sub-thread: "Comment on a passage of <message> (<place>)", or "Remove
+ *   this, on a passage of …" for a deletion, and, when `messages` holds that
+ *   message, the words around the passage (`In:`);
  * - any other comment: "Comment <place>", or "Remove this, <place>" for a
  *   deletion.
  */
@@ -762,7 +763,8 @@ export function reviewCommentEntry<R extends ReviewCommentFields, A>(
   if (isReviewCommentReply(record)) return reviewFeedbackEntry(number, `Reply under comment ${record.re}, ${read.place(on, root)}${reviewQuoted(quote)}`, record.id, null, words, notes);
   if (isReviewSubThread(record)) {
     const sub = { on, quote: quote.replace(/\s+/g, " ").trim(), parent: { id: record.parent!, quote_offset: reviewQuoteOffset(record), ...messages.get(record.parent!) } };
-    return reviewFeedbackEntry(number, `Comment ${reviewThreadPlace(read.place, sub, root)}${reviewQuoted(quote)}`, record.id, reviewSubThreadWords(sub, REVIEW_SUB_THREAD_WORDS_SENT), words, notes);
+    const lead = read.isDeletion(record) ? "Remove this," : "Comment";
+    return reviewFeedbackEntry(number, `${lead} ${reviewThreadPlace(read.place, sub, root)}${reviewQuoted(quote)}`, record.id, reviewSubThreadWords(sub, REVIEW_SUB_THREAD_WORDS_SENT), words, notes);
   }
   const place = read.place(on, root);
   if (read.isDeletion(record)) return reviewFeedbackEntry(number, `Remove this, ${place}${reviewQuoted(quote)}`, record.id, null, words, notes);

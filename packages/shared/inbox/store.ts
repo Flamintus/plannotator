@@ -5153,9 +5153,16 @@ export class InboxStore {
    * thread's first comment's (`inboxSubThreadAnnotation`), so it needs nothing
    * of the viewer; `quote` is the passage as drawn and `quote_offset` where
    * it starts in the message's words (packages/core/passage.ts). A draft is
-   * no parent: its words have not reached the agent.
+   * no parent: its words have not reached the agent. Its kind is what the
+   * selection toolbar made, as on the thread's own target: a comment, a
+   * quick label's (`isQuickLabel`, `quickLabelTip`), or a deletion (`type`
+   * "DELETION", words optional) on a file's thread only, since a message's
+   * words take none (`saveMessageAnnotation`).
    */
-  saveSubThread(parentId: string, input: { id?: unknown; text?: unknown; mentions?: unknown; quote?: unknown; quote_offset?: unknown }): InboxAnnotationRecord {
+  saveSubThread(
+    parentId: string,
+    input: { id?: unknown; text?: unknown; mentions?: unknown; quote?: unknown; quote_offset?: unknown; type?: unknown; isQuickLabel?: unknown; quickLabelTip?: unknown },
+  ): InboxAnnotationRecord {
     const named = this.annotations.get(parentId);
     if (named?.removed_at) throw new InboxError("annotation_not_found", `No comment ${parentId}.`);
     if (named && named.sent_reply_id === null) {
@@ -5164,8 +5171,21 @@ export class InboxStore {
     // The comment or sub-thread the parent is, or is a reply under: the new sub-thread lives where it does.
     const comment = this.sentComment(parentId);
     if (!isInboxAnnotationId(input.id)) throw new InboxError("validation_error", "annotation.id: a short id.", { field: "annotation.id" });
-    const text = inboxCommentReplyText(input.text);
+    if (input.type !== undefined && input.type !== "COMMENT" && input.type !== "DELETION") {
+      throw new InboxError("validation_error", 'annotation.type: "COMMENT" or "DELETION".', { field: "annotation.type" });
+    }
+    const deletion = input.type === "DELETION";
+    if (deletion && comment.message) {
+      throw new InboxError("validation_error", 'annotation.type: "COMMENT" (a message\'s thread takes no deletion, as its words take none).', { field: "annotation.type" });
+    }
+    // A deletion asks for the words to go: its own words are optional, as on a file's words.
+    const text = deletion && (input.text === undefined || input.text === "") ? "" : inboxCommentReplyText(input.text);
     if (text === null) throw new InboxError("validation_error", `annotation.text: the comment (1 to ${INBOX_COMMENT_REPLY_TEXT_MAX} characters).`, { field: "annotation.text" });
+    const tip = input.quickLabelTip;
+    if (tip !== undefined && (typeof tip !== "string" || tip.length > INBOX_COMMENT_REPLY_TEXT_MAX)) {
+      throw new InboxError("validation_error", `annotation.quickLabelTip: the label's tip (at most ${INBOX_COMMENT_REPLY_TEXT_MAX} characters).`, { field: "annotation.quickLabelTip" });
+    }
+    const label = !deletion && input.isQuickLabel === true ? { isQuickLabel: true, ...(typeof tip === "string" && tip.trim() ? { quickLabelTip: tip } : {}) } : {};
     const quote = typeof input.quote === "string" ? input.quote.trim() : "";
     if (quote === "" || quote.length > INBOX_MESSAGE_COMMENT_QUOTE_MAX) {
       throw new InboxError("validation_error", `annotation.quote: the passage (1 to ${INBOX_MESSAGE_COMMENT_QUOTE_MAX} characters).`, { field: "annotation.quote" });
@@ -5186,7 +5206,7 @@ export class InboxStore {
     const record: InboxAnnotationRecord = {
       ...target,
       id: input.id,
-      annotation: inboxSubThreadAnnotation(comment, { id: input.id, parent: parentId, quote, text, createdA: Date.parse(createdAt), mentions }),
+      annotation: inboxSubThreadAnnotation(comment, { id: input.id, parent: parentId, quote, text, createdA: Date.parse(createdAt), mentions, ...(deletion ? { type: "DELETION" as const } : {}), ...label }),
       parent: parentId,
       quote_offset: offset as number,
       created_at: createdAt,

@@ -22,8 +22,10 @@
  *
  * Sub-threads, as crit's: words selected in one message of a thread (the
  * comment, a reply, the agent's or the person's, or a sub-thread) offer ui's
- * selection toolbar, and Comment opens a box under the block of that
- * message's words the passage starts in, the passage at its head. The comment
+ * selection toolbar, the one the document's words offer there (a message's:
+ * Comment and 👍 Looks good; a file's: Delete too), and Comment opens a box
+ * under the block of that message's words the passage starts in, the passage
+ * at its head; Delete and 👍 make their comment at once, as on the document. The comment
  * is a draft until the next Send, then a thread of its own, a box in the box
  * under that block, its passage marked in the message's words: replies,
  * Resolve (its own, whatever its parent's) and sub-threads, at any depth, at
@@ -80,6 +82,8 @@ import type { TextPassage } from '@plannotator/core/passage';
 import type { InboxAnnotationRecord, InboxCommentReplyRecord } from '@plannotator/core/inbox-types';
 import type { Annotation, Block } from '@plannotator/ui/types';
 import { SentSendButton, SentStatusChip, SentThreads, useSentThreadsView, type ReplyInput, type SubThreadSave } from '@plannotator/ui/components/inbox-thread/SentThreads';
+import type { PassageToolbarOptions } from '@plannotator/ui/components/PassageToolbar';
+import { passageCommentFields } from '@plannotator/ui/utils/passageSelection';
 import { CommentListMeta } from '@plannotator/ui/components/inbox-thread/CommentListMeta';
 import type { SentCommentsTree } from '@plannotator/ui/components/inbox-thread/sentCommentsTree';
 import { Icon } from '@plannotator/ui/components/inbox-thread/icons';
@@ -101,6 +105,12 @@ const NO_WRITES: ReadonlyMap<string, InboxAnnotationRecord> = new Map();
 const NO_IDS: ReadonlySet<string> = new Set();
 const NO_PASSAGES: readonly TextPassage[] = [];
 const NO_TREE: SentCommentsTree = { rounds: new Map(), resolved: NO_IDS, replies: new Map(), subThreads: new Map(), openBelow: NO_IDS, passages: new Map() };
+/** The selection toolbar of an agent's message's words (Thread.tsx's Viewer, `textComments`: comment-only), which its threads' messages offer too. */
+const MESSAGE_TOOLBAR: PassageToolbarOptions = { commentOnly: true };
+/** The selection toolbar of a Markdown or text file's words (AttachmentPane's Viewer: no labels' picker), which its threads' messages offer too. */
+const FILE_TOOLBAR: PassageToolbarOptions = { quickLabels: false };
+/** The selection toolbar of a file the panel holds the threads of (an HTML page, code, an image or a video): comment-only. */
+export const FILE_CARD_TOOLBAR: PassageToolbarOptions = { commentOnly: true };
 
 type UnanchoredReport = { attempted: readonly string[]; unanchored: readonly string[] };
 
@@ -279,14 +289,19 @@ export function useSentComments(input: {
       return false;
     }
   }, []);
-  /** The person's comment on a passage of a message of a thread: a draft sub-thread, with the thread's others (true once saved). */
-  const subThread = useCallback<SubThreadSave>(async (parentId, passage, { text, mentions }) => {
+  /**
+   * The person's comment on a passage of a message of a thread, as the selection toolbar made it (a comment, a
+   * deletion, a quick label): a draft sub-thread, with the thread's others (true once saved).
+   */
+  const subThread = useCallback<SubThreadSave>(async (parentId, passage, comment) => {
+    const { text, mentions } = comment;
     try {
       const { annotation } = await inboxApi.saveSubThread(parentId, {
         id: newUuid(),
         text,
         quote: passage.quote,
         quote_offset: passage.offset,
+        ...passageCommentFields(comment),
         ...(mentions && mentions.length > 0 ? { mentions } : {}),
       });
       keepDraft(annotation);
@@ -350,7 +365,7 @@ export function useSentComments(input: {
     return (blocks: readonly Block[]) => {
       const { byBlock, rest } = placeThreads(list, new Set(blocks.map((block) => block.id)));
       const threadsOn = (key: string, records: readonly InboxAnnotationRecord[], lost?: boolean) => (
-        <SentThreads key={key} group={`${messageId}:${key}`} records={records} tree={tree} view={view} lost={lost} onOpen={onOpen} {...actions} />
+        <SentThreads key={key} group={`${messageId}:${key}`} records={records} tree={tree} view={view} lost={lost} onOpen={onOpen} passageToolbar={MESSAGE_TOOLBAR} {...actions} />
       );
       return {
         below: (block: Block) => {
@@ -647,7 +662,7 @@ export function useSentFileComments(input: {
     const { byBlock, rest } = placeThreads(roots, new Set(blocks.map((block) => block.id)), { moved: movedHere });
     const actions = live ? { onResolve, onReply: sent?.onReply, onSubThread, ...(onSend ? { onSend } : {}) } : {};
     const threadsOn = (key: string, records: readonly InboxAnnotationRecord[], lost?: boolean) => (
-      <SentThreads key={key} group={`file:${key}`} records={records} tree={fileTree} view={threadsView} lost={lost} {...actions} />
+      <SentThreads key={key} group={`file:${key}`} records={records} tree={fileTree} view={threadsView} lost={lost} passageToolbar={FILE_TOOLBAR} {...actions} />
     );
     return {
       below: (block: Block) => {

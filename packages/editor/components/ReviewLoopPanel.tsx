@@ -7,7 +7,9 @@
  *   `SentThreads`, the Inbox window's boxes, through the Viewer's
  *   `belowBlock`): the comment, the agent's replies and the person's, "New"
  *   until the person looks at the box, sub-threads as boxes in the box (words
- *   selected in a sent message offer a comment on that passage), Reply,
+ *   selected in a sent message offer the document's selection toolbar, and
+ *   each action makes the same comment on that passage as on the document:
+ *   a comment, a deletion, a quick label), Reply,
  *   Resolve and Reopen at a thread's head, a resolved thread folded to one
  *   line once nothing under it is open, and Send on a draft (it goes alone,
  *   at once, and the round stays open). The person's drafts are boxes too,
@@ -33,10 +35,12 @@ import type { TextPassage } from '@plannotator/core/passage';
 import type { ReviewThreadNode, ReviewReplyNode } from '@plannotator/core/review-threads';
 import { CommentListMeta } from '@plannotator/ui/components/inbox-thread/CommentListMeta';
 import { SENT_STATUS_WORDS, SentThreads, useSentThreadsView } from '@plannotator/ui/components/inbox-thread/SentThreads';
+import type { PassageToolbarOptions } from '@plannotator/ui/components/PassageToolbar';
 import { placeThreads, sentThreadsFromView, type SentReplyRow, type SentThreadRecord } from '@plannotator/ui/components/inbox-thread/sentCommentsTree';
 import { AnnotationType, type Annotation, type Block } from '@plannotator/ui/types';
 import { annotationOwnsHighlight, PASSAGE_ANNOTATION_PREFIX } from '@plannotator/ui/utils/annotationOwnsHighlight';
 import { buildReplyAnnotation } from '@plannotator/ui/utils/annotationReply';
+import { passageCommentFields, type PassageComment, type PassageMark } from '@plannotator/ui/utils/passageSelection';
 import { generateId } from '@plannotator/ui/utils/generateId';
 import type { ReviewLoop, ReviewLoopSendResult } from '../hooks/useReviewLoop';
 import { EMPTY_REVIEW_LOOP_INDEX, isPassageAnnotation, reviewLoopCards, reviewLoopPassages, reviewLoopThreadOf, type ReviewLoopElement } from '../reviewLoop';
@@ -44,7 +48,9 @@ import { EMPTY_REVIEW_LOOP_INDEX, isPassageAnnotation, reviewLoopCards, reviewLo
 const CHIP = 'ml-1 shrink-0 rounded px-1.5 py-0.5 text-[9px] font-medium';
 const MUTED_CHIP = `${CHIP} bg-muted text-muted-foreground`;
 const ACTION = 'rounded px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-default disabled:opacity-50';
-const NO_PASSAGES: readonly TextPassage[] = [];
+const NO_PASSAGES: readonly PassageMark[] = [];
+/** The screens' document selection toolbar (the `Viewer`'s, every action): a passage of a box's message offers the same. */
+const DOCUMENT_TOOLBAR: PassageToolbarOptions = {};
 
 type CardParts = { quote?: boolean; images?: boolean; text?: boolean; actions?: boolean; reply?: boolean; passage?: boolean };
 type Reply = { text: string; mentions?: readonly string[] };
@@ -104,8 +110,8 @@ export interface ReviewLoopPanelProps {
   annotations: Annotation[];
   onSelect: (id: string) => void;
   onReply?: (parentId: string, reply: Reply) => boolean;
-  onCommentPassage?: (parentId: string, passage: TextPassage, comment: Reply) => boolean;
-  cardPassages: (annotation: Annotation) => readonly TextPassage[];
+  onCommentPassage?: (parentId: string, passage: TextPassage, comment: PassageComment) => boolean;
+  cardPassages: (annotation: Annotation) => readonly PassageMark[];
   cardParts: (annotation: Annotation) => CardParts;
   renderCardHeader: (annotation: Annotation) => React.ReactNode;
   renderCardFooter: (annotation: Annotation) => React.ReactNode;
@@ -212,12 +218,16 @@ export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanel
     return true;
   }, [index, byId, reply, person, addDraft, held, lookAt, sendDrafts]);
 
-  const onCommentPassage = useCallback((parentId: string, passage: TextPassage, words: Reply): boolean => {
+  /** A comment on a passage of a sent message, as the selection toolbar made it: a comment, a deletion (no words), a quick label. */
+  const onCommentPassage = useCallback((parentId: string, passage: TextPassage, comment: PassageComment): boolean => {
     const parent = byId.get(parentId);
     if (!parent || !index.sent.has(parentId)) return false;
+    const reply = buildReplyAnnotation(parent, { id: generateId(PASSAGE_ANNOTATION_PREFIX.slice(0, -1)), text: comment.text, createdA: Date.now(), author: person, mentions: comment.mentions });
     const annotation: Annotation = {
-      ...buildReplyAnnotation(parent, { id: generateId(PASSAGE_ANNOTATION_PREFIX.slice(0, -1)), text: words.text, createdA: Date.now(), author: person, mentions: words.mentions }),
-      type: AnnotationType.COMMENT,
+      ...reply,
+      ...passageCommentFields(comment),
+      // A deletion has no words of its own, as on the document.
+      text: comment.text === '' ? undefined : comment.text,
       originalText: passage.quote,
     };
     loop.rememberOffset(annotation.id, passage.offset);
@@ -310,12 +320,13 @@ export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanel
   const boxActions = useMemo(
     () => ({
       onOpen: (record: SentThreadRecord) => onSelect(record.id),
+      passageToolbar: DOCUMENT_TOOLBAR,
       ...(readOnly
         ? {}
         : {
             onResolve: (record: SentThreadRecord, resolved: boolean) => void resolveThread(record.id, resolved),
             onReply: async (commentId: string, words: Reply) => onReply(commentId, words),
-            onSubThread: async (parentId: string, passage: TextPassage, words: Reply) => onCommentPassage(parentId, passage, words),
+            onSubThread: async (parentId: string, passage: TextPassage, comment: PassageComment) => onCommentPassage(parentId, passage, comment),
             onSend: async (id: string) => {
               const draft = held.get(id);
               return draft ? sendDrafts([draft]) : false;

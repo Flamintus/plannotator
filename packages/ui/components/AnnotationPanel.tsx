@@ -23,8 +23,8 @@ import { useConfigValue } from '../config/useConfig';
 import { imageRegionNumbers, RegionCardInfo, RegionNumber, regionOf } from './ImageRegions';
 import { CHECKBOX_ANNOTATION_PREFIX } from '../utils/annotationOwnsHighlight';
 import type { TextPassage } from '@plannotator/core/passage';
-import { PASSAGE_BODY_ATTRIBUTE, passageRanges, selectedPassage, selectionWithin, splitByRanges, type SelectedPassage } from '../utils/passageSelection';
-import { PassageToolbar } from './PassageToolbar';
+import { PASSAGE_BODY_ATTRIBUTE, passageRanges, selectedPassage, selectionWithin, splitByRanges, type PassageComment, type PassageMark, type SelectedPassage } from '../utils/passageSelection';
+import { PassageToolbar, type PassageToolbarOptions } from './PassageToolbar';
 
 /** What a region card (#2100) needs from its panel: each region's number on
  *  its image, and how to load the image for the crop thumbnail. */
@@ -237,10 +237,13 @@ interface PanelProps {
   /** Opt-in: the person comments on a passage of a card's words (a
     *  sub-thread, as crit's). Supplied (and not `readOnly`), words selected
     *  inside one card's comment text, on the open document, offer the
-    *  package's selection toolbar, comment-only; Comment, or a letter typed,
+    *  package's selection toolbar with the document's options there
+    *  (`passageToolbar`; absent, comment-only); Comment, or a letter typed,
     *  opens the panel's one box (the Reply box, with the passage quoted at
     *  its head) where the comment will appear, after the card's own replies;
     *  saving calls `onCommentPassage(parentId, passage, { text, mentions })`.
+    *  Delete and a quick label call it at once with their comment
+    *  (`PassageComment`: a deletion, a label's words), as on the document.
     *  `passage.offset` is where the words start in the card's text as drawn,
     *  whitespace runs counted as one (`@plannotator/core/passage`). A save
     *  the host could not make answers `false`: the box stays. `cardParts`'
@@ -249,12 +252,17 @@ interface PanelProps {
   onCommentPassage?: (
     parentId: string,
     passage: TextPassage,
-    comment: { text: string; mentions?: readonly string[] },
+    comment: PassageComment,
   ) => void | boolean | Promise<void | boolean>;
+  /** Opt-in, with `onCommentPassage`: the options of the document's own
+    *  selection toolbar (the host's viewer's), so a passage of a card's
+    *  words offers the same actions; Delete and a quick label then call
+    *  `onCommentPassage` at once. Absent: Comment only, as before. */
+  passageToolbar?: PassageToolbarOptions;
   /** The passages to mark in a card's comment text (the host's open
-    *  sub-threads on it), found again by their words and offset. Absent: no
-    *  marks. */
-  cardPassages?: (annotation: Annotation) => readonly TextPassage[];
+    *  sub-threads on it, a deletion's struck through), found again by their
+    *  words and offset. Absent: no marks. */
+  cardPassages?: (annotation: Annotation) => readonly PassageMark[];
   /** Opt-in host capability: an `@` mention source for the EDIT box of each
     *  plan-annotation card, the same `MentionSource` `Viewer` and `HtmlViewer`
     *  take for their creation composers. Supplied → the edit textarea grows
@@ -375,6 +383,7 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
   renderCardHeader,
   onReply,
   onCommentPassage,
+  passageToolbar,
   cardPassages,
   mentionSource,
   readOnly = false,
@@ -914,7 +923,22 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
         </div>
       </OverlayScrollArea>
       {passageOffer && canCommentPassage && (
-        <PassageToolbar passage={passageOffer} onComment={(initialChar) => commentOnPassage(passageOffer, initialChar)} onClose={closePassageOffer} />
+        <PassageToolbar
+          passage={passageOffer}
+          options={passageToolbar}
+          onComment={(initialChar) => commentOnPassage(passageOffer, initialChar)}
+          // Delete or a label: made at once, as on the document's words.
+          onPreset={
+            passageToolbar
+              ? (comment) => {
+                  setPassageOffer(null);
+                  listRef.current?.ownerDocument.getSelection()?.removeAllRanges();
+                  void onCommentPassage!(passageOffer.parentId, { quote: passageOffer.quote, offset: passageOffer.offset }, comment);
+                }
+              : undefined
+          }
+          onClose={closePassageOffer}
+        />
       )}
 
       {/* Quick Actions Footer */}
@@ -1135,7 +1159,7 @@ const AnnotationText: React.FC<{
   /** The card whose words a passage can be selected in (`onCommentPassage`): marks the element as that card's body. */
   passageBodyOf?: string;
   /** Passages to mark in the words (`cardPassages`). */
-  passages?: readonly TextPassage[];
+  passages?: readonly PassageMark[];
 }> = ({ text, className, sectionRefs, onNavigateAnchor, passageBodyOf, passages }) => {
   const parts = React.useMemo(
     () => (sectionRefs && onNavigateAnchor ? parseSectionRefs(text, sectionRefs) : [text]),
@@ -1155,7 +1179,12 @@ const AnnotationText: React.FC<{
           if (ranges.length === 0) return part;
           return splitByRanges(part, start, ranges).map((piece, j) =>
             piece.marked ? (
-              <mark key={`${i}-${j}`} data-passage-mark="true" className="rounded-[2px] bg-annotation-comment/20 text-inherit">
+              <mark
+                key={`${i}-${j}`}
+                data-passage-mark="true"
+                data-passage-deletion={piece.deletion ? 'true' : undefined}
+                className={piece.deletion ? 'rounded-[2px] bg-destructive/20 text-inherit line-through decoration-destructive' : 'rounded-[2px] bg-annotation-comment/20 text-inherit'}
+              >
                 {piece.text}
               </mark>
             ) : (
@@ -1297,7 +1326,7 @@ const AnnotationCard: React.FC<{
   /** Words selected in this card's text offer a comment on that passage (see `onCommentPassage`). */
   passageBody?: boolean;
   /** Passages to mark in the card's text (see `cardPassages`). */
-  passages?: readonly TextPassage[];
+  passages?: readonly PassageMark[];
   readOnly?: boolean;
   footer?: React.ReactNode;
   /** Host slot in the card's header row (see `renderCardHeader`). */

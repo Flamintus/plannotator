@@ -46,7 +46,7 @@ import {
 } from '../attachments';
 import { whenTime, formatBytes } from '../format';
 import { useRefRepo } from '../links';
-import { useSentFileComments, type SentFileComments } from './SentComments';
+import { FILE_CARD_TOOLBAR, useSentFileComments, type SentFileComments } from './SentComments';
 import { inboxMarkdownImageBase } from '../images';
 import { ImageAttachmentView, type ImageSwipeEdges } from './ImageAttachmentView';
 import type { WheelHintGate } from '@plannotator/ui/components/ImageZoomStage';
@@ -2453,6 +2453,8 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
             renderCardFooter={sentFooter}
             onReply={onReply}
             onCommentPassage={onCommentPassage}
+            // A passage of a card's words offers what the file's words offer: comment-only here (an HTML page, code, an image, a video).
+            passageToolbar={FILE_CARD_TOOLBAR}
             cardPassages={cardPassages}
             title={isVideo ? 'Comments' : undefined}
             // A linked page takes no comments: the panel lists the attached page's, and says so.

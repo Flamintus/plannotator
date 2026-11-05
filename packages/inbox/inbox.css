@@ -7829,6 +7829,10 @@ button.ib-sentb-quote:hover, button.ib-sentb-quote:focus-visible { color: var(--
 .ib-sentb-card[data-sent-resolved] { border-color: color-mix(in oklab, var(--success, var(--primary)) 45%, var(--border)); }
 .ib-sentb-card[data-sent-resolved] > .ib-sentb-head { background: color-mix(in oklch, var(--muted) 35%, var(--card)); }
 .ib-sentb-card[data-sent-resolved] > .ib-sentb-head .ib-sentb-quote { border-left-color: color-mix(in oklab, var(--success, var(--primary)) 70%, transparent); }
+/* A deletion (the person asks for the words to go, on the document or on a passage of a message): said at its head, its
+   passage struck through as the document strikes a deletion's words. */
+.ib-sentb-deletion { background: color-mix(in oklab, var(--destructive) 14%, var(--card)); color: var(--destructive); font-weight: 600; }
+.ib-sentb-card[data-sent-deletion] > .ib-sentb-head .ib-sentb-qt { text-decoration: line-through; text-decoration-color: var(--destructive); }
 /* A resolved thread kept open by a sub-thread under it: its own words quieter, the open sub-thread as it is. */
 :is(.ib-sentb-card[data-sent-resolved] > .ib-sentb-msg, .ib-sentb-card[data-sent-resolved] > .ib-sentb-replies > .ib-sentb-msg) > :is(.ib-sentb-meta, .ib-sentc-said),
 :is(.ib-sentb-card[data-sent-resolved] > .ib-sentb-msg, .ib-sentb-card[data-sent-resolved] > .ib-sentb-replies > .ib-sentb-msg) > .ib-sentb-meta > .ib-sentc-who { color: var(--muted-foreground); }
@@ -7867,6 +7871,8 @@ button.ib-sentb-quote:hover, button.ib-sentb-quote:focus-visible { color: var(--
 /* An open sub-thread's passage, marked in the message's words; the box a reply or a comment on a passage is written in. */
 .ib-sentc-mark { background: oklch(0.70 0.18 60 / 0.3); border-bottom: 2px solid var(--accent); color: inherit; border-radius: 2px; }
 .light .ib-sentc-mark { background: oklch(0.70 0.20 60 / 0.15); }
+.ib-sentc-mark[data-passage-deletion] { background: oklch(from var(--destructive) l c h / 0.35); border-bottom: 0; text-decoration: line-through; text-decoration-color: var(--destructive); text-decoration-thickness: 2px; }
+.light .ib-sentc-mark[data-passage-deletion] { background: oklch(0.65 0.22 25 / 0.2); }
 .ib-sentc-boxquote { margin: 0; font-size: var(--ib-fs-12, 12px); color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ib-sentc-box { display: grid; gap: 4px; padding: 4px 6px; }
 .ib-sentb-boxrow > .ib-sentc-box { padding: 8px 12px; }

@@ -9,8 +9,14 @@
  * The passage's offset counts the body's words as drawn, whitespace runs as
  * one (packages/core/passage.ts), so it holds however the words wrap; a body
  * drawn in pieces (boxes between its blocks) counts all its pieces' words.
+ *
+ * A comment on a passage is a comment like one on a document's words: the
+ * selection toolbar offers the document's actions (`PassageToolbar`), and
+ * each makes the same kind of annotation (`PassageComment`).
  */
 import { findPassage, passageOffset, type TextPassage } from '@plannotator/core/passage';
+import { AnnotationType, type Annotation } from '../types';
+import type { QuickLabel } from './quickLabels';
 
 export const PASSAGE_BODY_ATTRIBUTE = 'data-passage-body';
 /** On each piece of a body drawn in pieces (a message's words cut by the sub-threads' boxes between its blocks). */
@@ -77,32 +83,79 @@ export function selectedPassage(within: Element, selection: Selection | null = w
 }
 
 /**
+ * A comment on a passage as the selection toolbar makes it, the three ways a
+ * document's words take one (useAnnotationHighlighter): Comment, the person's
+ * words (no `type`); Delete, a deletion with no words (`DELETION_COMMENT`); a
+ * quick label (👍 Looks good, the labels' picker), a comment whose words are
+ * the label's (`quickLabelComment`).
+ */
+export interface PassageComment {
+  text: string;
+  mentions?: readonly string[];
+  /** Absent: a comment. */
+  type?: AnnotationType.COMMENT | AnnotationType.DELETION;
+  isQuickLabel?: boolean;
+  quickLabelTip?: string;
+}
+
+/** Delete on a passage: the person asks for the words to go, with no words of their own. */
+export const DELETION_COMMENT: PassageComment = { text: '', type: AnnotationType.DELETION };
+
+/** A quick label on a passage: a comment whose words are the label's emoji and text, with its tip, as on a document's words. */
+export function quickLabelComment(label: QuickLabel): PassageComment {
+  return { text: `${label.emoji} ${label.text}`, type: AnnotationType.COMMENT, isQuickLabel: true, ...(label.tip ? { quickLabelTip: label.tip } : {}) };
+}
+
+/** The fields a passage comment gives its annotation beyond its words: its type and its label, as a document's comment carries them. */
+export function passageCommentFields(comment: PassageComment): { type: AnnotationType.COMMENT | AnnotationType.DELETION } & Partial<Pick<Annotation, 'isQuickLabel' | 'quickLabelTip'>> {
+  return {
+    type: comment.type ?? AnnotationType.COMMENT,
+    ...(comment.isQuickLabel ? { isQuickLabel: true } : {}),
+    ...(comment.quickLabelTip ? { quickLabelTip: comment.quickLabelTip } : {}),
+  };
+}
+
+/** A passage a body marks; `deletion`: its comment asks for the words to go, marked as a document marks a deletion. */
+export interface PassageMark extends TextPassage {
+  deletion?: boolean;
+}
+
+/** A marked range of a body's words: start, end, and `true` third when every passage in it is a deletion. */
+export type PassageRange = [number, number] | [number, number, true];
+
+/**
  * The parts of `text` that the passages cover, in order and merged, as
  * index ranges of `text`: what a body marks. A passage whose words are no
- * longer there marks nothing.
+ * longer there marks nothing. A range is a deletion's only when every
+ * passage merged into it is one.
  */
-export function passageRanges(text: string, passages: readonly TextPassage[]): [number, number][] {
-  const found = passages.map((passage) => findPassage(text, passage)).filter((range): range is [number, number] => range !== null);
+export function passageRanges(text: string, passages: readonly PassageMark[]): PassageRange[] {
+  const found = passages.flatMap((passage): PassageRange[] => {
+    const range = findPassage(text, passage);
+    return range === null ? [] : [passage.deletion ? [range[0], range[1], true] : [range[0], range[1]]];
+  });
   found.sort((a, b) => a[0] - b[0]);
-  const out: [number, number][] = [];
-  for (const [start, end] of found) {
+  const out: PassageRange[] = [];
+  for (const range of found) {
     const last = out[out.length - 1];
-    if (last && start <= last[1]) last[1] = Math.max(last[1], end);
-    else out.push([start, end]);
+    if (last && range[0] <= last[1]) {
+      last[1] = Math.max(last[1], range[1]);
+      if (range.length === 2 && last.length === 3) out[out.length - 1] = [last[0], last[1]];
+    } else out.push([...range] as PassageRange);
   }
   return out;
 }
 
-/** `text`, which starts at `base` in the body's words, cut into pieces that `ranges` mark and pieces they do not. */
-export function splitByRanges(text: string, base: number, ranges: readonly [number, number][]): { text: string; marked: boolean }[] {
-  const out: { text: string; marked: boolean }[] = [];
+/** `text`, which starts at `base` in the body's words, cut into pieces that `ranges` mark (a deletion's, said so) and pieces they do not. */
+export function splitByRanges(text: string, base: number, ranges: readonly PassageRange[]): { text: string; marked: boolean; deletion?: true }[] {
+  const out: { text: string; marked: boolean; deletion?: true }[] = [];
   let at = 0;
-  for (const [start, end] of ranges) {
-    const from = Math.max(start - base, at);
-    const to = Math.min(end - base, text.length);
+  for (const range of ranges) {
+    const from = Math.max(range[0] - base, at);
+    const to = Math.min(range[1] - base, text.length);
     if (to <= from) continue;
     if (from > at) out.push({ text: text.slice(at, from), marked: false });
-    out.push({ text: text.slice(from, to), marked: true });
+    out.push({ text: text.slice(from, to), marked: true, ...(range[2] ? { deletion: true as const } : {}) });
     at = to;
   }
   if (at < text.length) out.push({ text: text.slice(at), marked: false });

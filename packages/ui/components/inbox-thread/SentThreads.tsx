@@ -20,6 +20,13 @@
  * one "Resolved" line (a press opens it to be read) only once nothing under
  * it, at any depth, is open.
  *
+ * A sub-thread is a comment like one on the document's words: words selected
+ * in a message offer the document's selection toolbar (`passageToolbar`, the
+ * host's `Viewer` options: Delete, Comment, the quick labels, 👍 Looks good),
+ * and each action makes the same kind of comment (`PassageComment`); a
+ * deletion says so at its head ("Deletion", its passage struck through, as
+ * the document strikes a deletion's words), on the document's threads too.
+ *
  * With comment sends (the host passes `onSend` and the tree's `statuses`,
  * `live` and `fresh`): a draft, the comment, a reply under one or a
  * sub-thread, has Send, which sends it alone at once without ending the
@@ -35,8 +42,8 @@ import type { InboxAnnotationRecord } from '@plannotator/core/inbox-types';
 import type { InboxCommentSendStatus } from '@plannotator/core/inbox-comment-sends';
 import { useConfigValue } from '../../config';
 import { AnnotationType, type Annotation } from '../../types';
-import { PassageToolbar } from '../PassageToolbar';
-import { PASSAGE_BODY_ATTRIBUTE, PASSAGE_PIECE_ATTRIBUTE, passageRanges, selectedPassage, splitByRanges, type SelectedPassage } from '../../utils/passageSelection';
+import { PassageToolbar, type PassageToolbarOptions } from '../PassageToolbar';
+import { PASSAGE_BODY_ATTRIBUTE, PASSAGE_PIECE_ATTRIBUTE, passageRanges, selectedPassage, splitByRanges, type PassageComment, type PassageMark, type SelectedPassage } from '../../utils/passageSelection';
 import { isCommentSubmitKey } from '../../utils/commentSubmitKey';
 import { Icon } from './icons';
 import { shortLabel } from './shortLabel';
@@ -48,8 +55,8 @@ const NO_IDS: ReadonlySet<string> = new Set();
 /** The person's reply under a comment, or comment on a passage, as the composer hands it. */
 export type ReplyInput = { text: string; mentions?: readonly string[] };
 
-/** The person's sub-thread on a passage of a message, true once saved. */
-export type SubThreadSave = (parentId: string, passage: TextPassage, comment: ReplyInput) => Promise<boolean>;
+/** The person's sub-thread on a passage of a message, as the selection toolbar made it (a comment, a deletion, a quick label), true once saved. */
+export type SubThreadSave = (parentId: string, passage: TextPassage, comment: PassageComment) => Promise<boolean>;
 
 /**
  * A message's words, with its sub-threads' passages marked; `bodyOf`: words a passage can be selected in.
@@ -70,7 +77,7 @@ function Said({
   to?: number;
   piece?: boolean;
   bodyOf?: string;
-  passages?: readonly TextPassage[];
+  passages?: readonly PassageMark[];
   className?: string;
 }) {
   const ranges = useMemo(() => (passages && passages.length > 0 ? passageRanges(text, passages) : []), [text, passages]);
@@ -81,7 +88,7 @@ function Said({
         ? words
         : splitByRanges(words, from, ranges).map((part, index) =>
             part.marked ? (
-              <mark key={index} className="ib-sentc-mark" data-passage-mark="">
+              <mark key={index} className="ib-sentc-mark" data-passage-mark="" data-passage-deletion={part.deletion ? '' : undefined}>
                 {part.text}
               </mark>
             ) : (
@@ -244,6 +251,7 @@ export function SentThreads<R extends SentThreadRecord = InboxAnnotationRecord>(
   tree,
   view,
   lost = false,
+  passageToolbar,
   ...actions
 }: {
   /** This group's key, inside its view's surface. */
@@ -252,6 +260,11 @@ export function SentThreads<R extends SentThreadRecord = InboxAnnotationRecord>(
   tree: SentCommentsTree<R>;
   view: SentThreadsView;
   lost?: boolean;
+  /**
+   * The options of the document's own selection toolbar here (the host's `Viewer`'s): a passage of a message offers
+   * the same actions, Delete and the labels making their sub-thread at once. Absent: Comment only, as before.
+   */
+  passageToolbar?: PassageToolbarOptions;
 } & SentThreadsActions<R>) {
   if (records.length === 0) return null;
   const key = `${view.surface}:${group}`;
@@ -265,12 +278,24 @@ export function SentThreads<R extends SentThreadRecord = InboxAnnotationRecord>(
       {view.offer?.group === key && onSubThread && (
         <PassageToolbar
           passage={view.offer.passage}
+          options={passageToolbar}
           onComment={(initialChar) => {
             const passage = view.offer!.passage;
             view.closeOffer();
             document.getSelection()?.removeAllRanges();
             view.setBox((open) => ({ at: passage.parentId, text: `${open?.text ?? ''}${initialChar ?? ''}`, opened: (open?.opened ?? 0) + 1, passage: { quote: passage.quote, offset: passage.offset } }));
           }}
+          // Delete or a label: the comment is made at once, as on the document's words (a refusal is the host's to say).
+          onPreset={
+            passageToolbar
+              ? (comment) => {
+                  const passage = view.offer!.passage;
+                  view.closeOffer();
+                  document.getSelection()?.removeAllRanges();
+                  void onSubThread(passage.parentId, { quote: passage.quote, offset: passage.offset }, comment);
+                }
+              : undefined
+          }
           onClose={view.closeOffer}
         />
       )}
@@ -288,6 +313,9 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, tree, view, a
   const quote = annotation.originalText ?? '';
   /** A comment on the whole document: no passage (never one on part of an image or an element, which has no words either). */
   const general = quote === '' && !isInboxSubThread(record) && (annotation.type === undefined || annotation.type === AnnotationType.GLOBAL_COMMENT);
+  /** The person asks for the words to go: a deletion, on the document or on a passage of a message. */
+  const deletion = annotation.type === AnnotationType.DELETION;
+  const words = annotation.text ?? '';
   const draft = record.sent_reply_id === null;
   const round = record.sent_reply_id ? rounds.get(record.sent_reply_id) : undefined;
   const isSub = isInboxSubThread(record);
@@ -299,6 +327,7 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, tree, view, a
   const marks = {
     'data-sent-comment': id,
     'data-sent-subthread': isSub ? '' : undefined,
+    'data-sent-deletion': deletion ? '' : undefined,
     'data-sent-resolved': isResolved ? '' : undefined,
     'data-sent-folded': folded ? '' : undefined,
   };
@@ -387,6 +416,11 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, tree, view, a
           <span className="ib-sentb-quote">{quoteText}</span>
         )}
         <span className="ib-sentb-chips">
+          {deletion && (
+            <span className="ib-sentc-chip ib-sentb-deletion" data-sent-deletion-chip="">
+              Deletion
+            </span>
+          )}
           {roundChip}
           <SentStatusChip status={statuses?.get(id)} />
           {live?.has(id) && !isResolved && (
@@ -432,12 +466,15 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, tree, view, a
           </span>
         )}
       </div>
-      <div className="ib-sentb-msg" data-sent-message={id}>
-        <div className="ib-sentb-meta">
-          <span className="ib-sentc-who">You</span>
+      {/* A deletion with no words says it all at its head. */}
+      {!(deletion && words.trim() === '') && (
+        <div className="ib-sentb-msg" data-sent-message={id}>
+          <div className="ib-sentb-meta">
+            <span className="ib-sentc-who">You</span>
+          </div>
+          {saidWithSubThreads(id, words, !draft && !!onSubThread)}
         </div>
-        {saidWithSubThreads(id, annotation.text ?? '', !draft && !!onSubThread)}
-      </div>
+      )}
       {(under.length > 0 || replyBox) && (
         <div className="ib-sentb-replies" data-sent-replies={id}>
           {under.map((reply) => (

@@ -20,6 +20,8 @@ import type { InboxCommentSendStatus } from '@plannotator/core/inbox-comment-sen
 import { findPassage, type TextPassage } from '@plannotator/core/passage';
 import type { InboxAnnotationRecord } from '@plannotator/core/inbox-types';
 import type { ReviewThreadNode, ReviewThreadView } from '@plannotator/core/review-threads';
+import { AnnotationType } from '../../types';
+import type { PassageMark } from '../../utils/passageSelection';
 
 /**
  * What the boxes read of a thread's record, whichever client keeps it: the
@@ -62,8 +64,8 @@ export interface SentCommentsTree<R extends SentThreadRecord = InboxAnnotationRe
   subThreads: ReadonlyMap<string, readonly R[]>;
   /** The messages with an open sub-thread under them. */
   openBelow: ReadonlySet<string>;
-  /** The passages to mark in each message's words. */
-  passages: ReadonlyMap<string, readonly TextPassage[]>;
+  /** The passages to mark in each message's words (a deletion's, as one). */
+  passages: ReadonlyMap<string, readonly PassageMark[]>;
   /** What became of each element a comment send carried (a thread's comment, the person's reply), by id. Absent: none drawn. */
   statuses?: ReadonlyMap<string, InboxCommentSendStatus>;
   /** The threads a send reached at once: the person's next replies in them go on their own. Absent: none. */
@@ -78,8 +80,8 @@ export interface SentCommentsParts<R extends SentThreadRecord = InboxAnnotationR
   replies: Map<string, SentReplyRow[]>;
   /** The sub-threads on each message (a comment, a reply or a sub-thread), by its id, as records: the sent ones, then the drafts. */
   subThreads: Map<string, R[]>;
-  /** The passages to mark in each message's words: all its sub-threads', open, resolved or draft, as the document keeps every comment's highlight. */
-  passages: Map<string, TextPassage[]>;
+  /** The passages to mark in each message's words: all its sub-threads', open, resolved or draft, as the document keeps every comment's highlight (a deletion's, as one). */
+  passages: Map<string, PassageMark[]>;
   /** Each sent reply's round, by id: the person's, its send's; an agent's, the round under way when it wrote. */
   replyRounds: Map<string, number>;
   /** What became of each element a comment send carried, by id: a thread's (its comment's), and the person's sent replies'. */
@@ -101,7 +103,7 @@ export function sentCommentsParts<R extends SentThreadRecord, A>(view: ReviewThr
     const list = subs.flatMap((sub) => byId.get(sub.id) ?? []);
     if (list.length > 0) parts.subThreads.set(host, list);
     // Every sub-thread's passage stays marked, resolved or not, as a comment's highlight stays in the document.
-    const marked = subs.map((sub) => ({ quote: sub.quote, offset: sub.parent?.quote_offset ?? 0 }));
+    const marked = subs.map(subThreadMark);
     if (marked.length > 0) parts.passages.set(host, marked);
     for (const sub of subs) walk(sub);
   };
@@ -173,6 +175,11 @@ export function messageBlocks(text: string): { start: number; end: number }[] {
   return blocks;
 }
 
+/** A sub-thread's passage as its message marks it, from the thread view: where it starts, and whether it asks for the words to go. */
+function subThreadMark<A>(sub: ReviewThreadNode<A>): PassageMark {
+  return { quote: sub.quote, offset: sub.parent?.quote_offset ?? 0, ...(sub.type === 'deletion' ? { deletion: true } : {}) };
+}
+
 /** A sub-thread's passage in its parent's words: its quote, from where it starts (`quote_offset`); none without a quote. */
 export function subThreadPassage(record: SentThreadRecord): TextPassage | undefined {
   const quote = record.annotation.originalText;
@@ -231,7 +238,7 @@ export interface SentViewDrafts {
   /** The person's draft sub-threads on each message (a comment, a reply, a sub-thread), by its id. */
   subThreads?: ReadonlyMap<string, readonly SentThreadRecord[]>;
   /** The passages of those draft sub-threads, by the message they are on. */
-  passages?: ReadonlyMap<string, readonly TextPassage[]>;
+  passages?: ReadonlyMap<string, readonly PassageMark[]>;
 }
 
 /**
@@ -240,10 +247,10 @@ export interface SentViewDrafts {
  * no records of its own: the top-level threads in the view's order
  * (`threads`, the drafts after what was sent), each sub-thread's record and
  * the tree. `annotationOf` gives a thread's drawing data when the host holds
- * it (its block, its passage as painted); else its quote and words from the
- * view stand in. A resolved thread stays unfolded while something under it
- * is open, a draft of the host's included, as in the Inbox. `person` names
- * the person on their own replies.
+ * it (its block, its passage as painted); else its quote, words and type
+ * from the view stand in. A resolved thread stays unfolded while something
+ * under it is open, a draft of the host's included, as in the Inbox. `person`
+ * names the person on their own replies.
  */
 export function sentThreadsFromView<A>(
   view: ReviewThreadView<A>,
@@ -258,7 +265,7 @@ export function sentThreadsFromView<A>(
   const { annotationOf, drafts = {}, fresh, person = 'You' } = options;
   const recordOf = (node: ReviewThreadNode<A>): SentThreadRecord => ({
     id: node.id,
-    annotation: annotationOf?.(node.id) ?? { originalText: node.quote, text: node.text },
+    annotation: annotationOf?.(node.id) ?? { originalText: node.quote, text: node.text, ...(node.type === 'deletion' ? { type: AnnotationType.DELETION } : {}) },
     sent_reply_id: node.draft ? null : node.reply_id,
     ...(node.parent ? { parent: node.parent.id, quote_offset: node.parent.quote_offset } : {}),
     ...(node.unanchored ? { unanchored_at: 'unanchored' } : {}),
@@ -268,7 +275,7 @@ export function sentThreadsFromView<A>(
   const openBelow = new Set<string>();
   const replies = new Map<string, SentReplyRow[]>();
   const subThreads = new Map<string, SentThreadRecord[]>();
-  const passages = new Map<string, TextPassage[]>();
+  const passages = new Map<string, PassageMark[]>();
   const statuses = new Map<string, InboxCommentSendStatus>();
   const live = new Set<string>();
   /** Whether anything under a thread, at any depth, is open: a sub-thread open or a draft of the host's. */
@@ -285,7 +292,7 @@ export function sentThreadsFromView<A>(
       const list = [...subs.map(recordOf), ...(drafts.subThreads?.get(message) ?? [])];
       if (list.length > 0) subThreads.set(message, list);
       if ((drafts.subThreads?.get(message)?.length ?? 0) > 0) open = true;
-      const marked = [...subs.filter((sub) => sub.state !== 'resolved').map((sub) => ({ quote: sub.quote, offset: sub.parent?.quote_offset ?? 0 })), ...(drafts.passages?.get(message) ?? [])];
+      const marked = [...subs.filter((sub) => sub.state !== 'resolved').map(subThreadMark), ...(drafts.passages?.get(message) ?? [])];
       if (marked.length > 0) passages.set(message, marked);
       for (const sub of subs) if (walk(sub) || sub.state !== 'resolved') open = true;
     };
