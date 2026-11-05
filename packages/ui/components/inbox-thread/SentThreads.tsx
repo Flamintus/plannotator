@@ -32,7 +32,7 @@ import type { TextPassage } from '@plannotator/core/passage';
 import type { InboxAnnotationRecord } from '@plannotator/core/inbox-types';
 import type { InboxCommentSendStatus } from '@plannotator/core/inbox-comment-sends';
 import { useConfigValue } from '../../config';
-import type { Annotation } from '../../types';
+import { AnnotationType, type Annotation } from '../../types';
 import { PassageToolbar } from '../PassageToolbar';
 import { PASSAGE_BODY_ATTRIBUTE, passageRanges, selectedPassage, splitByRanges, type SelectedPassage } from '../../utils/passageSelection';
 import { isCommentSubmitKey } from '../../utils/commentSubmitKey';
@@ -262,6 +262,8 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, tree, view, a
   const id = record.id;
   const annotation = record.annotation as unknown as Annotation;
   const quote = annotation.originalText ?? '';
+  /** A comment on the whole document: no passage (never one on part of an image or an element, which has no words either). */
+  const general = quote === '' && !isInboxSubThread(record) && (annotation.type === undefined || annotation.type === AnnotationType.GLOBAL_COMMENT);
   const draft = record.sent_reply_id === null;
   const round = record.sent_reply_id ? rounds.get(record.sent_reply_id) : undefined;
   const isSub = isInboxSubThread(record);
@@ -286,7 +288,7 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, tree, view, a
             <Icon name="check" size={12} />
             Resolved
           </span>
-          <span className="ib-sentb-fquote">{quote === '' && !isSub ? 'General comment' : `“${shortLabel(quote)}”`}</span>
+          <span className="ib-sentb-fquote">{general ? 'General comment' : `“${shortLabel(quote)}”`}</span>
           {roundChip}
           <span className="ib-sentb-count" data-sent-messages={1 + under.length} data-sent-subthreads={subs}>
             {plural(1 + under.length, 'message')}
@@ -328,7 +330,7 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, tree, view, a
   const replyBox = boxFor(id, false);
   // A sub-thread's passage is in the message just above it; a thread's first comment's is in the document, a press brings it into view.
   // A comment on the whole document has no passage: its head says so.
-  const quoteText = quote === '' && !isSub ? <span className="ib-sentb-qt ib-sentb-general">General comment</span> : <span className="ib-sentb-qt">“{quote}”</span>;
+  const quoteText = general ? <span className="ib-sentb-qt ib-sentb-general">General comment</span> : <span className="ib-sentb-qt">“{quote}”</span>;
   return (
     <div className="ib-sentb-card" {...marks} data-sent-draft={draft ? '' : undefined}>
       <div className="ib-sentb-head">

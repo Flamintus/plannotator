@@ -5032,9 +5032,13 @@ const App: React.FC = () => {
         }
       }
       const payload = getCurrentFeedbackPayload(checkedSavedFileChanges, options);
-      // The review loop: Done with nothing left to send still tells the agent how the review ended.
-      const doneEnd = reviewLoop.available && !discard && !options?.approvalFraming && isEmptyFeedbackSentinel(payload) ? reviewLoopEndState(reviewLoop.index, 'done') : null;
-      const feedback = doneEnd ?? payload;
+      // The review loop: every end of the review tells the agent how it ended: Done (nothing left to send, or
+      // discarded), and a note with the approval's framing.
+      const ending = reviewLoop.available && (discard || options?.approvalFraming || isEmptyFeedbackSentinel(payload))
+        ? reviewLoopEndState(reviewLoop.index, options?.approvalFraming ? 'approved' : 'done')
+        : null;
+      const doneEnd = ending !== null && isEmptyFeedbackSentinel(payload) ? ending : null;
+      const feedback = ending === null ? payload : doneEnd ?? `${payload}\n\n${ending}`;
       sentFeedback = feedback;
       const agentFeedbackDelivery = agentTerminalSessionId === null
         ? null
@@ -5257,6 +5261,8 @@ const App: React.FC = () => {
 
       // Let active confirmation dialogs own Cmd/Ctrl+Enter and Escape.
       if (document.querySelector('[data-plannotator-confirm-dialog="true"]')) return;
+      // A message over the page (the review loop's round, or a final one moved away from) takes no decision key.
+      if (document.querySelector('[data-completion-over-page]')) return;
 
       // Don't intercept if any modal is open
       if (showExport || showImport ||
@@ -5647,7 +5653,8 @@ const App: React.FC = () => {
     annotations: allAnnotations,
     here: reviewHere,
     person: getIdentity(),
-    readOnly: documentReadOnly,
+    // Once decided, the review is closed: the page brought back is to be read.
+    readOnly: documentReadOnly || !!submitted,
     addDraft: (annotation, paint) => {
       handleAddAnnotation(annotation);
       if (paint) viewerRef.current?.applySharedAnnotations([annotation]);
@@ -5657,7 +5664,7 @@ const App: React.FC = () => {
     reply: handleReplyToAnnotation,
     notify: (message) => toast.error(message),
     // The threads go under their passage wherever the viewer draws blocks; an HTML page keeps them in the panel.
-    threadsInText: renderAs !== 'html',
+    threadsInText: renderAs !== 'html' && !isEditingMarkdown && !isPlanDiffActive,
     blocks,
   });
 

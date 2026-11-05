@@ -13,8 +13,9 @@
  *   at once, and the round stays open). The person's drafts are boxes too,
  *   "Not sent", after the sent ones on their block.
  * - The annotations panel stays today's list, one comment per card with its
- *   controls, no tree of the loop's: the page's own annotations only (a sent
- *   one takes no edit or delete), each with one more line (ui's
+ *   controls, flat (a reply or a sub-thread is a card of its own, no tree):
+ *   the page's own annotations only (a sent one takes no edit or delete),
+ *   each with one more line (ui's
  *   `CommentListMeta`): its round or "Not sent", what became of its send,
  *   "✓ Resolved" with Resolve or Reopen, Send for a draft, and
  *   "↳ N replies under the passage" (the replies are read in the box).
@@ -148,11 +149,14 @@ export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanel
     [loop.available, inText, index, held, person],
   );
   const panelAnnotations = useMemo(() => {
-    if (!loop.available || inText) return annotations;
+    if (!loop.available) return annotations;
+    // In the text, the list is flat (R7): each comment alone, a reply or a sub-thread too, no tree; the tree is the boxes'.
+    if (inText) return annotations.some((annotation) => annotation.inReplyTo) ? annotations.map((annotation) => (annotation.inReplyTo ? { ...annotation, inReplyTo: undefined } : annotation)) : annotations;
     const own = annotations.filter((annotation) => !(index.elements.has(annotation.id) && hidden(annotation.id)));
     return [...own, ...cards];
   }, [loop.available, inText, annotations, cards, index, hidden]);
-  const byId = useMemo(() => new Map([...drawn, ...panelAnnotations].map((annotation) => [annotation.id, annotation])), [drawn, panelAnnotations]);
+  // What an answer on a card goes under is read from the page's own annotations (a flat card keeps its thread).
+  const byId = useMemo(() => new Map([...drawn, ...(inText ? annotations : panelAnnotations)].map((annotation) => [annotation.id, annotation])), [drawn, inText, annotations, panelAnnotations]);
   const failed = useMemo(() => new Map((state?.failed ?? []).map((entry) => [entry.send, entry.message])), [state?.failed]);
   const passages = useMemo(
     () =>

@@ -213,7 +213,9 @@ export function AnnotationsList({
       style={shift ? ({ '--ib-annpop-shift': `${shift}px` } as CSSProperties) : undefined}
     >
       <div className="ib-aph">
-        <b>{plural(rows.length, 'comment')}</b>
+        {/* The drafts, as the foot's Draft note counts them; then what was sent, apart. */}
+        {records.length > 0 || sentHere.length === 0 ? <b>{plural(records.length, 'comment')}</b> : <b>{plural(sentHere.length, 'comment')} sent</b>}
+        {records.length > 0 && sentHere.length > 0 && <span data-comments-sent-count="">{` · ${sentHere.length} sent`}</span>}
         <span className="ib-sp" />
         <button type="button" className="ib-iconbtn" onClick={() => closeRef.current(true)} aria-label="Close the list">
           <Icon name="x" />

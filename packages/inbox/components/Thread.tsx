@@ -2552,9 +2552,11 @@ export function ThreadPane({ notice, thread, threadSteps = null, codeReview = fa
       />
     );
   };
+  const sentListed = useMemo(() => sentComments.records.filter((record) => !record.guide), [sentComments.records]);
   const commentsListProps: AnnotationsListProps = {
     records,
-    ...(files?.sent_comments ? { sent: sentComments.records, meta: commentMeta } : {}),
+    // A guided review's sent comments are not drawn (they went with the person's verdict): not listed either.
+    ...(files?.sent_comments ? { sent: sentListed, meta: commentMeta } : {}),
     attachments: allFiles,
     onEdit: editRecord,
     onRemove: removeRecord,

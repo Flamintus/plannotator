@@ -80,6 +80,7 @@ import type { InboxAnnotationRecord, InboxCommentReplyRecord } from '@plannotato
 import type { Annotation, Block } from '@plannotator/ui/types';
 import { SentSendButton, SentStatusChip, SentThreads, useSentThreadsView, type ReplyInput, type SubThreadSave } from '@plannotator/ui/components/inbox-thread/SentThreads';
 import type { SentCommentsTree } from '@plannotator/ui/components/inbox-thread/sentCommentsTree';
+import { Icon } from '@plannotator/ui/components/inbox-thread/icons';
 import { InboxApiError, inboxApi, type AttachmentsModel } from '../api';
 import { annotationOf, isFileComment } from '../attachments';
 import { agentReplyAnnotation, commentOfCard, followCodeLines, placeThreads, sentCommentsParts, sentUnanchoredChanges, withSentWrites } from '../sentComments';
@@ -497,7 +498,9 @@ export function useSentFileComments(input: {
               </span>
               <SentStatusChip status={statuses?.get(annotation.id)} />
               {resolvedIds.has(annotation.id) && (
-                <span className="ib-sentc-chip" data-sent-resolved="">
+                // As the boxes': "✓ Resolved" in the success colour.
+                <span className="ib-sentc-chip ib-sentb-resolved" data-sent-resolved="">
+                  <Icon name="check" size={11} />
                   Resolved
                 </span>
               )}

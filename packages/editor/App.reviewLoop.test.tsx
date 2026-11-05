@@ -266,6 +266,10 @@ describe.if(hasDom)("the review loop on an annotate screen", () => {
     const over = document.querySelector('[data-completion-over-page]');
     expect(over?.getAttribute("data-completion-state")).toBe("feedback");
     expect(over?.querySelector("[data-completion-continues]")).not.toBeNull();
+    // The page behind takes no decision key: Mod+Enter decides nothing while the message is over it.
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true })); });
+    for (let attempt = 0; attempt < 5; attempt += 1) await settle(5);
+    expect(posts).toHaveLength(1);
     await press("[data-completion-back]");
     expect(document.querySelector("[data-completion-over-page]")).toBeNull();
     // The tab stays: the comment is still in the panel, sent, one line more; the header counts the round.
@@ -304,6 +308,9 @@ describe.if(hasDom)("the review loop on an annotate screen", () => {
     const draftRow = box("annRetry")?.querySelector<HTMLElement>("[data-sent-reply-draft]");
     expect(draftRow?.textContent).toContain("Cap it at 10 s instead.");
     const draftId = draftRow!.getAttribute("data-sent-reply")!;
+    // The list is flat: the reply is a card of its own, not nested under its comment's.
+    expect(card(draftId)).not.toBeNull();
+    expect(card(draftId)!.closest("[data-annotation-reply]")).toBeNull();
     await press(`[data-review-loop-boxes] [data-sent-send="${draftId}"]`);
     expect(posts[1]?.body).toMatchObject({ mode: "now", comments: [{ id: draftId, re: "annRetry", text: "Cap it at 10 s instead." }] });
 
@@ -318,7 +325,7 @@ describe.if(hasDom)("the review loop on an annotate screen", () => {
     await press("[data-decision-primary]");
     for (let attempt = 0; attempt < 10 && !posts.some((post) => post.path === "/api/feedback"); attempt += 1) await settle(10);
     const done = posts.find((post) => post.path === "/api/feedback");
-    expect(done?.body).toMatchObject({ feedback: "Review done: every comment thread is resolved. Nothing more is asked.", annotations: [] });
+    expect(done?.body).toMatchObject({ feedback: "The person ended the review (Done): every comment thread is resolved. This is not a request: there is nothing to change or answer.", annotations: [] });
     expect(done?.body.nothingToSend).toBeUndefined();
     expect(posts.filter((post) => post.path === "/api/threads/send")).toHaveLength(2);
     // "Done" over the page; a press brings the page back to be read.
@@ -327,6 +334,8 @@ describe.if(hasDom)("the review loop on an annotate screen", () => {
     await press("[data-completion-back]");
     expect(document.querySelector("[data-completion-state]")).toBeNull();
     expect(box("annRetry")).not.toBeNull();
+    // The review is closed: the page is there to be read, its boxes and list take no write.
+    expect(document.querySelector("[data-review-loop-boxes] [data-sent-resolve], [data-review-loop-boxes] [data-sent-reply-to], [data-comment-meta-resolve], [data-comment-meta-send]")).toBeNull();
   });
 
   test("with the host gone, Send Feedback is today's decision again", async () => {

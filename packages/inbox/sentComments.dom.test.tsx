@@ -698,6 +698,7 @@ test.skipIf(!hasDom)("with comment sends, the closed foot keeps the Draft note a
   await until(() => el.querySelector('[data-comments-list]') !== null, 'the list');
   const row = (id: string) => el.querySelector<HTMLElement>(`[data-comments-list] [data-annotation-row="${id}"]`);
   expect([...el.querySelectorAll('[data-comments-list] [data-annotation-row]')].map((r) => r.getAttribute('data-annotation-row'))).toEqual(['lst-d2', 'lst-d1']);
+  expect(el.querySelector('[data-comments-list] .ib-aph')!.textContent).toBe('1 comment · 1 sent');
   expect(row('lst-d2')!.querySelector('[data-comment-meta-round]')!.textContent).toBe('Not sent');
   expect(row('lst-d2')!.querySelector('[data-comment-meta-send]')).not.toBeNull();
   expect([...row('lst-d2')!.querySelectorAll('button')].some((b) => b.textContent === 'Edit')).toBe(true);

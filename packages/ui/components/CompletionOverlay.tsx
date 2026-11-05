@@ -58,6 +58,11 @@ function OverPage({ state, onDismiss, children }: { state: string; onDismiss: ()
   const openedAt = useRef(Date.now());
   const dismissRef = useRef(onDismiss);
   dismissRef.current = onDismiss;
+  const backRef = useRef<HTMLButtonElement>(null);
+  // Focus moves into the card, so no key reaches the page behind it.
+  useEffect(() => {
+    backRef.current?.focus({ preventScroll: true });
+  }, []);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
@@ -80,6 +85,7 @@ function OverPage({ state, onDismiss, children }: { state: string; onDismiss: ()
       <div role="dialog" aria-modal="true" className="text-center space-y-6 max-w-md w-full px-8 py-8 rounded-xl border border-border bg-card shadow-xl">
         {children}
         <button
+          ref={backRef}
           type="button"
           data-completion-back=""
           onClick={onDismiss}
