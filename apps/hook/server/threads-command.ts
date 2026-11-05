@@ -18,9 +18,10 @@
  */
 
 import { inboxAgentName } from "@plannotator/core/inbox-types";
-import { reviewAnchorPlace, reviewThreadViewText } from "@plannotator/core/review-threads";
+import { reviewAnchorPlace, reviewThreadViewText, type ReviewAnchor } from "@plannotator/core/review-threads";
 import {
   ReviewJournalError,
+  anchorReviewComment,
   closeReviewJournal,
   isReviewJournalKey,
   listReviewJournals,
@@ -40,10 +41,11 @@ import {
   type ReviewJournalRef,
   type ReviewTarget,
 } from "@plannotator/shared/review-journal";
-import { hasHelpFlag, THREADS_COMMAND_USAGE } from "./cli";
+import { resolve } from "node:path";
+import { THREADS_COMMAND_USAGE } from "./cli";
 
 /** The actions a client calls: `plannotator threads <action> [<json> | -]`. */
-export const THREADS_CLIENT_ACTIONS = ["view", "comment", "remove", "resolve", "reopen", "send", "delivered", "close"] as const;
+export const THREADS_CLIENT_ACTIONS = ["view", "comment", "remove", "resolve", "reopen", "anchor", "send", "delivered", "close"] as const;
 type ThreadsAction = (typeof THREADS_CLIENT_ACTIONS)[number];
 
 /** The most read from stdin: a reply, or a client's JSON with its drawing data. */
@@ -89,6 +91,21 @@ function targetLine(target: ReviewTarget | null): string {
 
 class Usage extends Error {}
 
+/**
+ * `--help` or `-h` in a flag's place: before the first word that is not an
+ * option (an id, a reply's words, a client's JSON) and before `--`, so a
+ * reply that says "-h" is written, never read as a call for help.
+ */
+function helpAsked(argv: readonly string[], valued: readonly string[]): boolean {
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index]!;
+    if (arg === "--help" || arg === "-h") return true;
+    if (arg === "--" || !arg.startsWith("-")) return false;
+    if (valued.includes(arg)) index++;
+  }
+  return false;
+}
+
 function flagValue(argv: readonly string[], index: number, flag: string): string {
   const arg = argv[index]!;
   if (arg.startsWith(`${flag}=`)) return arg.slice(flag.length + 1);
@@ -100,7 +117,7 @@ function flagValue(argv: readonly string[], index: number, flag: string): string
 /** `plannotator threads …`. */
 export async function runThreadsCommand(argv: readonly string[], deps: ThreadsCommandDeps): Promise<number> {
   return run(deps, async (io) => {
-    if (hasHelpFlag([...argv])) {
+    if (helpAsked(argv, ["--review"])) {
       io.out(THREADS_COMMAND_USAGE);
       return 0;
     }
@@ -125,7 +142,8 @@ export async function runThreadsCommand(argv: readonly string[], deps: ThreadsCo
     if (!isReviewJournalKey(key)) throw new ReviewJournalError("invalid", `Not a review key: ${key}. \`plannotator threads\` lists the reviews.`);
     const state = readReviewJournal(deps.dataDir, { key });
     if (!state) throw new ReviewJournalError("not_found", `No review ${key}: \`plannotator threads\` lists the reviews.`);
-    const view = reviewJournalView(state, { agentName: inboxAgentName });
+    // What was sent: the person's drafts are theirs until a send carries them.
+    const view = reviewJournalView(state, { sent: true, agentName: inboxAgentName });
     if (json) io.out(JSON.stringify({ review: key, target: state.target, ...view }));
     else io.out(`Review ${key}, on ${targetLine(state.target)}\n${reviewThreadViewText(view, reviewAnchorPlace, deps.cwd)}`);
     return 0;
@@ -135,7 +153,7 @@ export async function runThreadsCommand(argv: readonly string[], deps: ThreadsCo
 /** `plannotator reply --review <key> <id> [<reply> | -]`. */
 export async function runReplyCommand(argv: readonly string[], deps: ThreadsCommandDeps): Promise<number> {
   return run(deps, async (io) => {
-    if (hasHelpFlag([...argv])) {
+    if (helpAsked(argv, ["--review"])) {
       io.out(THREADS_COMMAND_USAGE);
       return 0;
     }
@@ -168,10 +186,12 @@ export async function runReplyCommand(argv: readonly string[], deps: ThreadsComm
   });
 }
 
-function refOf(args: Record<string, unknown>): ReviewJournalRef {
+function refOf(args: Record<string, unknown>, cwd: string): ReviewJournalRef {
   const key = args.review;
   if (args.target !== undefined) {
-    const target = readReviewTarget(args.target);
+    const named = readReviewTarget(args.target);
+    // A relative path is the caller's, from the folder it runs in (PLANNOTATOR_CWD), as a screen names its file.
+    const target: ReviewTarget = named.kind === "file" ? { kind: "file", path: resolve(cwd, named.path) } : named;
     if (key !== undefined && key !== reviewJournalKey(target)) throw new ReviewJournalError("invalid", "review and target name two reviews: give one.");
     return { target };
   }
@@ -205,7 +225,7 @@ async function clientAction(action: ThreadsAction, argv: readonly string[], deps
   } catch {
     throw new Usage(`${action}: one JSON object.`);
   }
-  const ref = refOf(args);
+  const ref = refOf(args, deps.cwd);
   const review = keyOfRef(ref);
   const options = { dataDir: deps.dataDir, now: deps.now };
   const result = ((): Record<string, unknown> => {
@@ -221,6 +241,8 @@ async function clientAction(action: ThreadsAction, argv: readonly string[], deps
       case "resolve":
       case "reopen":
         return { review, comment: resolveReviewComment(options, ref, idOf(args), action === "resolve") };
+      case "anchor":
+        return { review, comment: anchorReviewComment(options, ref, idOf(args), { ...(args.on !== undefined ? { on: args.on as ReviewAnchor } : {}), unanchored: args.unanchored === true }) };
       case "send": {
         const ids = Array.isArray(args.ids) ? args.ids.filter((id): id is string => typeof id === "string") : undefined;
         const to = args.to as { host: string | null; session: string } | undefined;

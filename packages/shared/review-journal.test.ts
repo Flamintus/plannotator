@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  anchorReviewComment,
   closeReviewJournal,
   isReviewJournalKey,
   listReviewJournals,
@@ -76,6 +77,41 @@ describe("the person's side", () => {
     const sub = writeReviewComment(opts(), ref, { parent: agent.id, quote: "Nantes", text: "why Nantes?" });
     expect([sub.on, sub.parent, sub.quote_offset]).toEqual([onMessage, agent.id, "Done: Lyon and ".length]);
     expect(refused(() => writeReviewComment(opts(), ref, { text: "nowhere" }))).toBe("invalid");
+    // The passage's offset counts whitespace runs as one, as the screens mark it (passage.ts).
+    replyInReview(opts(), ref, [{ id: "c1", text: "Intro.\n\n    foo bar foo" }]);
+    const spaced = readReviewJournal(dataDir, ref)!.replies[1]!;
+    expect(writeReviewComment(opts(), ref, { parent: spaced.id, quote: "foo", text: "which?" }).quote_offset).toBe("Intro. ".length);
+  });
+
+  test("the drafts are the person's: the view shows them, what an agent reads does not", () => {
+    writeReviewComment(opts(), ref, { id: "c1", on: onMessage, text: "one" });
+    sendReviewComments(opts(), ref, { mode: "now", ids: ["c1"] });
+    writeReviewComment(opts(), ref, { id: "c2", on: onMessage, text: "draft" });
+    const state = readReviewJournal(dataDir, ref);
+    expect(reviewJournalView(state).threads.map((thread) => [thread.id, thread.draft])).toEqual([["c1", false], ["c2", true]]);
+    expect(reviewJournalView(state, { sent: true }).threads.map((thread) => thread.id)).toEqual(["c1"]);
+  });
+
+  test("an anchor follows the words, or keeps that they are gone from one round to the next", () => {
+    writeReviewComment(opts(), ref, { id: "f1", on: { kind: "file", path: "/a.md", lines: [3, 3] }, text: "one" });
+    sendReviewComments(opts(), ref, { mode: "now", ids: ["f1"] });
+    expect(anchorReviewComment(opts(), ref, "f1", { on: { kind: "file", path: "/a.md", lines: [5, 5] }, unanchored: false }).on).toEqual({ kind: "file", path: "/a.md", lines: [5, 5] });
+    const gone = anchorReviewComment(opts(), ref, "f1", { unanchored: true }).unanchored_at;
+    expect(anchorReviewComment(opts(), ref, "f1", { unanchored: true }).unanchored_at).toBe(gone);
+    expect(reviewJournalView(readReviewJournal(dataDir, ref)).threads[0]!.unanchored).toBe(true);
+    expect(anchorReviewComment(opts(), ref, "f1", { unanchored: false }).unanchored_at).toBeNull();
+    expect(refused(() => anchorReviewComment(opts(), ref, "f1", { on: onMessage, unanchored: false }))).toBe("invalid");
+  });
+
+  test("sends written in the same millisecond, or after the clock went back, keep their rounds", () => {
+    const frozen = { dataDir, now: () => Date.UTC(2026, 10, 5, 10) };
+    for (let i = 0; i < 6; i++) {
+      writeReviewComment(frozen, ref, { id: `c${i}`, on: onMessage, text: `note ${i}` });
+      sendReviewComments(frozen, ref, { mode: "round" });
+    }
+    const state = readReviewJournal(dataDir, ref)!;
+    expect(state.sends.map((send) => send.round)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(reviewJournalView(state).round).toBe(7);
   });
 
   test("a now send leaves the round open; a Finish carries every draft left and names the open threads sent to that session", () => {
@@ -129,7 +165,7 @@ describe("the person's side", () => {
 });
 
 describe("the agent's side", () => {
-  test("a reply goes under a sent comment, a reply's id answering its comment, from the session the newest send went to", () => {
+  test("a reply goes under a sent comment, a reply's id answering its comment, from the session the send that carried the id went to", () => {
     writeReviewComment(opts(), ref, { id: "c1", on: onMessage, text: "one" });
     writeReviewComment(opts(), ref, { id: "c2", on: onMessage, text: "two" });
     sendReviewComments(opts(), ref, { mode: "now", ids: ["c1"] });
@@ -144,6 +180,22 @@ describe("the agent's side", () => {
     expect(done.replies.map((reply) => [reply.re, reply.from.host, reply.from.session])).toEqual([["c1", "pi", "ses_p"]]);
     expect(replyInReview(opts(), ref, [{ id: "r1", text: "Both." }], { idempotency_key: "k" }).replayed).toBe(true);
     expect(readReviewJournal(dataDir, ref)!.replies).toHaveLength(1);
+    expect(replyInReview(opts(), ref, [{ id: "c1", text: "And Lyon." }]).replies[0]!.from.session).toBe("ses_a");
+  });
+
+  test("a reply shows its send reached the session: replied, in that send's round, even with no delivery marked", () => {
+    writeReviewComment(opts(), ref, { id: "c1", on: onMessage, text: "one" });
+    sendReviewComments(opts(), ref, { mode: "round" });
+    writeReviewComment(opts(), ref, { id: "c2", on: onMessage, text: "two" });
+    sendReviewComments(opts(), ref, { mode: "now", ids: ["c2"] });
+    replyInReview(opts(), ref, [{ id: "c2", text: "Done." }]);
+    const state = readReviewJournal(dataDir, ref)!;
+    expect(state.sends.map((send) => [send.round, !!send.read_at])).toEqual([[1, false], [2, true]]);
+    const view = reviewJournalView(state);
+    expect(view.threads.map((thread) => [thread.id, thread.status, thread.replies.map((reply) => reply.round)])).toEqual([
+      ["c1", "pending", []],
+      ["c2", "replied", [2]],
+    ]);
   });
 });
 

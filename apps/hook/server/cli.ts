@@ -395,6 +395,7 @@ export const THREADS_COMMAND_USAGE = [
   "  view       the review's key and thread view",
   "  comment    {text, on?, quote?, re?, parent?, quote_offset?, type?, id?}: a draft",
   "  remove | resolve | reopen   {id}",
+  "  anchor     {id, on?, unanchored}: where its words are now, or that they are gone",
   '  send       {mode: "now" | "round", ids?, to?, words?, idempotency_key?, root?}:',
   "             the send, and the text to hand the agent",
   "  delivered  {sends: [<id>]}      close  {} (the review is approved: its journal goes)",

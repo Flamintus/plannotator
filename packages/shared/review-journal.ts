@@ -15,8 +15,9 @@
  *   line of an id holding its record. A torn last line (a crash mid-write) is
  *   skipped. A comment whose send never landed reads as a draft again.
  * - Every write takes the review's lock (`.lock`, created exclusively, so it
- *   holds on Windows too), reads, checks, then appends; a lock older than
- *   `LOCK_STALE_MS` is broken. Reads take no lock.
+ *   holds on Windows too), reads, checks the whole write, then appends its
+ *   lines at once; a lock older than `LOCK_STALE_MS` is broken. Reads take no
+ *   lock.
  * - Only the person resolves: the agent's side writes replies, never a
  *   resolution. Approving the review removes its folder
  *   (`closeReviewJournal`).
@@ -53,6 +54,7 @@ import {
   type ReviewSendMode,
   type ReviewThreadView,
 } from "@plannotator/core/review-threads";
+import { passageOffset } from "@plannotator/core/passage";
 
 /** What a review is on, which names its journal. */
 export type ReviewTarget =
@@ -72,9 +74,9 @@ export const REVIEW_JOURNALS_DIR = "reviews";
 const JOURNAL_FILE = "journal.jsonl";
 const LOCK_FILE = ".lock";
 /** A write takes milliseconds: a lock this old was left by a process that died. */
-const LOCK_STALE_MS = 10_000;
+const LOCK_STALE_MS = 5_000;
 /** How long a write waits for the lock before it gives up. */
-const LOCK_WAIT_MS = 5_000;
+const LOCK_WAIT_MS = 8_000;
 const KEY_RE = /^(last|file|plan)-[0-9a-f]{24}$/;
 const COMMENT_ID_RE = /^[A-Za-z0-9_.:-]{1,200}$/;
 /** The most words a comment can be on, in characters. */
@@ -568,7 +570,8 @@ export function writeReviewComment(options: ReviewJournalOptions, ref: ReviewJou
       if (!parent) throw new ReviewJournalError("not_found", `parent: no sent message ${input.parent}.`);
       if (!quote.trim()) throw new ReviewJournalError("invalid", "quote: the passage of the parent's words.");
       const found = parent.words.indexOf(quote);
-      const offset = Number.isInteger(input.quote_offset) && (input.quote_offset as number) >= 0 ? (input.quote_offset as number) : Math.max(found, 0);
+      // An offset counts whitespace runs as one (passage.ts), never a raw index.
+      const offset = Number.isInteger(input.quote_offset) && (input.quote_offset as number) >= 0 ? (input.quote_offset as number) : found >= 0 ? passageOffset(parent.words, found) : 0;
       record = { ...base, on: parent.thread.on, quote, parent: input.parent, quote_offset: offset };
     } else {
       if (!isAnchor(input.on)) throw new ReviewJournalError("invalid", 'on: {"kind":"message","message_id":…}, {"kind":"file","path":…,"lines"?:[a,b]} or {"kind":"plan","version"?:n,"lines"?:[a,b]}.');
@@ -611,6 +614,25 @@ export function resolveReviewComment(options: ReviewJournalOptions, ref: ReviewJ
     const record = review.comments.find((comment) => comment.id === id && comment.removed_at === null);
     if (!record || !isReviewCommentSent(record) || isReviewCommentReply(record)) throw new ReviewJournalError("not_found", `No sent comment or sub-thread ${id}.`);
     const next = { ...record, resolved_at: resolved ? at : null, updated_at: at };
+    return { lines: [{ kind: "comment", id, record: next }], result: next };
+  });
+}
+
+/**
+ * Where a comment's words are now, as the client that shows the target found
+ * them after an edit (the anchors follow the text from one round to the
+ * next): its new place (`on`, the same kind), and whether its words are gone
+ * (`unanchored`, kept from one round to the next until they are found
+ * again). A comment or sub-thread, sent or not; a reply is where its thread is.
+ */
+export function anchorReviewComment(options: ReviewJournalOptions, ref: ReviewJournalRef, id: string, input: { on?: ReviewAnchor; unanchored: boolean }): ReviewComment {
+  return write(options, ref, (state, at) => {
+    const review = state ?? empty(keyOf(ref));
+    const record = review.comments.find((comment) => comment.id === id && comment.removed_at === null);
+    if (!record || isReviewCommentReply(record)) throw new ReviewJournalError("not_found", `No comment or sub-thread ${id}.`);
+    if (input.on !== undefined && (!isAnchor(input.on) || input.on.kind !== record.on.kind)) throw new ReviewJournalError("invalid", `on: a place of the same kind (${record.on.kind}).`);
+    const unanchored_at = input.unanchored ? (record.unanchored_at ?? at) : null;
+    const next = { ...record, ...(input.on ? { on: input.on } : {}), unanchored_at, updated_at: at };
     return { lines: [{ kind: "comment", id, record: next }], result: next };
   });
 }
@@ -661,7 +683,10 @@ export function sendReviewComments(options: ReviewJournalOptions, ref: ReviewJou
       carried = drafts;
     }
     const words = input.words?.trim() || null;
-    const id = reviewSendId((options.now ?? Date.now)());
+    // Sends count rounds in time order: a new one sorts after the newest, even in the same millisecond or after a clock step back.
+    const newest = review.sends.reduce((latest, send) => (send.created_at > latest ? send.created_at : latest), "");
+    const createdAt = at > newest ? at : new Date(Date.parse(newest) + 1).toISOString();
+    const id = reviewSendId(Date.parse(createdAt));
     const carriedIds = new Set(carried.map((record) => record.id));
     const sentTo = new Map(review.sends.map((send) => [send.id, send.to.session]));
     const named =
@@ -679,7 +704,7 @@ export function sendReviewComments(options: ReviewJournalOptions, ref: ReviewJou
       comments: [...carried.map((record) => record.id), ...named],
       words,
       idempotency_key: key,
-      created_at: at,
+      created_at: createdAt,
     };
     const marked = carried.map((record) => ({ kind: "comment" as const, id: record.id, record: { ...record, sent_reply_id: id, updated_at: at } }));
     return { lines: [...marked, { kind: "send", id, record: send }], result: { send, replayed: false } };
@@ -727,11 +752,13 @@ export interface ReviewReplyInput {
 }
 
 /**
- * The agent's replies under the person's sent comments, all or none: each
- * under a sent comment or sub-thread (a sent reply's id answers the comment
- * it is under). `from` defaults to the session the newest send went to. A
- * retry with the same `idempotency_key` writes nothing and gives the first
- * replies back. Never a resolution: only the person resolves.
+ * The agent's replies under the person's sent comments, checked as a whole
+ * before any is written: each under a sent comment or sub-thread (a sent
+ * reply's id answers the comment it is under). `from` defaults to the session
+ * the send that carried the id went to. A reply shows its send reached that
+ * session: a send not yet marked delivered or read is marked read just
+ * before it. A retry with the same `idempotency_key` writes nothing and gives
+ * the first replies back. Never a resolution: only the person resolves.
  */
 export function replyInReview(
   options: ReviewJournalOptions,
@@ -745,9 +772,9 @@ export function replyInReview(
     const replayed = key ? review.replies.filter((reply) => reply.idempotency_key === key) : [];
     if (replayed.length > 0) return { lines: [], result: { replies: replayed, replayed: true } };
     if (replies.length === 0) throw new ReviewJournalError("invalid", "replies: at least one.");
-    const newest = [...review.sends].sort((a, b) => a.created_at.localeCompare(b.created_at)).at(-1);
-    const from: ReviewAgent = extra.from ?? { kind: "agent", host: newest?.to.host ?? null, session: newest?.to.session ?? null, name: null };
     const now = (options.now ?? Date.now)();
+    const sendsById = new Map(review.sends.map((send) => [send.id, send]));
+    const reached = new Map<string, ReviewSend>();
     const written = replies.map((reply, index): ReviewAgentReply => {
       const thread = threadOf(review, reply.id);
       if (!thread) {
@@ -755,18 +782,35 @@ export function replyInReview(
         throw new ReviewJournalError("not_found", draft ? `${reply.id} is not sent yet.` : `No comment ${reply.id}: \`plannotator threads --review ${review.key}\` lists them.`);
       }
       const text = checkedText(reply.text, "text", false);
+      const carrier = sendsById.get(review.comments.find((comment) => comment.id === reply.id)!.sent_reply_id!);
+      const from: ReviewAgent = extra.from ?? { kind: "agent", host: carrier?.to.host ?? null, session: carrier?.to.session ?? null, name: null };
+      if (carrier && !carrier.delivery && !carrier.read_at && carrier.to.session === from.session) reached.set(carrier.id, carrier);
       return { id: reviewReplyId(now + index), re: thread.id, from, text, created_at: at, ...(key ? { idempotency_key: key } : {}) };
     });
-    return { lines: written.map((reply) => ({ kind: "reply" as const, id: reply.id, record: reply })), result: { replies: written, replayed: false } };
+    // Read just before the reply, so the reply counts as an answer to it (`replied`, and the send's round).
+    const readAt = new Date(Date.parse(at) - 1).toISOString();
+    const read = [...reached.values()].map((send) => ({ ...send, read_at: send.created_at > readAt ? send.created_at : readAt }));
+    return {
+      lines: [...read.map((send) => ({ kind: "send" as const, id: send.id, record: send })), ...written.map((reply) => ({ kind: "reply" as const, id: reply.id, record: reply }))],
+      result: { replies: written, replayed: false },
+    };
   });
 }
 
 // ──────────── What clients read ────────────
 
-/** The review's thread view (`v: 1`), the person's drafts included, as any client draws it. */
-export function reviewJournalView(state: ReviewJournalState | null, options: { busy?: (session: string) => boolean; agentName?: (author: ReviewAgent) => string } = {}): ReviewThreadView {
+/**
+ * The review's thread view (`v: 1`), as any client draws it: the person's
+ * drafts included, or, `sent` (what an agent reads), only what was sent.
+ */
+export function reviewJournalView(
+  state: ReviewJournalState | null,
+  options: { sent?: boolean; busy?: (session: string) => boolean; agentName?: (author: ReviewAgent) => string } = {},
+): ReviewThreadView {
   const review = state ?? empty("");
-  return reviewThreadView(REVIEW_COMMENT_READING, { records: review.comments, agentReplies: review.replies, sends: review.sends, ...options });
+  const { sent, ...view } = options;
+  const records = sent ? review.comments.filter((record) => record.sent_reply_id !== null) : review.comments;
+  return reviewThreadView(REVIEW_COMMENT_READING, { records, agentReplies: review.replies, sends: review.sends, ...view });
 }
 
 /** What the agent reads of these sends (oldest first), the person's words first, then how to answer (`how`). */

@@ -57,8 +57,9 @@ describe("a client's side through the CLI", () => {
     expect([missing.code, missing.out, missing.err]).toEqual([1, "", "not_found: No sent comment or sub-thread c9."]);
     expect((await threads(["send", "{not json"])).code).toBe(2);
     expect((await threads(["view", JSON.stringify({ review: "../x" })])).code).toBe(1);
-    const piped = await threads(["comment", "-"], JSON.stringify({ target, on: { kind: "file", path: join(root, "a.md") }, text: "From stdin." }));
-    expect(JSON.parse(piped.out).comment.text).toBe("From stdin.");
+    const piped = await threads(["comment", "-"], JSON.stringify({ target: { kind: "file", path: "a.md" }, on: { kind: "file", path: join(root, "a.md") }, text: "From stdin." }));
+    // A relative target is the caller's folder's file.
+    expect([JSON.parse(piped.out).comment.text, JSON.parse(piped.out).review]).toEqual(["From stdin.", reviewJournalKey({ kind: "file", path: join(root, "a.md") })]);
   });
 });
 
@@ -66,22 +67,28 @@ describe("the agent's side", () => {
   test("reply under an id, as words or on stdin; threads lists the review and shows its threads with the replies", async () => {
     await call("comment", { id: "c1", on: { kind: "message", message_id: "m1" }, quote: "Lyon store", text: "Two stores." });
     await call("send", { mode: "now", ids: ["c1"] });
+    const help = await reply(["--review", key(), "c1", "Use", "-h", "for", "the", "flags."]);
+    expect([help.code, readReviewJournal(dataDir, { key: key() })!.replies.at(-1)?.text]).toEqual([0, "Use -h for the flags."]);
+    expect((await reply(["--review", key(), "-h"])).out).toStartWith("Usage:");
     const said = await reply(["--review", key(), "c1", "Added", "Nantes."]);
     expect([said.code, said.out]).toEqual([0, `Replied under c1 in review ${key()}.`]);
     expect((await reply(["--review", key(), "c1"], "Line one\nwith $HOME and `ticks`\n")).code).toBe(0);
     const state = readReviewJournal(dataDir, { key: key() })!;
     expect(state.replies.map((r) => [r.text, r.from.session])).toEqual([
+      ["Use -h for the flags.", "ses_a"],
       ["Added Nantes.", "ses_a"],
       ["Line one\nwith $HOME and `ticks`", "ses_a"],
     ]);
     const list = await threads([]);
     expect(list.out).toBe(`${key()}  the last messages of claude-code session ses_a: round 1, 1 open, 0 drafts`);
     const shown = await threads(["--review", key()]);
-    expect(shown.out.split("\n").slice(0, 3)).toEqual([`Review ${key()}, on the last messages of claude-code session ses_a`, "Round 1", '- c1 (open, round 1, not delivered yet) on your message m1: "Lyon store"']);
+    expect(shown.out.split("\n").slice(0, 3)).toEqual([`Review ${key()}, on the last messages of claude-code session ses_a`, "Round 1", '- c1 (open, round 1, replied) on your message m1: "Lyon store"']);
     expect(shown.out).toContain('- reply rep_');
     expect(shown.out).toContain('Claude Code: "Added Nantes."');
+    await call("comment", { id: "d1", on: { kind: "message", message_id: "m1" }, text: "A draft of mine." });
     const json = JSON.parse((await threads(["--review", key(), "--json"])).out);
-    expect([json.v, json.review, json.threads[0].replies.length]).toEqual([1, key(), 2]);
+    expect([json.v, json.review, json.threads.map((t: { id: string }) => t.id), json.threads[0].replies.length]).toEqual([1, key(), ["c1"], 3]);
+    expect((await threads(["--review", key()])).out).not.toContain("A draft of mine.");
   });
 
   test("a draft, an unknown id or no review: refused, nothing written", async () => {
