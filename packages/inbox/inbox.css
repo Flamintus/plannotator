@@ -7808,9 +7808,9 @@ dialog.ib-zx .ib-listcol.ib-zx-list { position: relative; inset: auto; visibilit
 /* Comments that stay after Send (experimental "persistent-comments"): the person's sent comments under the agent's
    message they are on, each with its round; a row brings its passage into view (SentComments.tsx). */
 .ib-sentc { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 2px; }
-.ib-sentc-row { display: flex; align-items: baseline; gap: 6px; width: 100%; text-align: left; padding: 4px 6px; border-radius: 6px; background: none; border: 0; color: inherit; font: inherit; font-size: 0.9em; cursor: pointer; }
+.ib-sentc-row { display: flex; align-items: baseline; gap: 6px; width: 100%; text-align: left; padding: 4px 6px; border-radius: 6px; background: none; border: 0; color: inherit; font: inherit; font-size: var(--ib-fs-12-5, 12.5px); cursor: pointer; }
 .ib-sentc-row:hover, .ib-sentc-row:focus-visible { background: var(--muted); }
-.ib-sentc-chip { flex: none; font-size: 0.8em; padding: 0 6px; border-radius: 999px; background: var(--muted); color: var(--muted-foreground); }
+.ib-sentc-chip { flex: none; font-size: var(--ib-fs-11, 11px); padding: 0 6px; border-radius: 999px; background: var(--muted); color: var(--muted-foreground); }
 .ib-sentc-quote { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); }
 .ib-sentc-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Resolve / Reopen beside a row, and on a sent card's foot in the file's panel; a resolved row is quieter, and the
