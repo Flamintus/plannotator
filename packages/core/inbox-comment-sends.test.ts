@@ -90,6 +90,25 @@ describe('rounds of comment sends', () => {
     expect(inboxCommentRoundNow(messages, records, sends)).toBe(4);
   });
 
+  test('the sends of one press, one per session, are one step: a Finish to two sessions ends one round', () => {
+    const b = { host: 'pi', session: 'ses_b' };
+    const sends = [
+      send('snd_1a', 2, { mode: 'round' }),
+      send('snd_1b', 2, { batch: 'snd_1a', mode: 'round', to: b }),
+      send('snd_2a', 5),
+      send('snd_2b', 5, { batch: 'snd_2a', to: b }),
+    ];
+    expect(Object.fromEntries(inboxCommentRounds([agent('msg_a1', 0)], [], sends))).toEqual({ snd_1a: 1, snd_1b: 1, snd_2a: 2, snd_2b: 2 });
+    expect(inboxCommentRoundNow([agent('msg_a1', 0)], [], sends)).toBe(2);
+  });
+
+  test("a reply that carried comments inside a round sends opened waits for the agent's answer, which ends the round", () => {
+    const messages = [agent('msg_a1', 0), person('msg_p1', 6), agent('msg_a2', 8)];
+    const records = [record('c1', { sent_reply_id: 'msg_p1' })];
+    expect(Object.fromEntries(inboxCommentRounds(messages, records, [send('snd_1', 2)]))).toEqual({ snd_1: 1, msg_p1: 1 });
+    expect(inboxCommentRoundNow(messages, records, [send('snd_1', 2)])).toBe(2);
+  });
+
   test("a send before the agent answered the person's reply is in that reply's round", () => {
     const messages = [agent('msg_a1', 0), person('msg_p1', 1), agent('msg_a2', 9)];
     const records = [record('c1', { sent_reply_id: 'msg_p1' })];
@@ -127,6 +146,15 @@ describe('rounds of comment sends', () => {
     expect(threads[0]!.replies.map((r) => r.round)).toEqual([1]);
     const delivered = sends.map((s) => (s.id === 'snd_2' ? { ...s, delivery: { state: 'delivered' as const, host: 'claude-code', session: 'ses_a', at: at(8) } } : s));
     expect(inboxCommentThreads(messages, records, [agentReply('rep_1', 'c1', 9)], delivered)[0]!.replies.map((r) => r.round)).toEqual([2]);
+  });
+
+  test('a session a send tags answers in the round of the newest send that reached it', () => {
+    const tagged = (minute: number | null) => [{ host: 'pi', session: 'ses_b', wakes: true, delivery: minute === null ? null : { state: 'delivered' as const, host: 'pi', session: 'ses_b', at: at(minute) } }];
+    const records = [record('c1', { sent_reply_id: 'snd_1' })];
+    const sends = (second: number | null) => [send('snd_1', 2, { mode: 'round', comments: ['c1'], tags: tagged(3) }), send('snd_2', 5, { tags: tagged(second) })];
+    const round = (second: number | null) => inboxCommentThreads([agent('msg_a1', 0)], records, [agentReply('rep_b', 'c1', 7, 'ses_b')], sends(second))[0]!.replies[0]!.round;
+    expect(round(6)).toBe(2);
+    expect(round(null)).toBe(1);
   });
 });
 
@@ -187,8 +215,10 @@ describe('the status of what a send carried', () => {
     expect(inboxCommentSendStatus({ ...base, delivery: delivered, read_at: at(4) }, null, false)).toBe('read');
     expect(inboxCommentSendStatus({ ...base, delivery: delivered }, null, true)).toBe('working');
     expect(inboxCommentSendStatus({ ...base, delivery: delivered }, at(5), true)).toBe('replied');
-    // A reply from before the send answered something else.
+    // A reply from before the send reached its session answered something else, even one after the send was made.
     expect(inboxCommentSendStatus({ ...base, delivery: delivered }, at(1), false)).toBe('delivered');
+    expect(inboxCommentSendStatus(base, at(5), false)).toBe('pending');
+    expect(inboxCommentSendStatus({ ...base, delivery: { ...delivered, at: at(6) } }, at(5), false)).toBe('delivered');
   });
 });
 
@@ -326,6 +356,11 @@ describe('the thread view', () => {
       ['d1', true, null],
     ]);
     expect(draft!.status).toBeUndefined();
+    // In the round under way, what was sent comes before the drafts; a guided review's draft is not listed.
+    const later = record('c5', { sent_reply_id: 'snd_9', created_at: at(20) });
+    const guideDraft = record('g9', { message: undefined, guide: { title: 'Review', file: 'a.ts', side: 'new', line_start: 1, line_end: 1 }, version: 'a'.repeat(64) });
+    const mixed = inboxCommentThreadView({ messages, records: [resolved, draftComment, later, guideDraft], sends: [sends[0]!, send('snd_9', 19, { comments: ['c5'] })] });
+    expect(mixed.threads.map((t) => t.id)).toEqual(['c1', 'c5', 'd2']);
     // What an agent reads (drafts left out): the comment stays resolved.
     expect(inboxCommentThreadView({ messages, records: [resolved], agentReplies: [rep], sends: [sends[0]!] }).threads[0]).toMatchObject({ state: 'resolved', folded: true });
   });

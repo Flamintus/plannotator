@@ -34,6 +34,7 @@ import {
   inboxCommentLastReplies,
   inboxCommentMessages,
   inboxCommentRoundNow,
+  inboxCommentSendReceivedAt,
   inboxCommentsInOrder,
   inboxCommentThreads,
   inboxOpenSubThreadPaths,
@@ -41,6 +42,7 @@ import {
   isInboxCommentReply,
   isInboxCommentThreadFolded,
   type InboxCommentReply,
+  type InboxCommentRoundSend,
   type InboxCommentThread,
   type InboxCommentThreadMessage,
 } from "./inbox-comment-threads";
@@ -48,7 +50,7 @@ import { inboxAgentName, type InboxDelivery, type InboxTag } from "./inbox-types
 import { ulid } from "./ulid";
 
 /** `now`: one draft at once, the round stays open; `round`: the person's Finish, every draft left, and the round ends. */
-export type InboxCommentSendMode = "now" | "round";
+export type InboxCommentSendMode = InboxCommentRoundSend["mode"];
 
 /** One comment send: what one press sends one agent session. Its own record kind, `comment_send`. */
 export interface InboxCommentSend {
@@ -170,18 +172,19 @@ export function inboxCommentDraftIsLive(draft: Pick<InboxAnnotationRecord, "re" 
 export type InboxCommentSendStatus = "pending" | "delivered" | "read" | "working" | "replied";
 
 /**
- * The status a send gives an element it carried: `replied` once an agent
- * replied under its thread after the send (`lastAgentReplyAt`, the newest
- * agent's reply there); else `working` while its session, which the send
- * reached, is busy (`busy`: the caller knows the session's state); else
+ * The status a send gives an element it carried, for its session: `replied`
+ * once an agent replied under its thread after the send reached that session
+ * (`lastAgentReplyAt`, the newest agent's reply there; a reply before it
+ * answered something else); else `working` while that session, which the
+ * send reached, is busy (`busy`: the caller knows the session's state); else
  * `read` (read_thread showed it), `delivered`, or `pending`.
  */
-export function inboxCommentSendStatus(send: Pick<InboxCommentSend, "created_at" | "delivery" | "read_at">, lastAgentReplyAt: string | null, busy: boolean): InboxCommentSendStatus {
-  if (lastAgentReplyAt !== null && lastAgentReplyAt > send.created_at) return "replied";
-  const read = typeof send.read_at === "string";
-  if ((read || !!send.delivery) && busy) return "working";
-  if (read) return "read";
-  return send.delivery ? "delivered" : "pending";
+export function inboxCommentSendStatus(send: Pick<InboxCommentSend, "to" | "delivery" | "read_at">, lastAgentReplyAt: string | null, busy: boolean): InboxCommentSendStatus {
+  const received = inboxCommentSendReceivedAt(send);
+  if (received === null) return "pending";
+  if (lastAgentReplyAt !== null && lastAgentReplyAt > received) return "replied";
+  if (busy) return "working";
+  return typeof send.read_at === "string" ? "read" : "delivered";
 }
 
 /** The title of the text a comment send gives the agent. */
@@ -274,7 +277,7 @@ export interface InboxCommentThreadView {
   v: typeof INBOX_COMMENT_THREAD_VIEW_VERSION;
   /** The round under way (`inboxCommentRoundNow`). */
   round: number;
-  /** The threads on the thread's messages and files, oldest round first (drafts last), each sub-thread under the message it is on. */
+  /** The threads on the thread's messages and files, oldest round first (the drafts after what was sent in the round under way), each sub-thread under the message it is on. */
   threads: InboxCommentThreadNode[];
 }
 

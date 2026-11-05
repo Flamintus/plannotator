@@ -42,7 +42,6 @@
  */
 
 import { INBOX_MESSAGE_COMMENT_TEXT_MAX, readInboxVideoTime, type InboxAnnotationRecord, type InboxCommentReplyRecord } from "./inbox-attachments";
-import type { InboxCommentSend } from "./inbox-comment-sends";
 import { formatInboxVideoTime } from "./inbox-types";
 import { passageWindow } from "./passage";
 import { ulid } from "./ulid";
@@ -279,8 +278,34 @@ export interface InboxCommentThreadMessage extends InboxCommentRoundMessage {
   created_at: string;
 }
 
-/** What a round needs of a comment send: its order and mode; an agent's reply's round, when its session received it. */
-export type InboxCommentRoundSend = Pick<InboxCommentSend, "id" | "mode" | "created_at"> & Partial<Pick<InboxCommentSend, "to" | "delivery" | "read_at">>;
+/**
+ * What a round needs of a comment send (`InboxCommentSend`,
+ * inbox-comment-sends.ts): its order, its mode and its press (`batch`, shared
+ * by the sends one press writes, one per session); and, for an agent's
+ * reply's round, when it reached its session or a session it tags.
+ */
+export interface InboxCommentRoundSend {
+  id: string;
+  batch: string;
+  mode: "now" | "round";
+  created_at: string;
+  to?: { session: string };
+  delivery?: { at: string } | null;
+  read_at?: string | null;
+  tags?: readonly { session: string; delivery?: { at: string } | null; read_at?: string | null }[];
+}
+
+/**
+ * When a comment send reached `session`: the earliest of its delivery and its
+ * read, its own session's (`to`, also when `session` is null) or a tagged
+ * session's own; null while it has not.
+ */
+export function inboxCommentSendReceivedAt(send: Pick<InboxCommentRoundSend, "to" | "delivery" | "read_at" | "tags">, session: string | null = null): string | null {
+  const own = session === null || send.to?.session === session;
+  const tag = own ? undefined : send.tags?.find((tagged) => tagged.session === session);
+  const times = own ? [send.delivery?.at, send.read_at] : tag ? [tag.delivery?.at, tag.read_at] : [];
+  return times.filter((time): time is string => typeof time === "string").sort()[0] ?? null;
+}
 
 /**
  * The round under way at `at`, for a reply the agent wrote then: the round of
@@ -303,8 +328,8 @@ export function inboxCommentReplyRound(
   }
   for (const send of sends) {
     const of = rounds.get(send.id);
-    const received = [send.delivery?.at, send.read_at].filter((time): time is string => typeof time === "string").sort()[0];
-    if (of !== undefined && received !== undefined && received <= at && (session === null || send.to?.session === session) && of > round) round = of;
+    const received = inboxCommentSendReceivedAt(send, session);
+    if (of !== undefined && received !== null && received <= at && of > round) round = of;
   }
   return round;
 }
@@ -318,17 +343,19 @@ export function isInboxCommentSent(record: Pick<InboxAnnotationRecord, "sent_rep
  * The rounds of a thread, one numbering in the thread's order (messages and
  * comment sends by time; a send after a message of the same instant):
  *
- * - a reply of the person's that carried comments (the PR 3 to 6 data): a
- *   round ends when an agent writes in the thread, so the person's replies
- *   before that answer (one Send to two sessions writes two) share their round;
+ * - a reply of the person's that carried comments (written before comment
+ *   sends, or by a client without them): a round ends when an agent writes in
+ *   the thread, so the person's replies before that answer (one Send to two
+ *   sessions writes two) share their round;
  * - a comment send (inbox-comment-sends.ts): a `now` send leaves its round
  *   open, whoever writes after it, and a `round` send (the person's Finish)
- *   ends it, so the round is the count of Finishes before it, plus one.
+ *   ends it, so the round is the count of Finishes before it, plus one; the
+ *   sends of one press (`batch`, one per session) are one step.
  *
  * `now`: the round a new send is in.
  */
 function walkRounds(
-  messages: readonly (InboxCommentRoundMessage & { created_at?: string })[],
+  messages: readonly InboxCommentThreadMessage[],
   records: readonly Pick<InboxAnnotationRecord, "sent_reply_id" | "removed_at">[],
   sends: readonly InboxCommentRoundSend[],
 ): { rounds: Map<string, number>; now: number } {
@@ -339,26 +366,32 @@ function walkRounds(
   // closed: the next carrier opens a round; replies: a reply that carried comments opened it, and an agent's message ends it; sends: only a Finish ends it.
   let state: "closed" | "replies" | "sends" = "closed";
   const ordered = [...sends].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+  const presses = new Map<string, number>();
   let next = 0;
   const sendsBefore = (at: string | null) => {
     for (; next < ordered.length && (at === null || ordered[next]!.created_at < at); next++) {
       const send = ordered[next]!;
+      const pressed = presses.get(send.batch);
+      if (pressed !== undefined) {
+        rounds.set(send.id, pressed);
+        continue;
+      }
       if (state === "closed") round += 1;
       rounds.set(send.id, round);
+      presses.set(send.batch, round);
       state = send.mode === "round" ? "closed" : "sends";
     }
   };
   for (const message of messages) {
-    sendsBefore(message.created_at ?? "");
+    sendsBefore(message.created_at);
     if (message.author.kind !== "person") {
       if (state === "replies") state = "closed";
       continue;
     }
     if (!carriers.has(message.id)) continue;
-    if (state === "closed") {
-      round += 1;
-      state = "replies";
-    }
+    if (state === "closed") round += 1;
+    // A reply that carried comments waits for the agent's answer, as such replies always did, even inside a round sends opened.
+    state = "replies";
     rounds.set(message.id, round);
   }
   sendsBefore(null);
@@ -373,7 +406,7 @@ function walkRounds(
  * their round.
  */
 export function inboxCommentRounds(
-  messages: readonly (InboxCommentRoundMessage & { created_at?: string })[],
+  messages: readonly InboxCommentThreadMessage[],
   records: readonly Pick<InboxAnnotationRecord, "sent_reply_id" | "removed_at">[],
   sends: readonly InboxCommentRoundSend[] = [],
 ): Map<string, number> {
@@ -382,7 +415,7 @@ export function inboxCommentRounds(
 
 /** The round under way: the one a new comment send is in, and the counter a thread shows (1 before anything was sent). */
 export function inboxCommentRoundNow(
-  messages: readonly (InboxCommentRoundMessage & { created_at?: string })[],
+  messages: readonly InboxCommentThreadMessage[],
   records: readonly Pick<InboxAnnotationRecord, "sent_reply_id" | "removed_at">[],
   sends: readonly InboxCommentRoundSend[] = [],
 ): number {
@@ -426,9 +459,10 @@ export function inboxCommentAnchor(record: InboxAnnotationRecord): InboxCommentA
  * never landed) is left out.
  *
  * `drafts`: the person's drafts too (a comment, a reply under a comment, a
- * sub-thread), marked `draft`, in the round under way, as the person sees
- * the thread: a draft reply then opens a resolved comment again, as it does
- * in the window. Without it, what an agent reads: what was sent.
+ * sub-thread; never a guided review's), marked `draft`, in the round under
+ * way after what was sent in it, as the person sees the thread: a draft reply
+ * then opens a resolved comment again, as it does in the window. Without it,
+ * what an agent reads: what was sent.
  */
 export function inboxCommentThreads(
   messages: readonly InboxCommentThreadMessage[],
@@ -442,7 +476,8 @@ export function inboxCommentThreads(
   const add = (id: string, reply: InboxCommentReply) => replies.set(id, [...(replies.get(id) ?? []), reply]);
   const listed: { record: InboxAnnotationRecord; carrier: string; round: number; draft: boolean }[] = [];
   for (const record of records) {
-    const draft = options.drafts === true && record.sent_reply_id === null && record.removed_at === null;
+    // A guided review's draft is the review app's to show, with the person's verdict.
+    const draft = options.drafts === true && record.sent_reply_id === null && record.removed_at === null && !record.guide;
     const round = draft ? now : isInboxCommentSent(record) ? rounds.get(record.sent_reply_id!) : undefined;
     if (round === undefined) continue;
     const carrier = draft ? "" : record.sent_reply_id!;
@@ -480,7 +515,8 @@ export function inboxCommentThreads(
         created_at: record.created_at,
       };
     });
-  out.sort((a, b) => a.round - b.round || a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+  // Oldest round first; in the round under way, what was sent before the drafts.
+  out.sort((a, b) => a.round - b.round || Number(a.draft === true) - Number(b.draft === true) || a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
   return out.map(({ created_at: _created, ...thread }) => thread);
 }
 
