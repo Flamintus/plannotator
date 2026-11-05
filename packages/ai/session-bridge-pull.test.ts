@@ -462,6 +462,30 @@ describe("sends (the review loop's carrier)", () => {
     expect(outcome).toEqual(["delivered"]);
   });
 
+  // The failure this guards: a send the host received and then lost (its report lost, its process gone)
+  // stayed undelivered for good, and a retry of the same press did nothing.
+  test("a received send is asked about again later, and at once when it is handed over again", async () => {
+    const pull = createPullSessionBridge({ token: TOKEN, host: "claude-code", modes: { turn: true, transient: false }, resendAfterMs: 20, receivedResendAfterMs: 80, goneAfterMs: 2_000 });
+    cleanups.push(() => pull.dispose());
+    const poll = async () =>
+      ((await (await pull.handle(new Request(`http://${HOST}${SESSION_BRIDGE_POLL_PATH}`, { method: "POST", headers: auth, body: JSON.stringify({ waitMs: 0, features: ["send"] }) }))!).json()) as { commands: { sendId?: string }[] }).commands;
+    const event = (body: Record<string, unknown>) => pull.handle(new Request(`http://${HOST}${SESSION_BRIDGE_EVENT_PATH}`, { method: "POST", headers: auth, body: JSON.stringify(body) }))!;
+    const outcome: string[] = [];
+    const report = { delivered: () => outcome.push("delivered"), failed: () => outcome.push("failed") };
+    pull.sends.deliver("snd_3", "text", { mode: "round", round: 1, comments: 1 }, report);
+    expect((await poll()).map((command) => command.sendId)).toEqual(["snd_3"]);
+    await event({ type: "send", sendId: "snd_3", state: "received" });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(await poll()).toEqual([]);
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    expect((await poll()).map((command) => command.sendId)).toEqual(["snd_3"]);
+    await event({ type: "send", sendId: "snd_3", state: "received" });
+    pull.sends.deliver("snd_3", "text", { mode: "round", round: 1, comments: 1 }, report);
+    expect((await poll()).map((command) => command.sendId)).toEqual(["snd_3"]);
+    await event({ type: "send", sendId: "snd_3", state: "delivered" });
+    expect(outcome).toEqual(["delivered"]);
+  });
+
   test("a send the host could not put in the session is reported failed, once", async () => {
     const { pull, poll, event } = bridgeOf();
     const outcome: string[] = [];

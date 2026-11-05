@@ -49,6 +49,7 @@ import {
   reviewJournalSendText,
   reviewJournalStamp,
   reviewJournalView,
+  normalizeReviewTarget,
   sendReviewComments,
   writeReviewComment,
   type ReviewCommentInput,
@@ -178,15 +179,25 @@ function journalRefusal(error: unknown): HostControlAnswer {
 
 export function createReviewLoop(options: ReviewLoopOptions): ReviewLoop {
   const { dataDir, to, root } = options;
-  const key = options.enabled && options.target && to ? reviewJournalKey(options.target) : null;
-  const ref = key && options.target ? { target: options.target } : null;
+  // Named once: a file renamed or gone later does not move the review's writes to another journal.
+  const target = options.enabled && options.target && to ? normalizeReviewTarget(options.target) : null;
+  const key = target ? reviewJournalKey(target) : null;
+  const ref = target ? { target } : null;
   // Writes give up at once on a held lock; the retry waits on timers.
   const writing = { dataDir, lockWaitMs: 0 };
   const log = options.log ?? ((message: string) => console.error(`[plannotator] ${message}`));
   let pushedMessages: HostMessage[] | null = null;
   let disposed = false;
+  /** The loop was available here once: only then does an approval end the review's journal. */
+  let used = false;
+  /** Sends the host could not put in the session, until one is handed over again or delivered: the page shows them and may retry. */
+  const failed = new Map<string, string | null>();
 
-  const available = (): boolean => key !== null && options.carrier()?.ready === true;
+  const available = (): boolean => {
+    const on = key !== null && options.carrier()?.ready === true;
+    if (on) used = true;
+    return on;
+  };
   const busy = (): boolean => options.carrier()?.busy === true;
   const how = (): ReviewReplyHow => (options.carrier()?.toolReply && options.reviewId ? plannotatorToolReplyHow(options.reviewId) : reviewCliHow(key!));
 
@@ -197,11 +208,18 @@ export function createReviewLoop(options: ReviewLoopOptions): ReviewLoop {
       busy: (session) => session === to!.session && busy(),
       ...(options.agentName ? { agentName: options.agentName } : {}),
     });
-    return { available: true, review: key!, round: view.round, busy: busy(), view };
+    return {
+      available: true,
+      review: key!,
+      round: view.round,
+      busy: busy(),
+      view,
+      ...(failed.size > 0 ? { failed: [...failed].map(([send, message]) => ({ send, message })) } : {}),
+    };
   };
 
   // What the page was last told; the timer pushes again when it moves.
-  const signature = (): string => (available() ? `on:${busy()}:${reviewJournalStamp(dataDir, { key: key! })}` : "off");
+  const signature = (): string => (available() ? `on:${busy()}:${failed.size}:${reviewJournalStamp(dataDir, { key: key! })}` : "off");
   let told = signature();
   const push = () => {
     if (disposed) return;
@@ -224,14 +242,17 @@ export function createReviewLoop(options: ReviewLoopOptions): ReviewLoop {
   (timer as { unref?: () => void } | null)?.unref?.();
 
   const deliver = (send: ReviewSend, text: string, comments: number) => {
+    failed.delete(send.id);
     options.carrier()?.deliver(send.id, text, { mode: send.mode, round: send.round, comments }, {
       delivered: () => {
+        failed.delete(send.id);
         retryReviewJournalWrite(() => markReviewSendsDelivered(writing, { key: key! }, [send.id]))
           .then(push)
           .catch((error) => log(`review loop: could not mark ${send.id} delivered: ${error instanceof Error ? error.message : String(error)}`));
       },
       failed: (message) => {
         log(`review loop: ${send.id} did not reach the agent session${message ? ` (${message})` : ""}.`);
+        failed.set(send.id, message ?? null);
         push();
       },
     });
@@ -250,22 +271,28 @@ export function createReviewLoop(options: ReviewLoopOptions): ReviewLoop {
     if (body.words !== undefined && typeof body.words !== "string") return { status: 400, body: { error: "words: a string." } };
     if (body.idempotency_key !== undefined && typeof body.idempotency_key !== "string") return { status: 400, body: { error: "idempotency_key: a string." } };
     const idempotencyKey = (body.idempotency_key as string | undefined)?.trim() || undefined;
+    // The lines a caller adds under a comment's heading (images, an element), by id: for this press's text only.
+    const notes = new Map<string, string[]>();
+    const noteLines = (lines: unknown) => (Array.isArray(lines) ? lines.filter((line): line is string => typeof line === "string" && line.trim() !== "") : []);
+    for (const raw of comments as unknown as SendCommentInput[]) {
+      if (typeof raw.id === "string" && noteLines(raw.notes).length > 0) notes.set(raw.id, noteLines(raw.notes));
+    }
+    const detail = (record: { id: string }) => (notes.get(record.id)?.length ? { notes: notes.get(record.id)! } : {});
     try {
       // A retry of the same press: nothing is written again, and a send not yet delivered is handed over again.
       const before = idempotencyKey ? readReviewJournal(dataDir, { key: key! }) : null;
       const replay = before?.sends.find((send) => send.idempotency_key === idempotencyKey);
       if (replay && before) {
-        if (!replay.delivery) deliver(replay, reviewJournalSendText(before, [replay.id], { root, how: how() }), before.comments.filter((record) => record.sent_reply_id === replay.id).length);
+        if (!replay.delivery) deliver(replay, reviewJournalSendText(before, [replay.id], { root, how: how(), detail }), before.comments.filter((record) => record.sent_reply_id === replay.id).length);
         return { status: 200, body: { send: replay, replayed: true, ...state() } };
       }
-      // The person's drafts this press carries, with the lines a caller adds under each (images, an element).
-      const notes = new Map<string, string[]>();
+      // The person's drafts this press carries.
       const written: string[] = [];
       for (const raw of comments as unknown as SendCommentInput[]) {
         const { notes: lines, ...input } = raw;
         const comment = await retryReviewJournalWrite(() => writeReviewComment(writing, ref!, input));
         written.push(comment.id);
-        if (Array.isArray(lines)) notes.set(comment.id, lines.filter((line): line is string => typeof line === "string" && line.trim() !== ""));
+        if (noteLines(lines).length > 0) notes.set(comment.id, noteLines(lines));
       }
       const ids = (body.ids as string[] | undefined) ?? written;
       const done = await retryReviewJournalWrite(() =>
@@ -278,11 +305,7 @@ export function createReviewLoop(options: ReviewLoopOptions): ReviewLoop {
         }),
       );
       const journal = readReviewJournal(dataDir, { key: key! })!;
-      const text = reviewJournalSendText(journal, [done.send.id], {
-        root,
-        how: how(),
-        detail: (record) => (notes.get(record.id)?.length ? { notes: notes.get(record.id)! } : {}),
-      });
+      const text = reviewJournalSendText(journal, [done.send.id], { root, how: how(), detail });
       deliver(done.send, text, journal.comments.filter((record) => record.sent_reply_id === done.send.id).length);
       push();
       return { status: 200, body: { send: done.send, replayed: done.replayed, ...state() } };
@@ -316,10 +339,11 @@ export function createReviewLoop(options: ReviewLoopOptions): ReviewLoop {
       if (options.messages === undefined || key === null) return { status: 404, body: { error: "This review takes no messages.", code: REVIEW_LOOP_OFF_CODE } };
       const parsed = readHostMessagesValue(request.body);
       if (!parsed.ok) return { status: 400, body: { error: parsed.error } };
-      // The newest first, and nothing the picker showed goes.
+      // The session's latest (at most 25), newest first, then the screen's own messages not among them:
+      // the list never loses one the screen opened with, and stays bounded.
       const shown = pushedMessages ?? [...options.messages];
       const incoming = new Set(parsed.messages.map((message) => message.messageId));
-      const merged = [...parsed.messages, ...shown.filter((message) => !incoming.has(message.messageId))];
+      const merged = [...parsed.messages, ...options.messages.filter((message) => !incoming.has(message.messageId))];
       const changed = merged.length !== shown.length || merged.some((message, index) => message.messageId !== shown[index]?.messageId || message.text !== shown[index]?.text);
       if (changed) {
         pushedMessages = merged;
@@ -378,7 +402,8 @@ export function createReviewLoop(options: ReviewLoopOptions): ReviewLoop {
     },
     messages: () => (pushedMessages ? [...pushedMessages] : null),
     async approved() {
-      if (key === null) return;
+      // Only a review this screen carried: a screen that kept today's single decision leaves the journal to whoever wrote it.
+      if (key === null || !used) return;
       await retryReviewJournalWrite(() => closeReviewJournal(writing, { key })).catch((error) => {
         log(`review loop: could not close the journal of ${key}: ${error instanceof Error ? error.message : String(error)}`);
       });

@@ -40,7 +40,10 @@
  *   `features` gets one (an older host would never acknowledge it); `tool_reply`
  *   there says its agent answers with the `plannotator` tool's `reply` action.
  *   The host reports `{ type: "send", sendId, state: "received" }` at once,
- *   then `delivered` once the turn is in the session, or `failed`.
+ *   then `delivered` once the turn is in the session, or `failed`. A send
+ *   received and not reported since is sent again now and then
+ *   (`receivedResendAfterMs`): the host answers with what became of it, and a
+ *   host that never had it (a new process) puts it in.
  *
  * Auth: `Authorization: Bearer <token>`, where the token is a per-launch secret
  * the host generated and handed to the server process (env
@@ -140,7 +143,7 @@ export interface PullSessionBridgeSends {
 	readonly toolReply: boolean;
 	/** The host's session is in a turn. */
 	readonly busy: boolean;
-	/** Hand a send to the host; it waits here while no host polls. A send id given again is ignored. */
+	/** Hand a send to the host; it waits here while no host polls. A send id given again is asked about again at once. */
 	deliver(sendId: string, text: string, info: BridgeSendInfo, report: BridgeSendReport): void;
 }
 
@@ -157,6 +160,8 @@ export interface PullSessionBridgeOptions extends PullSessionBridgeConfig {
 	goneAfterMs?: number;
 	/** Default 5s: an unacknowledged command is sent again after this. */
 	resendAfterMs?: number;
+	/** Default 30s: a send the host received and has not reported on since is sent again after this. */
+	receivedResendAfterMs?: number;
 	/** Default 15s: how long an interrupt may take before it is reported failed. */
 	interruptTimeoutMs?: number;
 	/** Default 15s: after a cancel, how long to wait for the host to confirm before freeing the slot. */
@@ -262,7 +267,7 @@ interface PendingSend {
 	text: string;
 	info: BridgeSendInfo;
 	report: BridgeSendReport;
-	/** The host acknowledged it (`received`): it is not sent again. */
+	/** The host acknowledged it (`received`): it is sent again only after `receivedResendAfterMs`, to ask what became of it. */
 	received: boolean;
 	/** Last time the command was handed to a poll; 0 = never. */
 	sentAt: number;
@@ -273,6 +278,7 @@ export function createPullSessionBridge(options: PullSessionBridgeOptions): Pull
 	const connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
 	const goneAfterMs = options.goneAfterMs ?? 30_000;
 	const resendAfterMs = options.resendAfterMs ?? 5_000;
+	const receivedResendAfterMs = options.receivedResendAfterMs ?? 30_000;
 	const interruptTimeoutMs = options.interruptTimeoutMs ?? 15_000;
 	const cancelGraceMs = options.cancelGraceMs ?? 15_000;
 	const maxBodyChars = options.maxBodyChars ?? MAX_EVENT_BODY_BYTES;
@@ -364,7 +370,7 @@ export function createPullSessionBridge(options: PullSessionBridgeOptions): Pull
 		// Only to a host that takes them: an older one would never acknowledge a send.
 		if (hostFeatures.has(SESSION_BRIDGE_HOST_SEND_FEATURE)) {
 			for (const send of pendingSends.values()) {
-				if (send.received || !due(send.sentAt)) continue;
+				if (send.received ? t - send.sentAt < receivedResendAfterMs : !due(send.sentAt)) continue;
 				send.sentAt = t;
 				commands.push({ type: "send", sendId: send.sendId, text: send.text, ...send.info });
 			}
@@ -649,7 +655,15 @@ export function createPullSessionBridge(options: PullSessionBridgeOptions): Pull
 				report.failed("The review server is closing.");
 				return;
 			}
-			if (pendingSends.has(sendId)) return;
+			const known = pendingSends.get(sendId);
+			if (known) {
+				// Given again (a retry): ask the host again now.
+				known.received = false;
+				known.sentAt = 0;
+				known.report = report;
+				flush();
+				return;
+			}
 			pendingSends.set(sendId, { sendId, text, info: { mode: info.mode, round: info.round, comments: info.comments }, report, received: false, sentAt: 0 });
 			flush();
 		},

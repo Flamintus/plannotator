@@ -410,6 +410,7 @@ describe('sends over the pull bridge', () => {
       isLive: () => live,
       sends: {
         toolReply: () => true,
+        states: new Map(),
         deliver: (command) => {
           delivering.push(command.text)
           // The turn waits for Claude to go idle: the server sends again meanwhile, and nothing is put in twice.
@@ -454,5 +455,54 @@ describe('sends over the pull bridge', () => {
     live = false
     server.dispose()
     await running
+  })
+})
+
+describe('sends: what became of each, across bridge loops', () => {
+  const POLL_URL = 'http://127.0.0.1:4321/api/ai/bridge/poll'
+  function serverOnce(host: FakeHost, command: Record<string, unknown>) {
+    const events: unknown[] = []
+    let served = false
+    host.onFetch = (url, body) => {
+      if (url !== POLL_URL) {
+        events.push(body)
+        return { status: 200, ok: true, text: '{}' }
+      }
+      if (served) return { status: 200, ok: true, text: JSON.stringify({ commands: [], closing: true }) }
+      served = true
+      return { status: 200, ok: true, text: JSON.stringify({ commands: [command] }) }
+    }
+    return events
+  }
+  const send = { type: 'send', sendId: 'snd_1', text: 'Comments', mode: 'round', round: 1, comments: 1 }
+
+  // The failure this guards: a loop restarted after the server went silent put a send in twice.
+  test('a send this review already put in is answered with its state by a new loop, never put in again', async () => {
+    const states = new Map<string, 'received' | 'delivered'>([['snd_1', 'delivered']])
+    const host = fakeHost()
+    const events = serverOnce(host, send)
+    const delivered: string[] = []
+    const client = createBridge({ host, baseUrl: 'http://127.0.0.1:4321', token: TOKEN, turns: new TurnTracker(), isLive: () => true, sends: { toolReply: () => false, states, deliver: async (command) => void delivered.push(command.sendId) } })
+    await client.run()
+    expect(delivered).toEqual([])
+    expect(events).toContainEqual({ type: 'send', sendId: 'snd_1', state: 'delivered' })
+  })
+
+  // The failure this guards: a failed send was answered "failed" forever, so a retry never reached the session.
+  test('a send that failed is tried again when the server hands it over again', async () => {
+    const states = new Map<string, 'received' | 'delivered'>()
+    let attempts = 0
+    const deliver = async () => {
+      attempts += 1
+      if (attempts === 1) throw new Error('refused')
+    }
+    for (let round = 0; round < 2; round += 1) {
+      const host = fakeHost()
+      const events = serverOnce(host, send)
+      await createBridge({ host, baseUrl: 'http://127.0.0.1:4321', token: TOKEN, turns: new TurnTracker(), isLive: () => true, sends: { toolReply: () => false, states, deliver } }).run()
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(events).toContainEqual({ type: 'send', sendId: 'snd_1', state: round === 0 ? 'failed' : 'delivered', ...(round === 0 ? { message: 'refused' } : {}) })
+    }
+    expect(attempts).toBe(2)
   })
 })

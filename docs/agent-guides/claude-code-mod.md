@@ -514,22 +514,27 @@ side: "The review loop on the screens" in `server-and-storage.md`):
   person's sends (`send` commands). Each is acknowledged at once
   (`received`), submitted as one plugin turn in order with the decisions
   (`deliverSend`, on the same `delivering` chain), then reported `delivered`
-  or `failed`; a send given again is answered with its state and never put
-  in twice. The turn is headed like a decision (`sendDeliveryFor` in
+  or `failed`. What became of each is kept on the launch (`sendStates`), so a
+  send given again, by this loop or one restarted after the server went
+  silent, is answered with its state and never put in twice; a failed one is
+  forgotten, so a retry is tried again. The turn is headed like a decision (`sendDeliveryFor` in
   `delivery.ts`: `Plannotator: notes.md (pn-3f2a9c) — Round 2 done · 3
   comments.` from `plannotatorSendOutcome`, then the `Target:` line), the
-  server's text after it; over 12 KB the text goes to the launch's
-  `feedback.md`. A plan review's send ends with `PLAN_ROUND_NEXT_STEP`:
-  reply under each id, then revise the plan and call ExitPlanMode again,
-  which arrives as a revision in the same review.
+  server's text after it; over 12 KB the text goes to a file of its own in
+  the launch directory (`send-<send id>.md`), never the decision's
+  `feedback.md`. A plan review's send ends with `PLAN_ROUND_NEXT_STEP`: once
+  replied, revise the plan and call ExitPlanMode again, which arrives as a
+  revision in the same review.
 - The tool is registered with `plannotatorToolLoopDescription` /
   `plannotatorToolLoopInputSchema` over the tailscale variant: `reply {
   session, replies: [{ id, text }] }` and `threads { session }`, parsed first
   by `parsePlannotatorToolLoopInput`, answered for the reviews this session
   opened through their server's host paths (`/api/host/threads/reply`,
-  `/api/host/threads`; `runLoopAction`). An uncoded 404 or a page is an older
-  CLI (`PLANNOTATOR_TOOL_LOOP_UNAVAILABLE_TEXT`); `review_loop_off` says the
-  review has no threads. No action resolves.
+  `/api/host/threads`; `runLoopAction`). A reply carries a key made of the
+  call (`tool:` + its sha256), so a retried call writes nothing new. An
+  uncoded 404 or a page is an older CLI (`PLANNOTATOR_TOOL_LOOP_UNAVAILABLE_TEXT`);
+  `review_loop_off`, or a code review (which has none), says the review has
+  no threads. No action resolves.
 - Each main turn's non-aborted end hands every open `last` review this
   process watches the session's recent messages (`pickerFile`, newest first)
   on `/api/host/messages`, once per new newest message (`messagePushed`): the

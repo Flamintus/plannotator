@@ -60,8 +60,9 @@ export type ExternalAnnotationEvent<T = unknown> =
   | ({ type: "review-threads" } & ReviewThreadsState)
   /**
    * Not an annotation change: the agent's next messages reached an open
-   * `last` screen (`POST /api/host/messages`): the picker's whole list, newest
-   * first, the ones it showed kept.
+   * `last` screen (`POST /api/host/messages`): the session's latest messages,
+   * newest first, then the screen's own not among them. The page adds the
+   * ones it does not show to its picker, selecting none.
    */
   | { type: "messages"; messages: { messageId: string; text: string; timestamp?: string }[] };
 
@@ -69,11 +70,13 @@ export type ExternalAnnotationEvent<T = unknown> =
  * The review loop as a screen's page reads it (`GET /api/threads`, the
  * `review-threads` event): unavailable (the setting off, no target, no host
  * that carries sends), or the review's key, its round, whether the agent's
- * session is in a turn, and the thread view (`v: 1`).
+ * session is in a turn, the thread view (`v: 1`), and the sends the host
+ * could not put in the session (`failed`, absent when none; a retry of the
+ * same press hands one over again).
  */
 export type ReviewThreadsState =
   | { available: false }
-  | { available: true; review: string; round: number; busy: boolean; view: ReviewThreadView };
+  | { available: true; review: string; round: number; busy: boolean; view: ReviewThreadView; failed?: { send: string; message: string | null }[] };
 
 // ---------------------------------------------------------------------------
 // SSE helpers

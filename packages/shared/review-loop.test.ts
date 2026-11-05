@@ -175,6 +175,31 @@ describe("review loop on a screen", () => {
     loop.dispose();
   });
 
+  // The failure this guards: a screen that kept today's single decision (no host carried sends) removed,
+  // on Approve, threads another client had written for the same target.
+  test("a screen that never carried the loop leaves the journal on approval", async () => {
+    writeReviewComment({ dataDir }, { target }, { id: "c0", on: onFile, quote: "q", text: "from a terminal client" });
+    const { loop } = loopOf({}, fakeCarrier({ ready: false }).carrier);
+    await loop.approved();
+    expect(existsSync(reviewJournalDir(dataDir, reviewJournalKey(target)))).toBe(true);
+    loop.dispose();
+  });
+
+  test("a send the host could not put in the session is shown to the page until it is handed over again", async () => {
+    const { carrier } = fakeCarrier();
+    const { loop, page } = loopOf({}, carrier);
+    const first = await page("POST", "/api/threads/send", { mode: "round", comments: [{ id: "c1", on: onFile, quote: "q", text: "t", notes: ["Attached image: /tmp/a.png"] }], idempotency_key: "press-1" });
+    const sendId = (first!.body as { send: { id: string } }).send.id;
+    carrier.delivered[0]!.report.failed("refused");
+    expect(((await page("GET", "/api/threads"))!.body as { failed?: unknown }).failed).toEqual([{ send: sendId, message: "refused" }]);
+    // The page's retry: the same press, handed over again with its notes.
+    await page("POST", "/api/threads/send", { mode: "round", comments: [{ id: "c1", on: onFile, quote: "q", text: "t", notes: ["Attached image: /tmp/a.png"] }], idempotency_key: "press-1" });
+    expect(carrier.delivered).toHaveLength(2);
+    expect(carrier.delivered[1]!.text).toContain("Attached image: /tmp/a.png");
+    expect(((await page("GET", "/api/threads"))!.body as { failed?: unknown }).failed).toBeUndefined();
+    loop.dispose();
+  });
+
   test("approving the review removes its journal", async () => {
     const { loop, page } = loopOf();
     await page("POST", "/api/threads/send", { mode: "round", comments: [{ id: "c1", on: onFile, quote: "q", text: "t" }] });

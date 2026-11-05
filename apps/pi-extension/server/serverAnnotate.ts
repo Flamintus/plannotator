@@ -1075,7 +1075,9 @@ export async function startAnnotateServer(options: {
 				serverConfig: getServerConfig(gitUser, currentPiHost(), { cookieHost: !isRemoteSession() }),
 				...piUpdateAdvert(options.origin),
 				agentTerminal: agentTerminalCapability,
-				...((reviewLoop.messages() ?? options.recentMessages) ? { recentMessages: reviewLoop.messages() ?? options.recentMessages } : {}),
+				...(options.recentMessages ? { recentMessages: options.recentMessages } : {}),
+				// The review loop: the host's newer messages (mirrors packages/server/annotate.ts).
+				...(reviewLoop.messages() ? { hostMessages: reviewLoop.messages() } : {}),
 				// Resolved copy-wrapper templates (config-aware, placeholders
 				// intact) so clipboard Copy matches what Send Feedback produces
 				// instead of the plan-deny wrap (#1107). Resolved per request so

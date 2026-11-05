@@ -23,10 +23,10 @@ describe('plannotator tool: reply and threads (review loop)', () => {
     expect(PLANNOTATOR_TOOL_TAILSCALE_INPUT_SCHEMA.properties.action.enum).toEqual(['annotate', 'review', 'last', 'list', 'close'])
     const description = plannotatorToolLoopDescription(PLANNOTATOR_TOOL_TAILSCALE_DESCRIPTION)
     const lines = description.split('\n')
-    // After every other dash line (the tailscale one included), before the closing paragraph.
+    // With the other actions, before the tailscale option's line and the closing paragraph.
     const first = lines.indexOf(PLANNOTATOR_TOOL_LOOP_LINES[0]!)
-    expect(lines.slice(0, first).some((line) => line.includes('`tailscale: true`'))).toBe(true)
-    expect(lines.slice(first + 2).every((line) => !line.startsWith('- '))).toBe(true)
+    expect(lines[first - 1]!.startsWith('- action "close"')).toBe(true)
+    expect(lines[first + 2]!.includes('`tailscale: true`')).toBe(true)
   })
 
   test('reply takes a review id and replies under ids; threads takes the id alone', () => {

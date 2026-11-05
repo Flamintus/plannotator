@@ -128,6 +128,13 @@ export interface BridgeOptions {
     /** Claude answers with the `plannotator` tool's `reply` action (read at each poll). */
     toolReply: () => boolean
     deliver: (command: BridgeSendCommand) => Promise<void>
+    /**
+     * What became of each send taken for this review, kept by the caller
+     * across bridge loops (a loop restarted after the server went silent
+     * must not put a send in twice). A failed send is forgotten, so one
+     * handed over again is tried again.
+     */
+    states: Map<string, 'received' | 'delivered'>
   }
 }
 
@@ -185,8 +192,6 @@ export function createBridge(options: BridgeOptions): BridgeHandle {
   const maxFailures = options.maxFailures ?? 6
   const seenAsks = new Set<string>()
   const seenInterrupts = new Set<string>()
-  /** Each send taken, and what became of it: a command sent again is answered with its state, never put in twice. */
-  const sends = new Map<string, 'received' | 'delivered' | 'failed'>()
   let outbox: BridgeEvent[] = []
   let sending: Promise<void> = Promise.resolve()
   let lastStatus: 'ready' | 'busy' = turns.busy ? 'busy' : 'ready'
@@ -310,27 +315,28 @@ export function createBridge(options: BridgeOptions): BridgeHandle {
   const runSend = (command: BridgeSendCommand) => {
     const { sendId } = command
     if (typeof sendId !== 'string' || !sendId) return
-    const known = sends.get(sendId)
+    // The server asks again (our report was lost, or it checks on a send it has had no news of): answer what became of it.
+    const known = options.sends?.states.get(sendId)
     if (known) {
-      // Our acknowledgement was lost: say again what became of it.
       emit({ type: 'send', sendId, state: known })
       return
     }
-    sends.set(sendId, 'received')
-    emit({ type: 'send', sendId, state: 'received' })
     // Past the session's end or a lease move, the turn would land in whatever conversation the process goes on with.
     if (!options.sends || !options.isLive() || typeof command.text !== 'string' || !command.text.trim()) {
-      sends.set(sendId, 'failed')
       emit({ type: 'send', sendId, state: 'failed', message: 'The session is no longer available.' })
       return
     }
+    const states = options.sends.states
+    states.set(sendId, 'received')
+    emit({ type: 'send', sendId, state: 'received' })
     options.sends.deliver(command).then(
       () => {
-        sends.set(sendId, 'delivered')
+        states.set(sendId, 'delivered')
         emit({ type: 'send', sendId, state: 'delivered' })
       },
       (error: unknown) => {
-        sends.set(sendId, 'failed')
+        // Forgotten: handed over again, it is tried again.
+        states.delete(sendId)
         emit({ type: 'send', sendId, state: 'failed', message: error instanceof Error ? error.message : String(error) })
       },
     )

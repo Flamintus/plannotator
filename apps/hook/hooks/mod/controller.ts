@@ -163,6 +163,11 @@ export const HOST_THREADS_REPLY_PATH = '/api/host/threads/reply'
 export const HOST_MESSAGES_PATH = '/api/host/messages'
 export const REVIEW_LOOP_OFF_CODE = 'review_loop_off'
 
+/** `reply` or `threads` on a review that has no comment threads (a code review, or the loop off for it). */
+function loopOffText(session: string): string {
+  return `${session} has no comment threads: the person did not send its comments in rounds. Answer in chat.`
+}
+
 function jsonObjectOf(text: string): Record<string, unknown> | null {
   try {
     const value = JSON.parse(text) as unknown
@@ -265,6 +270,7 @@ function recordOf(launch: LiveLaunch): LaunchRecord {
     touchedAt: _touchedAt,
     checking: _checking,
     messagePushed: _messagePushed,
+    sendStates: _sendStates,
     ...record
   } = launch
   return record
@@ -300,6 +306,8 @@ interface LiveLaunch extends LaunchRecord {
   touchedAt: number
   /** `last` under the review loop: the newest message id its server was last handed (`/api/host/messages`). */
   messagePushed?: string
+  /** The review loop: what became of each send this process took for the review, across bridge loops. */
+  sendStates?: Map<string, 'received' | 'delivered'>
 }
 
 interface WatcherLease {
@@ -1038,6 +1046,8 @@ export class PlannotatorMod {
   private async runLoopAction(call: PlannotatorToolLoopInput): Promise<{ text: string } | { deny: string }> {
     const launch = this.openLaunches().find((candidate) => sessionIdOf(candidate) === call.session)
     if (!launch) return { deny: plannotatorUnknownSessionText(call.session) }
+    // A code review has no comment threads, whatever the CLI.
+    if (launch.kind === 'review') return { deny: loopOffText(call.session) }
     if (!launch.port || !launch.bridgeToken) return { deny: `Plannotator is still opening ${call.session}; there is nothing to reply to yet.` }
     const base = bridgeBaseUrl(launch.port)
     let response: HttpResult
@@ -1047,7 +1057,8 @@ export class PlannotatorMod {
           ? await this.host.fetch(`${base}${HOST_THREADS_REPLY_PATH}`, {
               method: 'POST',
               headers: { ...this.hostHeaders(launch), 'content-type': 'application/json' },
-              body: JSON.stringify({ replies: call.replies }),
+              // The same call again (a retry after a timeout) writes nothing new.
+              body: JSON.stringify({ replies: call.replies, idempotency_key: `tool:${await this.host.sha256(JSON.stringify([call.session, call.replies]))}` }),
             })
           : await this.host.fetch(`${base}${HOST_THREADS_PATH}`, { method: 'GET', headers: this.hostHeaders(launch) })
     } catch (error) {
@@ -1062,9 +1073,7 @@ export class PlannotatorMod {
     }
     // An older CLI answers an unknown /api path with a 404 that names no code (or its page).
     if (!body || (response.status === 404 && typeof body.code !== 'string')) return { deny: PLANNOTATOR_TOOL_LOOP_UNAVAILABLE_TEXT }
-    if (body.code === REVIEW_LOOP_OFF_CODE) {
-      return { deny: `${call.session} has no comment threads: the person did not send its comments in rounds (the review loop is off for it). Answer in chat.` }
-    }
+    if (body.code === REVIEW_LOOP_OFF_CODE) return { deny: loopOffText(call.session) }
     return { deny: typeof body.error === 'string' && body.error ? body.error : `Plannotator refused the call (HTTP ${response.status}).` }
   }
 
@@ -1080,7 +1089,8 @@ export class PlannotatorMod {
       subject: launch.subject,
       sessionId: sessionIdOf(launch),
       ...(launch.target !== undefined ? { target: launch.target } : {}),
-      overflowPath: fileIn(launch.dir, 'overflow'),
+      // One file per send: a later send or the decision never overwrites one Claude has not read yet.
+      overflowPath: /^snd_[0-9A-Z]{26}$/.test(command.sendId) ? `${launch.dir}/send-${command.sendId}.md` : fileIn(launch.dir, 'overflow'),
       plan: launch.kind === 'plan',
     })
     const turn = this.delivering.then(async () => {
@@ -1820,7 +1830,9 @@ export class PlannotatorMod {
       isLive: () =>
         !this.disposed && this.launches.get(launch.id) === launch && !launch.settling && !launch.closedByAgent && launch.leader,
       // The review loop: this server's sends become turns of this session.
-      ...(reviewLoop ? { sends: { toolReply: reviewLoop.toolReply, deliver: (command: BridgeSendCommand) => this.deliverSend(launch, command) } } : {}),
+      ...(reviewLoop
+        ? { sends: { toolReply: reviewLoop.toolReply, deliver: (command: BridgeSendCommand) => this.deliverSend(launch, command), states: (launch.sendStates ??= new Map()) } }
+        : {}),
     })
     launch.bridge = bridge
     this.host.debug(`bridge ${launch.id}: started`)

@@ -993,12 +993,12 @@ export const PLANNOTATOR_TOOL_LOOP_LINES: readonly string[] = [
   '- action "threads": a review\'s comments by id, with your replies and what is still open; `session` is its id (pn-...).',
 ]
 
-/** A description with the loop's action lines after the other dash lines (the actions, and the tailscale line when there is one). */
+/** A description with the loop's action lines after the other actions' (before an option line such as tailscale's). */
 export function plannotatorToolLoopDescription(description: string): string {
   const lines = description.split('\n')
   let last = -1
   lines.forEach((line, index) => {
-    if (line.startsWith('- ')) last = index
+    if (line.startsWith('- action ')) last = index
   })
   return [...lines.slice(0, last + 1), ...PLANNOTATOR_TOOL_LOOP_LINES, ...lines.slice(last + 1)].join('\n')
 }

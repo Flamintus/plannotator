@@ -1075,8 +1075,10 @@ export async function startAnnotateServer(
               ...getAutoUpdateAdvert(),
               ...getUpdateAdvert(origin, { exposed: isRemote || options.tailnetPublished === true }),
               agentTerminal: agentTerminal.capability,
-              // The agent's next messages join the picker under the review loop (review-loop.ts).
-              ...((reviewLoop.messages() ?? recentMessages) ? { recentMessages: reviewLoop.messages() ?? recentMessages } : {}),
+              ...(recentMessages ? { recentMessages } : {}),
+              // The review loop (review-loop.ts): the host's newer messages, for the page to add to its picker
+              // without selecting one; `recentMessages` stays the list the screen opened with.
+              ...(reviewLoop.messages() ? { hostMessages: reviewLoop.messages() } : {}),
               // Resolved copy-wrapper templates (config-aware, placeholders
               // intact) so clipboard Copy matches what Send Feedback produces
               // instead of the plan-deny wrap (#1107). Resolved per request so

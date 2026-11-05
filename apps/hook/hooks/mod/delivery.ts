@@ -54,7 +54,7 @@ export const PLAN_APPROVAL_NEXT_STEP =
  * back into the same review by the next ExitPlanMode (a revision, plan.ts).
  */
 export const PLAN_ROUND_NEXT_STEP =
-  'Reply under each id first. Then, if they asked for changes, revise the plan and call ExitPlanMode again: the new version opens in the same review. Stay in plan mode.'
+  'Once you have replied, if they asked for changes, revise the plan and call ExitPlanMode again: the new version opens in the same review. Stay in plan mode.'
 
 /**
  * The turn a send of the review loop becomes (a screen's comments, composed

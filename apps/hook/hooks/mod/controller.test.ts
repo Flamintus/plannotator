@@ -1705,7 +1705,12 @@ describe('the review loop: reply, threads, and last\'s next messages', () => {
     expect('text' in answer && answer.text).toContain('c1, c2')
     const call = asked.find((entry) => entry.url.endsWith('/api/host/threads/reply'))
     expect(call?.url).toBe('http://127.0.0.1:4321/api/host/threads/reply')
-    expect(call?.body).toEqual({ replies: [{ id: 'c1', text: 'Moved to Tuesday.' }, { id: 'c2', text: 'Kept: see line 4.' }] })
+    expect(call?.body).toMatchObject({ replies: [{ id: 'c1', text: 'Moved to Tuesday.' }, { id: 'c2', text: 'Kept: see line 4.' }] })
+    // The same call again (a retry after a timeout) carries the same key, so the server writes nothing new.
+    const key = (call?.body as { idempotency_key?: string }).idempotency_key
+    expect(key).toMatch(/^tool:/)
+    await mod.runTool({ action: 'reply', session: id, replies: [{ id: 'c1', text: 'Moved to Tuesday.' }, { id: 'c2', text: 'Kept: see line 4.' }] })
+    expect((asked.filter((entry) => entry.url.endsWith('/api/host/threads/reply')).at(-1)?.body as { idempotency_key?: string }).idempotency_key).toBe(key)
   })
 
   test('threads reads the review; an older CLI, a review with the loop off and an unknown id are refused', async () => {
@@ -1728,6 +1733,55 @@ describe('the review loop: reply, threads, and last\'s next messages', () => {
 
     const unknown = await mod.runTool({ action: 'threads', session: 'pn-000000' })
     expect('deny' in unknown && unknown.deny).toContain('pn-000000')
+  })
+
+  // The wiring: a screen's send reaches the session as a turn headed with its review, through the review's bridge.
+  test("a review's send becomes a turn of this session, headed with the review's id and round; the plan's says how the plan comes back", async () => {
+    for (const kind of ['annotate', 'plan'] as const) {
+      const host = fakeHost()
+      serveOnLaunch(host)
+      const events: unknown[] = []
+      let served = false
+      let polls: unknown[] = []
+      host.onFetch = (url, body) => {
+        if (url.endsWith('/api/ai/bridge/poll')) {
+          polls.push(body)
+          if (served) return { status: 200, ok: true, text: JSON.stringify({ commands: [], closing: true }) }
+          served = true
+          return { status: 200, ok: true, text: JSON.stringify({ commands: [{ type: 'send', sendId: `snd_${'0'.repeat(26)}`, text: '# Comments on your work', mode: 'round', round: 1, comments: 2 }] }) }
+        }
+        if (url.endsWith('/api/ai/bridge/event')) events.push(body)
+        return { status: 404, ok: false, text: '' }
+      }
+      const mod = new PlannotatorMod(host, LOOP_SESSION)
+      const id = kind === 'plan'
+        ? (await mod.onPlanCall({ tool_use_id: 'tu-1', plan: PLAN }), 'pn-')
+        : sessionIdIn(await mod.runTool({ action: 'annotate', target: 'a.md' }))
+      for (let tick = 0; tick < 5 && host.submits.length === 0; tick += 1) await host.tick()
+      expect(host.submits).toHaveLength(1)
+      const [heading] = host.submits[0]!.split('\n')
+      expect(heading).toContain(`(${id}`)
+      expect(heading).toContain('— Round 1 done · 2 comments.')
+      expect(host.submits[0]!.includes('call ExitPlanMode again')).toBe(kind === 'plan')
+      expect((polls[0] as { features?: string[] }).features).toEqual(['send', 'tool_reply'])
+      expect(events).toContainEqual({ type: 'send', sendId: `snd_${'0'.repeat(26)}`, state: 'delivered' })
+      polls = []
+    }
+  })
+
+  test('a code review has no comment threads: reply is refused without asking its server', async () => {
+    const host = fakeHost()
+    serveOnLaunch(host)
+    const asked: string[] = []
+    host.onFetch = (url) => {
+      asked.push(url)
+      return { status: 404, ok: false, text: '' }
+    }
+    const mod = new PlannotatorMod(host, LOOP_SESSION)
+    const id = sessionIdIn(await mod.runTool({ action: 'review' }))
+    const answer = await mod.runTool({ action: 'threads', session: id })
+    expect('deny' in answer && answer.deny).toContain('Answer in chat')
+    expect(asked.some((url) => url.includes('/api/host/threads'))).toBe(false)
   })
 
   test('without the review loop the tool has no reply action', async () => {
