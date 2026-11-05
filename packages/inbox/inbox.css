@@ -7851,7 +7851,7 @@ button.ib-sentb-quote:hover, button.ib-sentb-quote:focus-visible { color: var(--
 .ib-sentc-act:hover, .ib-sentc-act:focus-visible { background: var(--muted); color: var(--foreground); }
 /* An open sub-thread's passage, marked in the message's words; the box a reply or a comment on a passage is written in. */
 .ib-sentc-mark { background: color-mix(in oklab, var(--primary) 18%, transparent); color: inherit; border-radius: 2px; }
-.ib-sentc-boxquote { margin: 0; font-size: 0.85em; color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ib-sentc-boxquote { margin: 0; font-size: var(--ib-fs-12, 12px); color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ib-sentc-box { display: grid; gap: 4px; padding: 4px 6px; }
 .ib-sentb-boxrow > .ib-sentc-box { padding: 8px 12px; }
 .ib-sentb-subs > .ib-sentc-box { padding: 0; }

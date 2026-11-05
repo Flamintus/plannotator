@@ -262,19 +262,19 @@ When you send annotations, they're exported as structured markdown:
 
 I've reviewed this plan and have 2 pieces of feedback:
 
-## 1. Remove this
+## 1. Remove this (id 4b7d0e2a-1c9f-4a63-9e58-0d3b6f2c7a19)
 ` ` `
 the selected text
 ` ` `
 > I don't want this in the plan.
 
-## 2. Feedback on: "some highlighted text"
+## 2. Feedback on: "some highlighted text" (id e81f5c3d-6a20-4b9e-a4d7-52c9b0f1e386)
 > This needs more detail about error handling.
 
 ---
 ```
 
-The agent receives this and can act on each annotation.
+The agent receives this and can act on each annotation. Each heading ends with the comment's id, so the agent can name a comment in a later round.
 
 ## Server API
 
