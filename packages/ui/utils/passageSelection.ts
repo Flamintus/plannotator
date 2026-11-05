@@ -117,16 +117,18 @@ export function passageCommentFields(comment: PassageComment): { type: Annotatio
 
 /**
  * What kind of comment an annotation is, the toolbar's actions read back (`DELETION_COMMENT`, `quickLabelComment`,
- * Comment), at any depth and on any client: a deletion; 👍 Looks good, by its exact words (as other clients write it,
- * plannotator-tui's journal among them); another quick label, by its words; else a comment.
+ * Comment), at any depth and on any client: a deletion; 👍 Looks good, in both its forms (its exact words, as every
+ * surface and other clients write it, plannotator-tui's journal among them; or the HTML page's label, its text alone,
+ * "Looks good"); another quick label, by its words; else a comment.
  */
 export type CommentKind = { kind: 'comment' } | { kind: 'deletion' } | { kind: 'looks-good' } | { kind: 'label'; words: string };
 
 export function commentKind(annotation: { type?: unknown; text?: unknown; isQuickLabel?: unknown }): CommentKind {
   if (annotation.type === AnnotationType.DELETION) return { kind: 'deletion' };
   const words = typeof annotation.text === 'string' ? annotation.text.trim() : '';
-  if (words === quickLabelText(THUMBS_UP_LABEL)) return { kind: 'looks-good' };
-  if (annotation.isQuickLabel === true && words !== '') return { kind: 'label', words };
+  const label = annotation.isQuickLabel === true;
+  if (words === quickLabelText(THUMBS_UP_LABEL) || (label && words === THUMBS_UP_LABEL.text)) return { kind: 'looks-good' };
+  if (label && words !== '') return { kind: 'label', words };
   return { kind: 'comment' };
 }
 
