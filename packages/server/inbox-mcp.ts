@@ -31,6 +31,7 @@ import { InboxError } from "@plannotator/shared/inbox/schema";
 import type { InboxSendResult, InboxStore } from "@plannotator/shared/inbox/store";
 import type { InboxAttachment, InboxListRow } from "@plannotator/core/inbox-types";
 import { registerInboxGuideTools } from "./inbox-guides";
+import { commentSendReplyTarget } from "./inbox-comment-send-delivery";
 import { lastContactOf, noteSessionRead, staleThreadOf, staleThreadText } from "./inbox-session-reads";
 import { INBOX_BODY_CUT_BYTES, INBOX_EARLIER_PERSON_BYTES, INBOX_THREAD_WINDOW, clip, shortTime, sizeText, windowedThread, windowedThreadText } from "./inbox-mcp-read";
 import { registerInboxSearchTool } from "./inbox-mcp-search";
@@ -1029,6 +1030,8 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
     },
     async (input, ctx) =>
       guarded(async () => {
+        // reply_to takes a comment send's id (a wake names the person's comments by it): it answers in that thread.
+        input = { ...input, reply_to: commentSendReplyTarget(store, input.reply_to, context.persistentCommentsOn?.() === true) };
         // A list that does not read is refused before anything is sent, so a message never lands without its steps.
         const withSteps = (input as { steps?: unknown }).steps;
         if (withSteps !== undefined) {
@@ -1106,6 +1109,8 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
     },
     async (input, ctx) =>
       guarded(async () => {
+        // A comment send's id (a wake names the person's comments by it) reads its thread.
+        input = { ...input, message_id: commentSendReplyTarget(store, input.message_id, context.persistentCommentsOn?.() === true) };
         const threadId = threadOf(store, input);
         if (threadId) {
           const naming = namingHint(store, threadId, input.agent_session?.trim() || null);

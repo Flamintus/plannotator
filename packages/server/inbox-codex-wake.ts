@@ -62,7 +62,9 @@ import { INBOX_CODEX_HOST, codexCallWakes, codexCliQueues, codexThreadOfCall, is
 import { INBOX_TOOL_NAME, inboxWakeText, type InboxReplyCommand } from "@plannotator/shared/inbox/connection";
 import { INBOX_BOARD_REQUEST_CLOSE, INBOX_BOARD_REQUEST_OPEN } from "@plannotator/core/inbox-types";
 import type { InboxStore } from "@plannotator/shared/inbox/store";
+import type { InboxWakeItem } from "@plannotator/core/inbox-comment-sends";
 import { agentHomeAllowed, codexHome, type AgentEnvironment } from "./inbox-agents";
+import { commentSendWakes, recordWakeDelivery } from "./inbox-comment-send-delivery";
 
 /** The ChatGPT desktop app's own Codex CLI (macOS), used when no `codex` is on PATH. */
 export const INBOX_CODEX_DESKTOP_CLI = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex";
@@ -323,9 +325,11 @@ export function createInboxCodexWake(options: {
   store: InboxStore;
   environment: AgentEnvironment;
   /** The wake command for an item and the session it goes to (the bridge's `replyCommand`). */
-  commandOf: (item: InboxMessage, session: string) => InboxReplyCommand;
+  commandOf: (item: InboxWakeItem, session: string) => InboxReplyCommand;
   /** An item not to hand at all (a steps-only Tidy wake once steps are off: the server withdraws it). */
-  skip?: (item: InboxMessage, session: string) => boolean;
+  skip?: (item: InboxWakeItem, session: string) => boolean;
+  /** The person's sent comments are on: their comment sends wait here too, one per item (inbox-comment-send-delivery.ts). */
+  commentSends?: () => boolean;
   /** Where to look for a Codex CLI besides PATH. Default: the ChatGPT and Codex apps' own (macOS), never under the test sandbox. */
   extraClis?: readonly string[];
   now?: () => number;
@@ -450,7 +454,7 @@ export function createInboxCodexWake(options: {
   };
   const delivered = (itemId: string, session: string) => {
     try {
-      store.recordDelivery(itemId, { host: INBOX_CODEX_HOST, session });
+      recordWakeDelivery(store, itemId, { host: INBOX_CODEX_HOST, session }, undefined, options.commentSends?.() === true);
     } catch {
       // Gone, or no longer this session's.
     }
@@ -458,7 +462,10 @@ export function createInboxCodexWake(options: {
   };
 
   /** Whether the item goes to `session` through a wake: its owner's message woke, it is addressed to it, or a waking tag. */
-  const wakesItem = (item: InboxMessage, session: string): boolean => {
+  const wakesItem = (wakeItem: InboxWakeItem, session: string): boolean => {
+    // The person's comment sends waiting alone (inbox-comment-send-delivery.ts).
+    if (!wakeItem.message) return commentSendWakes(store, wakeItem, session, INBOX_CODEX_HOST);
+    const item = wakeItem.message;
     if (!store.isOwner(item, session)) return item.tags?.some((tag) => tag.session === session && tag.host === INBOX_CODEX_HOST && tag.wakes) ?? false;
     if (item.to) return item.to.host === INBOX_CODEX_HOST;
     const asked = item.reply_to ? store.message(item.reply_to) : null;
@@ -481,7 +488,7 @@ export function createInboxCodexWake(options: {
     (retryTimer as { unref?: () => void }).unref?.();
   };
 
-  const queueOne = async (path: string, item: InboxMessage, session: string): Promise<void> => {
+  const queueOne = async (path: string, item: InboxWakeItem, session: string): Promise<void> => {
     const key = `${item.id}.${session}`;
     const retry = retryAt.get(key);
     if (retry && retry.at > now()) return;
@@ -556,9 +563,9 @@ export function createInboxCodexWake(options: {
     const sessions = knownSessions();
     if (sessions.size === 0 && claimed.size === 0) return;
     // One pass over the messages, bucketed by recipient (dead sessions included, for their claims).
-    const pending = store.pendingRepliesFor(sessions, { tags: true });
+    const pending = store.pendingWakeItemsFor(sessions, { tags: true, sends: options.commentSends?.() === true });
     const pendingKeys = new Set<string>();
-    const work: { item: InboxMessage; session: string }[] = [];
+    const work: { item: InboxWakeItem; session: string }[] = [];
     for (const [session, items] of pending) {
       for (const item of items) {
         if (!wakesItem(item, session) || options.skip?.(item, session)) continue;
@@ -610,14 +617,15 @@ export function createInboxCodexWake(options: {
   // A person's item, or a Codex message that wakes, is looked at at once (one pass, after the line lands).
   let sweepQueued = false;
   const unsubscribe = store.subscribe((line) => {
-    if (line.kind !== "message") return;
-    const message = line.record as InboxMessage;
-    if (message.author.kind === "agent") {
+    if (line.kind !== "message" && line.kind !== "comment_send") return;
+    // A comment send waits for a session its own messages made known: only a moment to look again.
+    const message = line.kind === "message" ? (line.record as InboxMessage) : null;
+    if (message?.author.kind === "agent") {
       // A Codex message that wakes: also a moment to look again (a reply that waited for a Codex CLI to appear).
       if (message.wakes !== true || message.author.host !== INBOX_CODEX_HOST || !message.author.session) return;
       knownSessions().add(message.author.session);
       wokeSessions().add(message.author.session);
-    } else {
+    } else if (message) {
       if (message.to?.host === INBOX_CODEX_HOST) knownSessions().add(message.to.session);
       for (const tag of message.tags ?? []) if (tag.host === INBOX_CODEX_HOST && tag.wakes) knownSessions().add(tag.session);
     }

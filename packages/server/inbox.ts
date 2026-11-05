@@ -150,6 +150,7 @@ import {
   INBOX_REMOVED_ACTION_TEXT,
   INBOX_SEND_NOW_POLL_FIELD,
   INBOX_TAGS_POLL_FIELD,
+  INBOX_COMMENTS_POLL_FIELD,
   type InboxReplyCommand,
 } from "@plannotator/shared/inbox/connection";
 import {
@@ -216,7 +217,9 @@ import { INBOX_PULL_OWNER_KEYS_MAX, inboxPullIsOpen } from "@plannotator/core/in
 import { isInboxBoardSeq, readInboxBoardSeen, writeInboxBoardSeen } from "@plannotator/shared/inbox/board-seen";
 import { createInboxTagsRoute } from "./inbox-tags";
 import { createInboxStepsRoute, inboxStepsStale } from "./inbox-steps";
+import type { InboxWakeItem } from "@plannotator/core/inbox-comment-sends";
 import { createInboxCommentSendRoutes } from "./inbox-comment-sends";
+import { clearWakeItemNow, recordWakeDelivery, wakeCommandOf } from "./inbox-comment-send-delivery";
 import { createInboxDebugLog } from "./inbox-debug-log";
 import { createInboxDevices, DOOR_PREFIX } from "./inbox-devices";
 import { createInboxMachines, type InboxMachines, type MachineFrame, type MachineLinkTimings } from "./inbox-machines";
@@ -661,6 +664,8 @@ const ERROR_STATUS: Record<string, number> = {
   session_not_live: 409,
   // Send now: the session's connection does not poll now, or cannot deliver into a running turn.
   send_now_unavailable: 409,
+  // Send now on a comment send while sent comments are off (experimental "persistent-comments").
+  persistent_comments_off: 409,
   // Tags: a live session whose Plannotator is too old to word a tag truthfully.
   tag_needs_update: 409,
   // Tags: the session is known, but as another agent than the tag says.
@@ -2802,6 +2807,14 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     };
   };
 
+  // The person's comment sends ride the same wake (inbox-comment-send-delivery.ts): one command per item.
+  const wakeCommand = (item: InboxWakeItem, sendNow: boolean, session: string | null): InboxReplyCommand =>
+    wakeCommandOf({ store, codeReviewOn, shapeOn }, item, session, {
+      sendNow,
+      url: threadPageUrl(baseUrl, item.thread_id),
+      messageCommand: (message) => replyCommand(message, sendNow, session),
+    });
+
   const bridgeSession = (body: Record<string, unknown>): string => {
     const session = typeof body.session === "string" ? body.session.trim() : "";
     if (!session) throw new InboxError("validation_error", "session: the agent session id is required.", { field: "session" });
@@ -2822,11 +2835,13 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     // A busy session that can take an item mid-turn: what has waited long enough goes in now.
     const steer = live.deliveryConnectionOf(session);
     if (sendNow && steer?.busy === true && steer.send_now) autoSendFor(session, tags);
+    // A connection that posts `sends` back with `delivered` gets a thread's comment sends together.
+    const together = body[INBOX_COMMENTS_POLL_FIELD] === true;
     const commands = () =>
       store
-        .pendingReplies(session, { tags })
-        .filter((reply) => !withdrawnTidy(reply))
-        .map((reply) => replyCommand(reply, sendNow, session));
+        .pendingWakeItems(session, { tags, together, sends: persistentCommentsOn() })
+        .filter((item) => !item.message || !withdrawnTidy(item.message))
+        .map((item) => wakeCommand(item, sendNow, session));
     // Ask AI: said on every answer until the client connects, so an answer that no one read loses nothing.
     const askWaits = () => (ask.waits(session) ? { [INBOX_ASK_WAITS_FIELD]: true } : {});
     const now = commands();
@@ -2849,6 +2864,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       const timer = setTimeout(finish, waitMs);
       const unsubscribe = store.subscribe((line) => {
         if (line.kind === "message" && line.record.author.kind === "person" && store.pendingReplies(session, { tags }).length > 0) finish();
+        if (line.kind === "comment_send" && store.pendingWakeItems(session, { tags, sends: persistentCommentsOn() }).some((item) => item.sends.length > 0)) finish();
       });
       const stopAskWaits = ask.onWaits((waiting) => {
         if (waiting === session) finish();
@@ -2874,7 +2890,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     }
     // Send now could not go into the running turn: the reply reads as queued again and waits for idle.
     if (body.type === "send_now_failed" && typeof body.id === "string") {
-      store.clearDeliverNow(body.id, session);
+      clearWakeItemNow(store, body.id, session, persistentCommentsOn());
       return json({ ok: true });
     }
     if (body.type !== "delivered" || typeof body.id !== "string") {
@@ -2888,8 +2904,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         (marked.deliver_now_by === "auto" ? marked.deliver_now_at : null)
       : null;
     const intoTurn = markedAt ? live.deliveredIntoTurn(session, markedAt) : undefined;
-    const reply = store.recordDelivery(body.id, { host, session, ...(intoTurn !== undefined ? { intoTurn } : {}) });
-    return json({ ok: true, delivery: reply.delivery });
+    // A command's comment sends (`sends`, from a connection that takes them together) settle with it.
+    const { delivery } = recordWakeDelivery(store, body.id, { host, session, ...(intoTurn !== undefined ? { intoTurn } : {}) }, body.sends, persistentCommentsOn());
+    return json({ ok: true, delivery });
   };
 
   /**
@@ -2983,6 +3000,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   const live = createInboxLiveSessions({
     store,
     serverSession,
+    commentSendsOn: persistentCommentsOn,
     resolveRoot: async (path) => (await projectRoots.resolve(path)).root,
     outdatedOf: (host, plugin, folder) => {
       if (host === "claude-code") {
@@ -3023,9 +3041,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   const codexWake = createInboxCodexWake({
     store,
     environment: agentEnvironment,
-    commandOf: (item, session) => replyCommand(item, false, session),
+    commandOf: (item, session) => wakeCommand(item, false, session),
     // A steps-only Tidy wake with steps off is withdrawn, never handed (a switch turned off in config.json by hand).
-    skip: (item) => withdrawnTidy(item),
+    skip: (item) => !!item.message && withdrawnTidy(item.message),
+    commentSends: persistentCommentsOn,
     ...(options.codexWake?.extraClis ? { extraClis: options.codexWake.extraClis } : {}),
     ...(options.codexWake?.now ? { now: options.codexWake.now } : {}),
     ...(options.codexWake?.queueTimeoutMs ? { queueTimeoutMs: options.codexWake.queueTimeoutMs } : {}),
@@ -3037,9 +3056,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     store,
     environment: agentEnvironment,
     dataDir,
-    commandOf: (item, session) => replyCommand(item, false, session),
+    commandOf: (item, session) => wakeCommand(item, false, session),
     // A steps-only Tidy wake with steps off is withdrawn, never handed (a switch turned off in config.json by hand).
-    skip: (item) => withdrawnTidy(item),
+    skip: (item) => !!item.message && withdrawnTidy(item.message),
+    commentSends: persistentCommentsOn,
     ...options.qwenWake,
   });
 
@@ -3048,9 +3068,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   const t3Wake = createInboxT3Wake({
     store,
     dataDir,
-    commandOf: (item, session) => replyCommand(item, false, session),
+    commandOf: (item, session) => wakeCommand(item, false, session),
     // A steps-only Tidy wake with steps off is withdrawn, never handed (a switch turned off in config.json by hand).
-    skip: (item) => withdrawnTidy(item),
+    skip: (item) => !!item.message && withdrawnTidy(item.message),
+    commentSends: persistentCommentsOn,
     ...options.t3Wake,
   });
 
@@ -3062,7 +3083,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   // (`deliver_now_by: "auto"`); the mark is a store line, which answers the session's held poll with `now: true`.
   const autoSendFor = (session: string, tags: boolean) => {
     try {
-      store.autoSendDue(session, { afterMs: live.autoSendAfterMs, tags, clockOf: (id) => live.waitClockOf(session, id) });
+      store.autoSendDue(session, { afterMs: live.autoSendAfterMs, tags, clockOf: (id) => live.waitClockOf(session, id), commentSends: persistentCommentsOn() });
     } catch (error) {
       process.stderr.write(`Inbox: a reply did not go in by itself: ${error instanceof Error ? error.message : String(error)}\n`);
     }
