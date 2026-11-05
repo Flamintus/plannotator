@@ -26,8 +26,8 @@ function world(
     sessionId?: () => string
     /** Tool names `$.tool.register` refuses, as a session without a tool registrar would. */
     refuseTools?: string[]
-    /** Answers a process run itself (its result value), or undefined for the default. */
-    run?: (argv: string[], files: Map<string, string>) => { exitCode: number; stdout: string; stderr: string } | undefined
+    /** Answers a process run itself (its result value), or undefined for the default. `init`: the run's env and stdin. */
+    run?: (argv: string[], files: Map<string, string>, init?: { env?: Record<string, string>; stdin?: string }) => { exitCode: number; stdout: string; stderr: string } | undefined
     /** What the mod's `$.store` holds at the start. */
     store?: Record<string, unknown>
     /** Prompts the bottom drops (as a settings hook's block would), by their text. */
@@ -88,7 +88,7 @@ function world(
   on('process.run', ($: any, e: any) => {
     const argv: string[] = [...e.argv]
     runs.push(argv)
-    const answered = options.run?.(argv, files)
+    const answered = options.run?.(argv, files, e.init)
     if (answered) return { value: answered }
     if (argv[3] === 'plannotator-launch' && options.cliStderr !== undefined) {
       // A CLI that refuses the subcommand and exits at once.
@@ -252,7 +252,8 @@ describe('register', () => {
   // the user a plannotator-review skill) and the two the mod registers alike;
   // a name the matcher missed would run the user's blocking skill instead.
   test('all three commands are answered by the mod, skill-held and registered; another plugin\'s command is not touched', async ($: any, on: any) => {
-    const w = world(on, { run: (argv) => (argv[1] === 'inbox' ? { exitCode: 0, stdout: 'http://localhost:5555/\n', stderr: '' } : undefined) })
+    // Only `plannotator inbox --open` answers: an Inbox that takes no review drop, so the screens open.
+    const w = world(on, { run: (argv) => (argv[1] === 'inbox' && argv[2] === '--open' ? { exitCode: 0, stdout: 'http://localhost:5555/\n', stderr: '' } : undefined) })
     on('session.messages', () => ({ value: [{ role: 'assistant', text: 'Here is the plan I wrote.' }] }))
     const reachedBeneath: string[] = []
     on('command.run', ($: any, e: any) => {
@@ -281,6 +282,34 @@ describe('register', () => {
 
     expect(other.text).toBe('frontend-status ran beneath')
     expect(reachedBeneath).toEqual(['frontend-status'])
+  })
+
+  // The review commands through the Inbox (hooks/mod/review-in-inbox.ts): the
+  // engine hands the person the answer's text and the model its context.
+  test('/plannotator-last and /plannotator-annotate <one file>, taken by the Inbox: its address, one line of context for the model, no screen', async ($: any, on: any) => {
+    const drops: { argv: string[]; stdin?: string }[] = []
+    const w = world(on, {
+      run: (argv, _files, init) => {
+        if (argv[1] !== 'inbox' || argv[2] !== 'review') return undefined
+        drops.push({ argv, ...(init?.stdin !== undefined ? { stdin: init.stdin } : {}) })
+        return { exitCode: 0, stdout: 'http://localhost:5555/#thread=msg_01T&msg=msg_01M\n', stderr: '' }
+      },
+    })
+    on('session.messages', () => ({ value: [{ role: 'user', text: 'Plan it.' }, { role: 'assistant', text: 'Here is the plan I wrote.' }] }))
+    await $.session.start(SESSION)
+
+    for (const [command, args] of [
+      ['plannotator-last', ''],
+      ['plannotator-annotate', 'notes.md'],
+    ]) {
+      const answer = await $.command.run({ command, args, origin: { kind: 'composer' } })
+      expect(answer.text).toContain('http://localhost:5555/#thread=msg_01T')
+      expect(answer.context).toHaveLength(1)
+      expect(answer.context[0]).toContain('msg_01T')
+    }
+    expect(drops.map((drop) => drop.argv.slice(3, 5))).toEqual([['--message', '-'], ['--file', 'notes.md']])
+    expect(drops[0]?.stdin).toBe('Here is the plan I wrote.')
+    expect(w.runs.some((argv) => argv[3] === 'plannotator-launch')).toBe(false)
   })
 
   test('knob off (PLANNOTATOR_CLAUDE_MOD=0): inert. ExitPlanMode and the skills reach the classic flow; nothing is registered or set', async ($: any, on: any) => {

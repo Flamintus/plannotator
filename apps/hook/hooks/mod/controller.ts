@@ -88,6 +88,7 @@ import {
   type PlannotatorTarget,
 } from './tool'
 import { TurnTracker, type EnteredPrompt } from './turns'
+import { INBOX_REVIEW_TIMEOUT_MS, inboxReviewAgentLine, inboxReviewArgv, inboxReviewDropOf, inboxReviewOpenedText, inboxReviewOutcome } from './review-in-inbox'
 
 /** Persisted in `$.store` so open reviews reattach after a restart or `--resume`. */
 export interface LaunchRecord {
@@ -894,6 +895,46 @@ export class PlannotatorMod {
       .catch((error: unknown) => ({ exitCode: -1, stdout: '', stderr: error instanceof Error ? error.message : String(error) }))
     const text = inboxOpenAnswer(result)
     return inboxOpened(result) ? { text, context: [inboxCommandBriefing(toolName ?? undefined)] } : { text }
+  }
+
+  /**
+   * A slash command's answer: `/plannotator-last` and `/plannotator-annotate
+   * <one file>` in the person's Inbox when it takes them (review-in-inbox.ts),
+   * with one line of hidden context for the model; otherwise the screen.
+   */
+  async answerCommand(kind: Exclude<SessionKind, 'plan'>, rawArgs: string): Promise<{ text: string; context?: string[] }> {
+    return (await this.reviewInInbox(kind, rawArgs)) ?? { text: await this.runCommand(kind, rawArgs) }
+  }
+
+  /** The drop in the Inbox and its answer; null when the screen opens instead. */
+  private async reviewInInbox(kind: Exclude<SessionKind, 'plan'>, rawArgs: string): Promise<{ text: string; context: string[] } | null> {
+    // No Inbox connection here: nothing would wake this session on a Send.
+    if (!this.inbox) return null
+    const drop = inboxReviewDropOf(kind, wordsOf(rawArgs))
+    if (!drop) return null
+    let stdin: string | undefined
+    if (drop.kind === 'message') {
+      stdin = recentAssistantTexts(await this.host.messages(), 1)[0]
+      // The screen says there is none.
+      if (!stdin) return null
+    }
+    const result = await this.host
+      .run(inboxReviewArgv(drop, this.session.sessionId), {
+        env: { PLANNOTATOR_DATA_DIR: this.session.dataDir, PLANNOTATOR_SESSION_TAG: `claude-code:${this.session.sessionId}` },
+        ...(stdin !== undefined ? { stdin } : {}),
+        timeoutMs: INBOX_REVIEW_TIMEOUT_MS,
+      })
+      .catch((error: unknown) => ({ exitCode: -1, stdout: '', stderr: error instanceof Error ? error.message : String(error) }))
+    const outcome = inboxReviewOutcome(result)
+    if (!outcome.dropped) {
+      this.host.debug(`review in the Inbox not taken (${outcome.why}): the screen instead`)
+      return null
+    }
+    const subject = subjectFor(kind, drop.kind === 'file' ? [drop.path] : rawArgs)
+    return {
+      text: inboxReviewOpenedText(subject, outcome.url, outcome.note),
+      context: [inboxReviewAgentLine(drop, subject, outcome.threadId)],
+    }
   }
 
   /** `/plannotator-review`, `/plannotator-annotate`, `/plannotator-last`: open and return at once. */

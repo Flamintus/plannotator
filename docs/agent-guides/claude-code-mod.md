@@ -341,6 +341,32 @@ runs `annotate-last --stdin`, see the next paragraph). The command returns
 the CLI's tolerant annotate handoff (several unresolvable words) is shown to
 the user as that error, not handed to Claude.
 
+**Review in the Inbox (the fork's own branch, `review-in-inbox.ts`).** In a
+session connected to the Inbox (the `plannotator_inbox` tool registered),
+`/plannotator-last` and `/plannotator-annotate <one file>` first run
+`plannotator inbox review (--message - | --file <path>) --session
+claude-code:<id> --open` (`PLANNOTATOR_SESSION_TAG` set to the same session):
+the newest response on stdin (`recentAssistantTexts`, the text the screen
+shows; a leading `@` of a file mention dropped), so it lands in the session's
+review thread and the window opens on it. The answer is "Opened <subject> in
+your Plannotator Inbox · <url>", plus one line of hidden `context` for the model
+naming the thread and saying the comments come from the Inbox; no launch, no
+status line, and a Send there wakes the session like any Inbox reply. Anything
+but exit 0 with an address opens the screen as before, silently (one debug
+line): the experimental switch off (`persistent_comments_off`), no Inbox
+running, the session not connected yet, an older Inbox or CLI, a folder or a
+missing file (the screen then resolves the word its own way), a run that
+fails or passes 20 s. Never tried: a URL, several words, any flag (screen
+options such as `--gate`, `--tailscale`), `/plannotator-review`, the
+`plannotator` tool and taken-over Bash runs. The Inbox gets only the newest
+message: the screen's picker of older ones is not offered there. `$.session.messages()`
+rows carry no message id, so none is passed; the Inbox checks the words
+against the transcript (`verified`), which matched at every point of 94 real
+transcripts (1278 points). Tests: `review-in-inbox.test.ts` (rules and every
+refusal over a memory host), `inbox-review.test.ts` (a real Inbox and CLI),
+`apps/hook/tests/register.test.ts` (the engine's `command.run` carries the
+context).
+
 **`last` and its message picker.** The classic path reads up to 25 recent
 assistant messages from the transcript file and shows a picker (newest open by
 default). The mod has no transcript file to hand over, so it builds the same

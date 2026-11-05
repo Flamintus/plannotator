@@ -31,6 +31,8 @@
  *   (`command.run`): the user's skills keep their names; the mod answers the
  *   command itself, starting the CLI detached with the same arguments, and
  *   returns the "Opened …" line. It registers a name only where no skill holds it.
+ *   `/plannotator-last` and `/plannotator-annotate <one file>` go to the
+ *   person's Inbox instead when it takes them (review-in-inbox.ts).
  * - `/plannotator-inbox` (`command.run`, the same rule): runs
  *   `plannotator inbox --open` (the Inbox opens in the browser, started
  *   detached when stopped) and answers with its address.
@@ -747,9 +749,10 @@ export function register(on: On) {
     // person gets the address, the model no briefing. The installer's skill
     // holds the name, so a queued command takes the normal path.
     if (!isModCommand(name)) return await instance.openInbox(inboxToolName)
-    const spec = COMMANDS[name]
-    const text = await instance.runCommand(spec.kind, typeof e.args === 'string' ? e.args : '')
-    return { text }
+    // `/plannotator-last` and `/plannotator-annotate <one file>` go to the Inbox
+    // when it takes them, with a line of hidden context for the model (the
+    // same `context` and the same known gap as `/plannotator-inbox` above).
+    return await instance.answerCommand(COMMANDS[name].kind, typeof e.args === 'string' ? e.args : '')
   })
 
   // The session's name (see the header). Matched by name, as above, so at most
