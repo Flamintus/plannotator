@@ -7849,6 +7849,13 @@ button.ib-sentb-quote:hover, button.ib-sentb-quote:focus-visible { color: var(--
 /* Resolve / Reopen and Reply, at a thread's head here and on a sent card's foot in the file's panel. */
 .ib-sentc-act { flex: none; padding: 2px 6px; border-radius: 6px; background: none; border: 0; color: var(--muted-foreground); font: inherit; font-size: var(--ib-fs-12, 12px); cursor: pointer; }
 .ib-sentc-act:hover, .ib-sentc-act:focus-visible { background: var(--muted); color: var(--foreground); }
+/* A draft's Send (comment sends): the one action of a draft, so it reads as one; on a reply row, at the row's end. */
+.ib-sentc-act.ib-sentb-send { color: var(--primary); font-weight: 600; }
+.ib-sentc-act.ib-sentb-send:disabled { opacity: 0.55; cursor: default; }
+.ib-sentb-meta > .ib-sentb-send { margin-left: auto; }
+/* An agent's reply the person has not seen yet, and a thread whose next replies go on their own. */
+.ib-sentb-new { background: color-mix(in oklab, var(--primary) 22%, var(--card)); color: var(--foreground); font-weight: 600; }
+.ib-sentb-live { background: color-mix(in oklab, var(--primary) 12%, var(--card)); color: var(--foreground); }
 /* An open sub-thread's passage, marked in the message's words; the box a reply or a comment on a passage is written in. */
 .ib-sentc-mark { background: color-mix(in oklab, var(--primary) 18%, transparent); color: inherit; border-radius: 2px; }
 .ib-sentc-boxquote { margin: 0; font-size: var(--ib-fs-12, 12px); color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

@@ -1,7 +1,8 @@
 /**
  * Comments that stay after Send (experimental "persistent-comments"), as the
- * window draws them: the thread's part (`useSentComments`), the file pane's
- * part (`useSentFileComments`) and the threads themselves (`SentThreads`).
+ * window draws them: the thread's part (`useSentComments`) and the file
+ * pane's part (`useSentFileComments`); the threads themselves are ui's
+ * shared boxes (`SentThreads`, packages/ui/components/inbox-thread).
  * The rules are in sentComments.ts and packages/core/inbox-comment-threads.ts.
  * With the switch off the thread's files carry no `sent_comments`, and every
  * part here is a no-op.
@@ -35,62 +36,70 @@
  * open: until then it stays unfolded, marked Resolved. A message holding a
  * thread still open opens unfolded in its thread (sentComments.ts
  * `unfoldOpenThreads`).
+ *
+ * Comment sends (this Inbox's thread, `sendsOn`): the person's comments
+ * reach the agent as records of their own (packages/core/inbox-comment-sends.ts),
+ * never with the words of a Send. A draft (a comment on an agent's message,
+ * drawn as a box under its passage too, a reply under a comment, a
+ * sub-thread; on a file, its card) has Send, which sends it alone at once
+ * and leaves the round open; the thread's Finish round sends every draft
+ * left (Thread.tsx). What a send carried says what became of it (Queued,
+ * Delivered, Read, Working while its session is in a turn, Replied); a
+ * thread a send reached at once is Live, and the person's next reply under
+ * it goes on its own (the server's rule); an agent's reply newer than the
+ * person's look is New. The header counts the round and the threads still
+ * open (`count`).
  */
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   inboxCommentLastReplies,
   inboxCommentMessages,
   inboxCommentRounds,
+  inboxCommentSendReceivedAt,
+  inboxCommentsHiddenUnderFolded,
+  inboxCommentSitsUnder,
   inboxCommentState,
+  inboxMessagesWithOpenThreads,
   inboxOpenSubThreadPaths,
   isInboxCommentReply,
+  isInboxCommentThreadFolded,
   isInboxCommentUnderAnother,
   isInboxSubThread,
   type InboxCommentMessage,
   type InboxCommentThreadMessage,
 } from '@plannotator/core/inbox-comment-threads';
+import {
+  inboxCommentRoundCount,
+  inboxCommentThreadView,
+  isInboxCommentSendable,
+  type InboxCommentRoundCount,
+  type InboxCommentSend,
+} from '@plannotator/core/inbox-comment-sends';
 import type { TextPassage } from '@plannotator/core/passage';
 import type { InboxAnnotationRecord, InboxCommentReplyRecord } from '@plannotator/core/inbox-types';
-import { useConfigValue } from '@plannotator/ui/config';
 import type { Annotation, Block } from '@plannotator/ui/types';
-import { PassageToolbar } from '@plannotator/ui/components/PassageToolbar';
-import { PASSAGE_BODY_ATTRIBUTE, passageRanges, selectedPassage, splitByRanges, type SelectedPassage } from '@plannotator/ui/utils/passageSelection';
-import { isCommentSubmitKey } from '@plannotator/ui/utils/commentSubmitKey';
+import { SentSendButton, SentStatusChip, SentThreads, useSentThreadsView, type ReplyInput, type SubThreadSave } from '@plannotator/ui/components/inbox-thread/SentThreads';
+import type { SentCommentsTree } from '@plannotator/ui/components/inbox-thread/sentCommentsTree';
 import { InboxApiError, inboxApi, type AttachmentsModel } from '../api';
-import { Icon } from '../icons';
-import { annotationOf, annotationQuote, isFileComment, shortLabel } from '../attachments';
-import {
-  agentReplyAnnotation,
-  commentOfCard,
-  followCodeLines,
-  hiddenUnderFolded,
-  isFoldedThread,
-  messagesWithOpenThreads,
-  openPassagesByParent,
-  placeThreads,
-  sentReplyRounds,
-  sentReplyRows,
-  sentUnanchoredChanges,
-  sitsUnder,
-  subThreadsByParent,
-  withSentWrites,
-  type SentReplyRow,
-} from '../sentComments';
+import { annotationOf, isFileComment } from '../attachments';
+import { agentReplyAnnotation, commentOfCard, followCodeLines, placeThreads, sentCommentsParts, sentUnanchoredChanges, withSentWrites } from '../sentComments';
 import { newUuid } from '../uuid';
+import { useTagConnections } from './TagPicker';
+
+// The thread boxes moved to @plannotator/ui unchanged; this path re-exports them.
+export { SentThreads, useSentThreadsView, type SentThreadsView } from '@plannotator/ui/components/inbox-thread/SentThreads';
+export type { SentCommentsTree } from '@plannotator/ui/components/inbox-thread/sentCommentsTree';
 
 const NO_RECORDS: readonly InboxAnnotationRecord[] = [];
-const NO_REPLIES: readonly InboxCommentReplyRecord[] = [];
+const NO_REPLIES: readonly (InboxCommentReplyRecord & { seq?: number })[] = [];
+const NO_SESSIONS: readonly string[] = [];
+const NO_SENDS: readonly InboxCommentSend[] = [];
 const NO_WRITES: ReadonlyMap<string, InboxAnnotationRecord> = new Map();
 const NO_IDS: ReadonlySet<string> = new Set();
 const NO_PASSAGES: readonly TextPassage[] = [];
+const NO_TREE: SentCommentsTree = { rounds: new Map(), resolved: NO_IDS, replies: new Map(), subThreads: new Map(), openBelow: NO_IDS, passages: new Map() };
 
 type UnanchoredReport = { attempted: readonly string[]; unanchored: readonly string[] };
-
-/** The person's reply under a comment, or comment on a passage, as the composer hands it. */
-type ReplyInput = { text: string; mentions?: readonly string[] };
-
-/** The person's sub-thread on a passage of a message, true once saved. */
-type SubThreadSave = (parentId: string, passage: TextPassage, comment: ReplyInput) => Promise<boolean>;
 
 /** What the file pane gets of a thread's sent comments. */
 export interface SentFileComments {
@@ -106,6 +115,8 @@ export interface SentFileComments {
   resolved: ReadonlySet<string>;
   /** The messages with an open sub-thread under them: a resolved one among them stays unfolded. */
   openBelow: ReadonlySet<string>;
+  /** The thread's replies, sub-threads and passages (the pane looks its own comments up in it). */
+  tree: SentCommentsTree;
   /** What the pane found of their words. */
   onUnanchoredReport: (report: UnanchoredReport) => void;
   /** The person resolves one, or opens it again (absent: no Resolve, a linked machine's thread). */
@@ -114,20 +125,8 @@ export interface SentFileComments {
   onReply?: (commentId: string, reply: ReplyInput) => Promise<boolean>;
   /** The person comments on a passage of one (absent: no offer, a linked machine's thread). */
   onSubThread?: SubThreadSave;
-}
-
-/** What the list under a message draws of the thread's comments, beyond its own rows. */
-export interface SentCommentsTree {
-  rounds: ReadonlyMap<string, number>;
-  resolved: ReadonlySet<string>;
-  /** The replies under each comment or sub-thread. */
-  replies: ReadonlyMap<string, readonly SentReplyRow[]>;
-  /** The sub-threads on each message (drafts too). */
-  subThreads: ReadonlyMap<string, readonly InboxAnnotationRecord[]>;
-  /** The messages with an open sub-thread under them. */
-  openBelow: ReadonlySet<string>;
-  /** The passages to mark in each message's words. */
-  passages: ReadonlyMap<string, readonly TextPassage[]>;
+  /** The person sends one draft alone, at once (comment sends; absent: none, the drafts go with the next Send). */
+  onSend?: (id: string) => Promise<boolean>;
 }
 
 /**
@@ -145,21 +144,57 @@ export interface SentCommentsTree {
  * (a draft reply under a resolved comment shows it open again).
  * `messages`: every message of the comment threads, by id, for the Send's
  * export of a sub-thread (the words its passage is in).
+ *
+ * With comment sends (`sendsOn`, see the header): `sendable`, the drafts that
+ * go by them; `send`, one draft alone, at once (`reload` reads the files
+ * again once it went, as for a reply that went on its own); the boxes carry
+ * each sent element's status (its session's connection read while one waits
+ * for an answer, for Working), the live threads and the agents' replies newer
+ * than `newSince` (New); `count`, the header's round and threads still open.
  */
 export function useSentComments(input: {
+  threadId: string;
   messages: readonly InboxCommentThreadMessage[];
   files: AttachmentsModel | null;
   drafts: readonly InboxAnnotationRecord[];
   patchDrafts: (update: (records: InboxAnnotationRecord[]) => InboxAnnotationRecord[]) => void;
   onError: (message: string) => void;
   canResolve: boolean;
+  /** Comment sends reach this thread: the switch on, this Inbox's own thread (the machine door takes none). */
+  sendsOn?: boolean;
+  /** Where "new since you looked" starts (the thread's look boundary): an agent's reply after it is New. Null: none. */
+  newSince?: number | null;
+  /** Read the thread's files again. */
+  reload?: () => void;
 }) {
-  const { messages, files, drafts, patchDrafts, onError, canResolve } = input;
+  const { threadId, messages, files, drafts, patchDrafts, onError, canResolve, sendsOn = false, newSince = null, reload } = input;
   const listed = files?.sent_comments ?? NO_RECORDS;
   const agentReplies = files?.comment_replies ?? NO_REPLIES;
+  const sends = files?.comment_sends ?? NO_SENDS;
   const [written, setWritten] = useState(NO_WRITES);
   const records = useMemo(() => withSentWrites(listed, written), [listed, written]);
-  const rounds = useMemo(() => inboxCommentRounds(messages, records), [messages, records]);
+  /** The drafts comment sends carry (never a guided review's, which goes with the person's verdict). */
+  const sendable = useMemo(() => (sendsOn ? drafts.filter(isInboxCommentSendable) : NO_RECORDS), [sendsOn, drafts]);
+  // The sessions a send reached whose elements wait for an answer: their connection says whether they are in a turn (Working).
+  // Only what a send carried counts (a Finish's open threads, only named, never make it wait).
+  const awaiting = useMemo(() => {
+    if (!sendsOn) return NO_SESSIONS;
+    const answered = inboxCommentLastReplies([], agentReplies);
+    const byId = new Map(records.map((record) => [record.id, record]));
+    const out = new Set<string>();
+    for (const send of sends) {
+      const received = inboxCommentSendReceivedAt(send);
+      if (received === null) continue;
+      const waits = send.comments.some((id) => {
+        const record = byId.get(id);
+        return record?.sent_reply_id === send.id && !((answered.get(record.re ?? record.id) ?? '') > received);
+      });
+      if (waits) out.add(send.to.session);
+    }
+    return out.size === 0 ? NO_SESSIONS : [...out].sort();
+  }, [sendsOn, sends, records, agentReplies]);
+  const { connections } = useTagConnections(threadId, awaiting, awaiting.length > 0);
+  const rounds = useMemo(() => inboxCommentRounds(messages, records, sends, agentReplies), [messages, records, sends, agentReplies]);
   // A reply newer than a resolution opens the comment again (inboxCommentState), the person's draft too.
   const lastReplies = useMemo(() => inboxCommentLastReplies([...records, ...drafts], agentReplies), [records, drafts, agentReplies]);
   // The threads: the comments and the sub-threads (a reply is part of its comment's thread).
@@ -175,12 +210,32 @@ export function useSentComments(input: {
     for (const record of comments) if (record.message) out.set(record.message_id, [...(out.get(record.message_id) ?? []), record]);
     return out;
   }, [comments]);
-  const replyRounds = useMemo(() => sentReplyRounds(messages, rounds, records, agentReplies), [messages, rounds, records, agentReplies]);
-  const replies = useMemo(() => sentReplyRows([...records, ...drafts], agentReplies, replyRounds), [records, drafts, agentReplies, replyRounds]);
-  const subThreads = useMemo(() => subThreadsByParent([...records, ...drafts]), [records, drafts]);
+  /** The boxes on each message: its sent comments and, with comment sends, its draft comments after them (each with Send). */
+  const boxesByMessage = useMemo(() => {
+    const own = sendable.filter((record) => record.message && !isInboxCommentUnderAnother(record));
+    if (own.length === 0) return byMessage;
+    const out = new Map(byMessage);
+    for (const record of own) out.set(record.message_id, [...(out.get(record.message_id) ?? []), record]);
+    return out;
+  }, [byMessage, sendable]);
+  // The replies, sub-threads and passages: the thread view's (core), over what was sent and the drafts; with sends, each element's status.
+  const { replyRounds, replies, subThreads, passages, statuses, live } = useMemo(() => {
+    const all = [...records, ...drafts];
+    const busy = (session: string) => connections[session]?.busy === true;
+    return sentCommentsParts(inboxCommentThreadView({ messages, records: all, agentReplies, sends, busy }), all);
+  }, [messages, records, drafts, agentReplies, sends, connections]);
+  /** The agents' replies newer than the person's look (comment sends only: the seqs are this Inbox's). */
+  const fresh = useMemo<ReadonlySet<string>>(
+    () => (sendsOn && newSince !== null ? new Set(agentReplies.filter((reply) => typeof reply.seq === 'number' && reply.seq > newSince).map((reply) => reply.id)) : NO_IDS),
+    [sendsOn, newSince, agentReplies],
+  );
+  /** The header's count: the round under way and the threads still open (only once something was sent). */
+  const count = useMemo<InboxCommentRoundCount | null>(
+    () => (files?.sent_comments && (records.length > 0 || sends.length > 0) ? inboxCommentRoundCount({ messages, records, agentReplies, sends }) : null),
+    [files?.sent_comments, messages, records, agentReplies, sends],
+  );
   // A draft sub-thread is open too: what it is under stays unfolded so the person sees it.
   const openBelow = useMemo(() => inboxOpenSubThreadPaths([...records, ...drafts], agentReplies, (id) => !resolved.has(id)), [records, drafts, agentReplies, resolved]);
-  const passages = useMemo(() => openPassagesByParent(subThreads, resolved), [subThreads, resolved]);
   const commentMessages = useMemo<ReadonlyMap<string, InboxCommentMessage>>(() => inboxCommentMessages(records, agentReplies), [records, agentReplies]);
   const recordsRef = useRef(records);
   recordsRef.current = records;
@@ -197,12 +252,24 @@ export function useSentComments(input: {
   }, []);
   const patchRef = useRef(patchDrafts);
   patchRef.current = patchDrafts;
+  const reloadRef = useRef(reload);
+  reloadRef.current = reload;
+  const threadRef = useRef(threadId);
+  threadRef.current = threadId;
   const keepDraft = (annotation: InboxAnnotationRecord) => patchRef.current((list) => [...list.filter((record) => record.id !== annotation.id), annotation]);
-  /** The person's reply under a comment: a draft, with the thread's others (true once saved). */
+  /**
+   * The person's reply under a comment: a draft, with the thread's others (true once saved). Under a live thread
+   * it went on its own (the server's rule): the files read again show it sent; a refused send leaves it a draft, said so.
+   */
   const reply = useCallback(async (commentId: string, { text, mentions }: ReplyInput): Promise<boolean> => {
     try {
-      const { annotation } = await inboxApi.saveCommentReply(commentId, { id: newUuid(), text, ...(mentions && mentions.length > 0 ? { mentions } : {}) });
-      keepDraft(annotation);
+      const answer = await inboxApi.saveCommentReply(commentId, { id: newUuid(), text, ...(mentions && mentions.length > 0 ? { mentions } : {}) });
+      if (answer.sends && answer.sends.length > 0) {
+        reloadRef.current?.();
+        return true;
+      }
+      keepDraft(answer.annotation);
+      if (answer.send_refused) onErrorRef.current(`Your reply is saved but did not go: ${answer.send_refused.message}`);
       return true;
     } catch (cause) {
       onErrorRef.current(cause instanceof InboxApiError ? cause.message : 'The reply was not saved.');
@@ -226,7 +293,24 @@ export function useSentComments(input: {
       return false;
     }
   }, []);
+  /** One draft sent alone, at once, the round left open (a comment, a reply under one, a sub-thread); true once it went. */
+  const send = useCallback(async (id: string): Promise<boolean> => {
+    try {
+      // One key per draft: a retry of a press whose answer was lost answers what it wrote.
+      await inboxApi.sendComments(threadRef.current, { mode: 'now', comment_ids: [id], idempotency_key: `now:${id}` });
+      reloadRef.current?.();
+      return true;
+    } catch (cause) {
+      onErrorRef.current(cause instanceof InboxApiError ? cause.message : 'The comment was not sent. Press Send again.');
+      return false;
+    }
+  }, []);
   const fileRecords = useMemo(() => records.filter(isFileComment), [records]);
+  const tree = useMemo<SentCommentsTree>(
+    () => ({ rounds, resolved, replies, subThreads, openBelow, passages, statuses, live, fresh }),
+    [rounds, resolved, replies, subThreads, openBelow, passages, statuses, live, fresh],
+  );
+  const sendAction = sendsOn && canResolve ? send : undefined;
   const pane = useMemo<SentFileComments | undefined>(
     () =>
       files?.sent_comments
@@ -237,17 +321,18 @@ export function useSentComments(input: {
             replyRounds,
             resolved,
             openBelow,
+            tree,
             onUnanchoredReport: report,
             ...(canResolve ? { onResolve: resolve, onReply: reply, onSubThread: subThread } : {}),
+            ...(sendAction ? { onSend: sendAction } : {}),
           }
         : undefined,
-    [files?.sent_comments, fileRecords, rounds, agentReplies, replyRounds, resolved, openBelow, report, resolve, reply, subThread, canResolve],
+    [files?.sent_comments, fileRecords, rounds, agentReplies, replyRounds, resolved, openBelow, tree, report, resolve, reply, subThread, canResolve, sendAction],
   );
-  const tree = useMemo<SentCommentsTree>(() => ({ rounds, resolved, replies, subThreads, openBelow, passages }), [rounds, resolved, replies, subThreads, openBelow, passages]);
-  const foldedIds = useMemo(() => new Set(threads.filter((record) => isFoldedThread(record.id, resolved, openBelow)).map((record) => record.id)), [threads, resolved, openBelow]);
-  const view = useSentThreadsView(canResolve && byMessage.size > 0, foldedIds);
+  const foldedIds = useMemo(() => new Set(threads.filter((record) => isInboxCommentThreadFolded(record.id, resolved, openBelow)).map((record) => record.id)), [threads, resolved, openBelow]);
+  const view = useSentThreadsView(canResolve && boxesByMessage.size > 0, foldedIds);
   // The messages holding a thread still open: they open unfolded (null until the thread's files are read).
-  const openMessages = useMemo(() => (files ? messagesWithOpenThreads(comments, resolved, openBelow) : null), [files, comments, resolved, openBelow]);
+  const openMessages = useMemo(() => (files ? inboxMessagesWithOpenThreads(comments, resolved, openBelow) : null), [files, comments, resolved, openBelow]);
   /**
    * The threads on an agent's message, for its body (MessageBody
    * `belowBlocks`): each under the block its passage starts in, the ones
@@ -256,9 +341,9 @@ export function useSentComments(input: {
    * Undefined: none on it.
    */
   const slotsFor = (messageId: string, { live, onOpen }: { live: boolean; onOpen: (record: InboxAnnotationRecord) => void }) => {
-    const list = byMessage.get(messageId);
+    const list = boxesByMessage.get(messageId);
     if (!list) return undefined;
-    const actions = live && canResolve ? { onResolve: resolve, onReply: reply, onSubThread: subThread } : {};
+    const actions = live && canResolve ? { onResolve: resolve, onReply: reply, onSubThread: subThread, ...(sendAction ? { onSend: sendAction } : {}) } : {};
     return (blocks: readonly Block[]) => {
       const { byBlock, rest } = placeThreads(list, new Set(blocks.map((block) => block.id)));
       const threadsOn = (key: string, records: readonly InboxAnnotationRecord[], lost?: boolean) => (
@@ -288,6 +373,11 @@ export function useSentComments(input: {
     resolve: canResolve ? resolve : undefined,
     reply: canResolve ? reply : undefined,
     subThread: canResolve ? subThread : undefined,
+    sendable,
+    send: sendAction,
+    count,
+    sends,
+    agentReplies,
     pane,
   };
 }
@@ -344,9 +434,11 @@ export function useSentFileComments(input: {
   /** Every card here under another message (the person's replies and sub-threads, sent or drafts, and the agents' replies): never painted. */
   const replyIds = useMemo(() => new Set([...fileRecords.filter(isInboxCommentUnderAnother).map((r) => r.id), ...agentHere.map((reply) => reply.id)]), [fileRecords, agentHere]);
   /** The cards a folded comment or sub-thread hides. */
-  const folded = useMemo(() => hiddenUnderFolded(replyIds, sitsUnder(fileRecords, agentHere), foldedIds), [replyIds, fileRecords, agentHere, foldedIds]);
+  const folded = useMemo(() => inboxCommentsHiddenUnderFolded(replyIds, inboxCommentSitsUnder(fileRecords, agentHere), foldedIds), [replyIds, fileRecords, agentHere, foldedIds]);
+  /** The thread's replies, sub-threads and passages: this file's are looked up in it by id. */
+  const sentTree = sent?.tree ?? NO_TREE;
   /** The passages marked in each card's words: its sub-threads still open. */
-  const passagesOn = useMemo(() => openPassagesByParent(subThreadsByParent(fileRecords), resolvedIds), [fileRecords, resolvedIds]);
+  const passagesOn = sentTree.passages;
   const text = view?.text;
   const codeLines = useMemo(() => (isCode && text !== undefined && sentIds.size > 0 ? text.split('\n') : null), [isCode, text, sentIds]);
   const panelAnnotations = useMemo(
@@ -388,7 +480,8 @@ export function useSentFileComments(input: {
     return out;
   }, [sentRecords, sent?.rounds, sent?.replyRounds]);
 
-  /** A sent card: its round (and Resolved) after the card's own header. */
+  const statuses = sent?.tree.statuses;
+  /** A sent card: its round, what became of it (comment sends) and Resolved, after the card's own header. */
   const withSentRound = (header: ((annotation: Annotation) => ReactNode) | undefined) =>
     sentIds.size === 0
       ? header
@@ -402,6 +495,7 @@ export function useSentFileComments(input: {
               <span className="ib-sentc-chip" data-sent-round={round}>
                 Round {round}
               </span>
+              <SentStatusChip status={statuses?.get(annotation.id)} />
               {resolvedIds.has(annotation.id) && (
                 <span className="ib-sentc-chip" data-sent-resolved="">
                   Resolved
@@ -430,14 +524,20 @@ export function useSentFileComments(input: {
     };
   /** A folded card draws no body of its own either (a drawing's picture). */
   const withSentBody = (body: (annotation: Annotation) => ReactNode) => (annotation: Annotation) => (foldedIds.has(annotation.id) ? null : body(annotation));
-  /** A sent card's foot (a comment's or a sub-thread's): Resolve, or Reopen once resolved. */
+  /**
+   * A sent card's foot (a comment's or a sub-thread's): Resolve, or Reopen once resolved. With comment sends, a
+   * draft card's foot (a comment, a reply under one, a sub-thread): Send, which sends it alone at once.
+   */
   const onResolve = sent?.onResolve;
+  const onSend = readOnly ? undefined : sent?.onSend;
+  const sendableHere = useMemo(() => new Set(onSend ? drafts.filter((r) => r.path === path && r.version === version && isInboxCommentSendable(r)).map((r) => r.id) : []), [onSend, drafts, path, version]);
   const sentFooter =
-    sentIds.size === 0 || readOnly || !onResolve
+    (sentIds.size === 0 && sendableHere.size === 0) || readOnly || (!onResolve && !onSend)
       ? undefined
       : (annotation: Annotation) => {
+          if (onSend && sendableHere.has(annotation.id)) return <SentSendButton id={annotation.id} onSend={onSend} />;
           const record = sentById.get(annotation.id);
-          if (!record || isInboxCommentReply(record)) return null;
+          if (!record || isInboxCommentReply(record) || !onResolve) return null;
           const resolved = resolvedIds.has(record.id);
           return (
             <button type="button" className="ib-sentc-act" data-sent-resolve={record.id} onClick={() => onResolve(record, !resolved)}>
@@ -497,17 +597,7 @@ export function useSentFileComments(input: {
     },
     [reportUnanchored],
   );
-  const fileTree = useMemo<SentCommentsTree>(
-    () => ({
-      rounds: sent?.rounds ?? new Map(),
-      resolved: resolvedIds,
-      replies: sentReplyRows(fileRecords, agentHere, sent?.replyRounds ?? new Map()),
-      subThreads: subThreadsByParent(fileRecords),
-      openBelow,
-      passages: passagesOn,
-    }),
-    [sent?.rounds, sent?.replyRounds, resolvedIds, fileRecords, agentHere, openBelow, passagesOn],
-  );
+  const fileTree = sentTree;
   /**
    * The threads on the document drawn (its blocks), for its viewer (`below`,
    * ui Viewer `belowBlock`) and after it (`after`: the ones whose passage was
@@ -517,7 +607,7 @@ export function useSentFileComments(input: {
     if (roots.length === 0) return undefined;
     const movedHere = moved.key === (view?.key ?? '') ? moved.blocks : undefined;
     const { byBlock, rest } = placeThreads(roots, new Set(blocks.map((block) => block.id)), { moved: movedHere });
-    const actions = live ? { onResolve, onReply: sent?.onReply, onSubThread } : {};
+    const actions = live ? { onResolve, onReply: sent?.onReply, onSubThread, ...(onSend ? { onSend } : {}) } : {};
     const threadsOn = (key: string, records: readonly InboxAnnotationRecord[], lost?: boolean) => (
       <SentThreads key={key} group={`file:${key}`} records={records} tree={fileTree} view={threadsView} lost={lost} {...actions} />
     );
@@ -547,394 +637,4 @@ export function useSentFileComments(input: {
     reportRestore,
     slotsFor,
   };
-}
-
-/** A message's words, with its open sub-threads' passages marked; `bodyOf`: words a passage can be selected in. */
-function Said({ text, bodyOf, passages, className = 'ib-sentc-said' }: { text: string; bodyOf?: string; passages?: readonly TextPassage[]; className?: string }) {
-  const ranges = useMemo(() => (passages && passages.length > 0 ? passageRanges(text, passages) : []), [text, passages]);
-  return (
-    <p className={className} data-sent-body="" {...(bodyOf !== undefined ? { [PASSAGE_BODY_ATTRIBUTE]: bodyOf } : {})}>
-      {ranges.length === 0
-        ? text
-        : splitByRanges(text, 0, ranges).map((piece, index) =>
-            piece.marked ? (
-              <mark key={index} className="ib-sentc-mark" data-passage-mark="">
-                {piece.text}
-              </mark>
-            ) : (
-              <span key={index}>{piece.text}</span>
-            ),
-          )}
-    </p>
-  );
-}
-
-/** The box open on a surface: a reply under a comment or sub-thread, or a comment on a passage of a message (`passage`). */
-type ListBox = { at: string; text: string; opened: number; passage?: TextPassage };
-
-/**
- * What the person has open among one surface's threads (a thread's messages,
- * or a file's document): the one box (another opens in its place and keeps
- * the words), the passage offered for a comment (`offer`, with the group of
- * threads its words are in), and the folded threads opened to be read
- * (`shown`; a thread that folds again later starts folded). `surface` names
- * the groups this view draws (`data-sent-threads`), so a selection in another
- * surface's threads, or anywhere else, offers nothing here.
- */
-export interface SentThreadsView {
-  surface: string;
-  box: ListBox | null;
-  setBox: Dispatch<SetStateAction<ListBox | null>>;
-  offer: { passage: SelectedPassage; group: string } | null;
-  closeOffer: () => void;
-  shown: ReadonlySet<string>;
-  toggleShown: (id: string) => void;
-}
-
-const THREADS_ATTRIBUTE = 'data-sent-threads';
-
-/**
- * One surface's view of its threads (see `SentThreadsView`). While `offering`
- * (a thread there takes comments on its passages), a selection let go that
- * holds one sent message's words offers to comment on that passage; it
- * listens on the document, since a drag past the last line ends outside the
- * threads. `folded`: the threads folded now, so one opened to be read and
- * then opened again (a Reopen, a reply) leaves `shown`.
- */
-export function useSentThreadsView(offering: boolean, folded: ReadonlySet<string>): SentThreadsView {
-  const surface = useId();
-  const [box, setBox] = useState<ListBox | null>(null);
-  const [offer, setOffer] = useState<SentThreadsView['offer']>(null);
-  const [shownIds, setShown] = useState<ReadonlySet<string>>(NO_IDS);
-  const closeOffer = useCallback(() => setOffer(null), []);
-  useEffect(() => {
-    if (!offering) return;
-    const offerPassage = () => {
-      const selection = document.getSelection();
-      const range = selection && selection.rangeCount > 0 && !selection.isCollapsed ? selection.getRangeAt(0) : null;
-      const groupOf = (node: Node | null) => (node instanceof Element ? node : (node?.parentElement ?? null))?.closest<HTMLElement>(`[${THREADS_ATTRIBUTE}]`) ?? null;
-      const group = range ? (groupOf(range.startContainer) ?? groupOf(range.endContainer)) : null;
-      const key = group?.getAttribute(THREADS_ATTRIBUTE) ?? '';
-      const passage = group && key.startsWith(`${surface}:`) ? selectedPassage(group, selection) : null;
-      setOffer(passage ? { passage, group: key } : null);
-    };
-    document.addEventListener('mouseup', offerPassage);
-    return () => document.removeEventListener('mouseup', offerPassage);
-  }, [offering, surface]);
-  // Opened to be read while folded: a thread that unfolds on its own (opened again) leaves it.
-  const shown = useMemo(() => {
-    const kept = [...shownIds].filter((id) => folded.has(id));
-    return kept.length === shownIds.size ? shownIds : new Set(kept);
-  }, [shownIds, folded]);
-  const toggleShown = useCallback((id: string) => {
-    setShown((current) => {
-      const next = new Set(current);
-      if (!next.delete(id)) next.add(id);
-      return next;
-    });
-  }, []);
-  return useMemo(() => ({ surface, box, setBox, offer, closeOffer, shown, toggleShown }), [surface, box, offer, closeOffer, shown, toggleShown]);
-}
-
-/** What a group of threads does: bring a thread's passage into view (absent: its quote is words), and the person's Resolve, Reply and comment on a passage (each absent: none). */
-interface SentThreadsActions {
-  onOpen?: (record: InboxAnnotationRecord) => void;
-  onResolve?: (record: InboxAnnotationRecord, resolved: boolean) => void;
-  onReply?: (commentId: string, reply: ReplyInput) => Promise<boolean>;
-  onSubThread?: SubThreadSave;
-}
-
-const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
-
-/**
- * The threads on one block of a document (or, `lost`, the ones whose
- * passage was not found, at its end), each a box of its own, as crit's:
- * at its head the passage and the round, Reply and Resolve; then its
- * messages, the comment and each reply under it (who, round, words); a
- * sub-thread is a box in the box, under the message whose passage it is on,
- * at the same indent at each level, at any depth. A resolved thread folds to
- * one line ("Resolved", a press opens it to be read) only when nothing under
- * it, at any depth, is open; until then it stays unfolded, marked Resolved,
- * its open sub-threads in view. Reply opens a box at the thread's foot;
- * words selected in a sent message offer ui's selection toolbar, whose
- * Comment opens a box under that message with the passage at its head. A
- * draft goes with the next Send.
- */
-export function SentThreads({
-  group,
-  records,
-  tree,
-  view,
-  lost = false,
-  ...actions
-}: {
-  /** This group's key, inside its view's surface. */
-  group: string;
-  records: readonly InboxAnnotationRecord[];
-  tree: SentCommentsTree;
-  view: SentThreadsView;
-  lost?: boolean;
-} & SentThreadsActions) {
-  if (records.length === 0) return null;
-  const key = `${view.surface}:${group}`;
-  const { onSubThread } = actions;
-  return (
-    <div className="ib-sentb" data-sent-threads={key} data-sent-comments="" data-sent-lost={lost ? '' : undefined} role="group" aria-label={lost ? 'Comments whose passage was not found' : 'Comments on this passage'}>
-      {lost && <p className="ib-sentb-lost">Passage not found</p>}
-      {records.map((record) => (
-        <SentThreadBox key={record.id} record={record} root={record} tree={tree} view={view} actions={actions} />
-      ))}
-      {view.offer?.group === key && onSubThread && (
-        <PassageToolbar
-          passage={view.offer.passage}
-          onComment={(initialChar) => {
-            const passage = view.offer!.passage;
-            view.closeOffer();
-            document.getSelection()?.removeAllRanges();
-            view.setBox((open) => ({ at: passage.parentId, text: `${open?.text ?? ''}${initialChar ?? ''}`, opened: (open?.opened ?? 0) + 1, passage: { quote: passage.quote, offset: passage.offset } }));
-          }}
-          onClose={view.closeOffer}
-        />
-      )}
-    </div>
-  );
-}
-
-/** One thread (a comment, or a sub-thread; `root`: its thread's first comment), as a box. */
-function SentThreadBox({ record, root, tree, view, actions }: { record: InboxAnnotationRecord; root: InboxAnnotationRecord; tree: SentCommentsTree; view: SentThreadsView; actions: SentThreadsActions }) {
-  const { rounds, resolved, replies, subThreads, openBelow, passages } = tree;
-  const { onOpen, onResolve, onReply, onSubThread } = actions;
-  const { box, setBox } = view;
-  const id = record.id;
-  const annotation = annotationOf(record);
-  const quote = annotationQuote(annotation);
-  const draft = record.sent_reply_id === null;
-  const round = record.sent_reply_id ? rounds.get(record.sent_reply_id) : undefined;
-  const isSub = isInboxSubThread(record);
-  const isResolved = resolved.has(id);
-  const foldable = isFoldedThread(id, resolved, openBelow);
-  const folded = foldable && !view.shown.has(id);
-  const under = replies.get(id) ?? [];
-  const roundChip = draft ? <span className="ib-sentc-chip">Not sent</span> : round !== undefined ? <span className="ib-sentc-chip" data-sent-round={round}>Round {round}</span> : null;
-  const marks = {
-    'data-sent-comment': id,
-    'data-sent-subthread': isSub ? '' : undefined,
-    'data-sent-resolved': isResolved ? '' : undefined,
-    'data-sent-folded': folded ? '' : undefined,
-  };
-  if (folded) {
-    const subs = countSubThreads(id, replies, subThreads);
-    return (
-      <div className="ib-sentb-card" {...marks}>
-        <button type="button" className="ib-sentb-fold" aria-expanded={false} data-sent-unfold={id} onClick={() => view.toggleShown(id)}>
-          <Icon name="chevR" size={12} />
-          <span className="ib-sentb-state">
-            <Icon name="check" size={12} />
-            Resolved
-          </span>
-          <span className="ib-sentb-fquote">“{shortLabel(quote)}”</span>
-          {roundChip}
-          <span className="ib-sentb-count" data-sent-messages={1 + under.length} data-sent-subthreads={subs}>
-            {plural(1 + under.length, 'message')}
-            {subs > 0 ? `, ${plural(subs, 'sub-thread')}` : ''}
-          </span>
-        </button>
-      </div>
-    );
-  }
-  const boxFor = (at: string, passage: boolean) =>
-    box && box.at === at && !!box.passage === passage && (passage ? onSubThread : onReply) ? (
-      <SentReplyBox
-        key={box.opened}
-        value={box.text}
-        quote={box.passage?.quote}
-        onChange={(text) => setBox((open) => (open ? { ...open, text } : open))}
-        onSave={async (text) => {
-          const current = box;
-          const done = current.passage ? await onSubThread!(current.at, current.passage, { text }) : await onReply!(current.at, { text });
-          if (done) setBox((open) => (open?.opened === current.opened ? null : open));
-        }}
-        onCancel={() => setBox(null)}
-      />
-    ) : null;
-  /** The sub-threads on a message's words, each a box in this box, and the box commenting on a passage of them. */
-  const subThreadsOf = (messageId: string) => {
-    const list = subThreads.get(messageId) ?? NO_RECORDS;
-    const composer = boxFor(messageId, true);
-    if (list.length === 0 && !composer) return null;
-    return (
-      <div className="ib-sentb-subs" data-sent-subthreads={messageId}>
-        {list.map((sub) => (
-          <SentThreadBox key={sub.id} record={sub} root={root} tree={tree} view={view} actions={actions} />
-        ))}
-        {composer}
-      </div>
-    );
-  };
-  const replyBox = boxFor(id, false);
-  // A sub-thread's passage is in the message just above it; a thread's first comment's is in the document, a press brings it into view.
-  const quoteText = <span className="ib-sentb-qt">“{quote}”</span>;
-  return (
-    <div className="ib-sentb-card" {...marks} data-sent-draft={draft ? '' : undefined}>
-      <div className="ib-sentb-head">
-        {foldable && (
-          <button type="button" className="ib-sentb-chev" aria-expanded={true} aria-label="Fold the resolved comment" data-sent-unfold={id} onClick={() => view.toggleShown(id)}>
-            <Icon name="chevD" size={12} />
-          </button>
-        )}
-        {!isSub && onOpen ? (
-          <button type="button" className="ib-sentb-quote" onClick={() => onOpen(root)} title="Show the passage">
-            {quoteText}
-          </button>
-        ) : (
-          <span className="ib-sentb-quote">{quoteText}</span>
-        )}
-        <span className="ib-sentb-chips">
-          {roundChip}
-          {isResolved && (
-            <span className="ib-sentc-chip ib-sentb-resolved" data-sent-resolved-chip="">
-              Resolved
-            </span>
-          )}
-          {typeof record.unanchored_at === 'string' && (
-            <span className="ib-sentc-chip" data-sent-unanchored="">
-              Unanchored
-            </span>
-          )}
-        </span>
-        {!draft && (onReply || onResolve) && (
-          <span className="ib-sentb-acts">
-            {onReply && (
-              <button
-                type="button"
-                className="ib-sentc-act"
-                data-sent-reply-to={id}
-                aria-expanded={box?.at === id && !box.passage}
-                onClick={() => setBox((open) => (open?.at === id && !open.passage ? null : { at: id, text: open?.text ?? '', opened: (open?.opened ?? 0) + 1 }))}
-              >
-                Reply
-              </button>
-            )}
-            {onResolve && (
-              <button type="button" className="ib-sentc-act" data-sent-resolve={id} onClick={() => onResolve(record, !isResolved)}>
-                {isResolved ? 'Reopen' : 'Resolve'}
-              </button>
-            )}
-          </span>
-        )}
-      </div>
-      <div className="ib-sentb-msg" data-sent-message={id}>
-        <div className="ib-sentb-meta">
-          <span className="ib-sentc-who">You</span>
-          {roundChip}
-        </div>
-        <Said text={annotation.text ?? ''} bodyOf={draft || !onSubThread ? undefined : id} passages={passages.get(id)} />
-        {subThreadsOf(id)}
-      </div>
-      {(under.length > 0 || replyBox) && (
-        <div className="ib-sentb-replies" data-sent-replies={id}>
-          {under.map((reply) => (
-            <div key={reply.id} className="ib-sentb-msg" data-sent-reply={reply.id} data-sent-reply-draft={reply.draft ? '' : undefined}>
-              <div className="ib-sentb-meta">
-                <span className="ib-sentc-who">{reply.who}</span>
-                {reply.draft ? <span className="ib-sentc-chip">Not sent</span> : reply.round !== undefined && <span className="ib-sentc-chip">Round {reply.round}</span>}
-              </div>
-              <Said text={reply.text} bodyOf={reply.draft || !onSubThread ? undefined : reply.id} passages={passages.get(reply.id)} />
-              {subThreadsOf(reply.id)}
-            </div>
-          ))}
-          {replyBox && <div className="ib-sentb-boxrow">{replyBox}</div>}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** The sub-threads under a thread, on its messages and theirs, at any depth (what its folded line counts). */
-function countSubThreads(id: string, replies: ReadonlyMap<string, readonly SentReplyRow[]>, subThreads: ReadonlyMap<string, readonly InboxAnnotationRecord[]>): number {
-  const seen = new Set<string>();
-  const walk = (threadId: string) => {
-    for (const messageId of [threadId, ...(replies.get(threadId) ?? []).map((reply) => reply.id)]) {
-      for (const sub of subThreads.get(messageId) ?? NO_RECORDS) {
-        if (seen.has(sub.id)) continue;
-        seen.add(sub.id);
-        walk(sub.id);
-      }
-    }
-  };
-  walk(id);
-  return seen.size;
-}
-
-/**
- * The box a reply, or a comment on a passage (`quote`, drawn at its head), is
- * written in under a message's comment: Reply or Comment (or the comment
- * composers' key, `isCommentSubmitKey`: ⌘/Ctrl+Enter, and Enter with "Enter
- * saves a comment") saves it as a draft; Escape or Cancel closes it. That key
- * here never reaches the thread's Send. The words are the list's, so a box
- * opened elsewhere keeps them.
- */
-function SentReplyBox({
-  value,
-  quote,
-  onChange,
-  onSave,
-  onCancel,
-}: {
-  value: string;
-  quote?: string;
-  onChange: (text: string) => void;
-  onSave: (text: string) => Promise<void>;
-  onCancel: () => void;
-}) {
-  const enterSavesComment = useConfigValue('enterSavesComment');
-  const [busy, setBusy] = useState(false);
-  const area = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => {
-    const field = area.current;
-    if (!field) return;
-    field.focus();
-    field.setSelectionRange(field.value.length, field.value.length);
-  }, []);
-  const save = async () => {
-    const words = value.trim();
-    if (!words || busy) return;
-    setBusy(true);
-    await onSave(words);
-    setBusy(false);
-  };
-  const label = quote === undefined ? 'Reply' : 'Comment on passage';
-  return (
-    <div className="ib-sentc-box" data-sent-passage-box={quote === undefined ? undefined : ''}>
-      {quote !== undefined && <p className="ib-sentc-boxquote">“{shortLabel(quote)}”</p>}
-      <textarea
-        ref={area}
-        className="ib-sentc-area"
-        aria-label={label}
-        placeholder={quote === undefined ? 'Reply...' : 'Comment on this passage...'}
-        rows={2}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === 'Escape') {
-            event.preventDefault();
-            event.stopPropagation();
-            onCancel();
-          } else if (isCommentSubmitKey(event, enterSavesComment)) {
-            event.preventDefault();
-            event.stopPropagation();
-            void save();
-          }
-        }}
-      />
-      <div className="ib-sentc-acts">
-        <button type="button" className="ib-btn ib-sm" onClick={onCancel}>
-          Cancel
-        </button>
-        <button type="button" className="ib-btn ib-sm ib-pri" data-sent-reply-save="" disabled={busy || value.trim() === ''} onClick={() => void save()}>
-          {quote === undefined ? 'Reply' : 'Comment'}
-        </button>
-      </div>
-    </div>
-  );
 }

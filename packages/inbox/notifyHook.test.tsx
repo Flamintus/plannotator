@@ -16,7 +16,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import type { InboxAuthor, InboxListRow, InboxMessage, InboxQuestion, InboxSectionId } from '@plannotator/core/inbox-types';
 import type { InboxEvent, ListModel } from './api';
 import type { InboxNotifications } from './notify';
-import { FROZEN_NOTICE_MS, NOTICE_CLAIMS_KEY, TEST_NOTIFICATION_TAG } from './notify';
+import { FROZEN_NOTICE_MS, NOTICE_CLAIMS_KEY, TEST_NOTIFICATION_TAG, threadNotificationText } from './notify';
 
 const hasDom = typeof document !== 'undefined';
 const { useInboxNotifications } = (hasDom ? await import('./notify') : {}) as typeof import('./notify');
@@ -124,6 +124,12 @@ function question(messageId: string, key: string): InboxEvent {
     id: `${messageId}/${key}`,
     question: { message_id: messageId, key, state: 'open', revision: 0 } as unknown as InboxQuestion,
   };
+}
+
+/** An agent's reply under a comment (`re`): sent alone (`call`) or with its message (no `call`). */
+function reply(threadId: string, call?: string, re = 'c-1'): InboxEvent {
+  const id = `rep_${++seq}`;
+  return { seq, kind: 'comment_reply', id, thread_id: threadId, ...(call ? { call, from: claude, re } : {}) } as InboxEvent;
 }
 
 function list(threads: { id: string; section: InboxSectionId; project?: string }[]): ListModel {
@@ -241,6 +247,37 @@ describe.if(hasDom)('useInboxNotifications', () => {
     away();
     await batch([message('m2', 'old')], list([{ id: 'old', section: 'new' }]));
     expect(raised).toHaveLength(0);
+  });
+
+  test("an agent's replies sent alone notify once per call, naming how many; with a message, or in the thread on screen, they do not", async () => {
+    // Two replies of one call, under two comments: one notice, in front too, and the sound hears nothing.
+    await batch([reply('old', 'call_a', 'c-1'), reply('old', 'call_a', 'c-2')], list([{ id: 'old', section: 'new' }]));
+    expect(raised).toHaveLength(1);
+    expect(raised[0]!.title).toStartWith('billing-svc: Claude Code ');
+    expect(raised[0]!.title).toContain('2');
+    expect(raised[0]!.body).toBe('Subject old');
+    expect(questionsHeard).toBe(0);
+    // A late line of the same call raises nothing more; the next call is its own notice, its count its own (two replies, one comment).
+    await batch([reply('old', 'call_a')], list([{ id: 'old', section: 'new' }]));
+    away();
+    await batch([reply('old', 'call_b', 'c-3'), reply('old', 'call_b', 'c-3')], list([{ id: 'old', section: 'new' }]));
+    expect(raised).toHaveLength(2);
+    expect(raised[1]!.title).not.toContain('2');
+    // A thread the list does not show (archived): no notice.
+    await batch([reply('gone', 'call_g')], list([{ id: 'old', section: 'new' }]));
+    expect(raised).toHaveLength(2);
+    back();
+    // Replies with a message: the message is the news, and plain news never notifies.
+    await batch([message('m1', 'old'), reply('old'), reply('old')], list([{ id: 'old', section: 'new' }]));
+    // The thread open and visible: nothing.
+    onScreen = 'old';
+    await batch([reply('old', 'call_c')], list([{ id: 'old', section: 'new' }]));
+    expect(raised).toHaveLength(2);
+    // A question in the same batch takes the notice.
+    onScreen = null;
+    await batch([reply('old', 'call_d'), message('m2', 'old'), question('m2', 'q-1')], list([{ id: 'old', section: 'waiting' }]));
+    expect(raised).toHaveLength(3);
+    expect(raised[2]!.title).toBe(threadNotificationText({ project: 'billing-svc', agent: 'Claude Code', subject: 'Subject old', section: 'waiting' }).title);
   });
 
   test('a later line of a root the page already listed (a look) is never a new thread', async () => {

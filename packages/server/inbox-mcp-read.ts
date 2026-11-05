@@ -469,7 +469,7 @@ export function windowedThread(
   threadId: string,
   input: ThreadReadInput,
   url: string,
-): { result: ThreadWindowResult; order: string[]; shown: Set<string>; readThrough: number } {
+): { result: ThreadWindowResult; order: string[]; shown: Set<string>; readThrough: number; range: { after: number | null; before: number | null } } {
   // With the reader, so a reply that tags it reads `tagged_you` (approval "inbox-tag-agents").
   const thread = store.agentThread(threadId, input.caller ?? null);
   if (!thread) throw new InboxError("thread_not_found", `No thread ${threadId}.`);
@@ -619,7 +619,8 @@ export function windowedThread(
   // What the read may mark read: everything up to `before` (a newer reply it
   // left out must still wake its session and stay unread), and the acks of
   // the messages it showed (an ack on a message `after` left out is not seen).
-  return { result, order, shown: new Set(order), readThrough: before === null ? Number.POSITIVE_INFINITY : before - 1 };
+  // `range`: the seqs the read covers, for what is not a message (comment sends, inbox-mcp-comments.ts).
+  return { result, order, shown: new Set(order), readThrough: before === null ? Number.POSITIVE_INFINITY : before - 1, range: { after, before } };
 }
 
 /**

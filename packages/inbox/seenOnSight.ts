@@ -87,13 +87,14 @@ export function samplePoints(lines: Span, article: { left: number; right: number
 
 /**
  * The seq of the newest agent message in a thread the window read: what the
- * look recorded for that read covers (`through_seq`). Null when the thread
- * carries no seqs (an older Inbox: the look then goes without the cap) or no
- * agent message.
+ * look recorded for that read covers (`through_seq`). An agent's replies sent
+ * alone under comments are its news too (`agent_replies_seq`). Null when the
+ * thread carries no seqs (an older Inbox: the look then goes without the cap)
+ * or no agent news.
  */
-export function latestAgentSeq(thread: { messages: readonly InboxMessageWire[] }): number | null {
+export function latestAgentSeq(thread: { messages: readonly InboxMessageWire[]; agent_replies_seq?: number }): number | null {
   if (thread.messages.some((m) => typeof m.seq !== 'number')) return null;
-  let latest: number | null = null;
+  let latest: number | null = typeof thread.agent_replies_seq === 'number' ? thread.agent_replies_seq : null;
   for (const message of thread.messages) if (message.author.kind === 'agent') latest = Math.max(latest ?? 0, message.seq!);
   return latest;
 }
@@ -118,7 +119,7 @@ export function unseenArrivals(messages: readonly InboxMessageWire[], through: n
  * the first one still waits (the look never passes a message the person was
  * not shown: the store keeps one high-water mark per thread).
  */
-export function lookThrough(arrivals: readonly InboxMessageWire[], seen: ReadonlySet<string>): number | null {
+export function lookThrough(arrivals: readonly Pick<InboxMessageWire, 'id' | 'seq'>[], seen: ReadonlySet<string>): number | null {
   let through: number | null = null;
   for (const message of arrivals) {
     if (!seen.has(message.id)) break;
@@ -194,6 +195,11 @@ export interface SeenOnSightOptions {
   pill: boolean;
   /** One message's first lines stayed on screen for the dwell. */
   onSeen: (messageId: string) => void;
+  /**
+   * The attribute naming each watched element by its id: a message's article (the default), or an agent's reply
+   * sent alone under a comment, in its box (`data-sent-reply`), which arrives as news of its own.
+   */
+  attribute?: string;
 }
 
 /**
@@ -202,7 +208,7 @@ export interface SeenOnSightOptions {
  * the thread uncovered. Any break (scrolled away, the tab hidden, the window
  * behind, a cover) restarts that message's dwell.
  */
-export function useSeenOnSight({ bodyRef, candidates, covered, pill, onSeen }: SeenOnSightOptions): void {
+export function useSeenOnSight({ bodyRef, candidates, covered, pill, onSeen, attribute = 'data-message-article' }: SeenOnSightOptions): void {
   const onSeenRef = useRef(onSeen);
   onSeenRef.current = onSeen;
   const state = useRef({ covered, pill });
@@ -233,7 +239,7 @@ export function useSeenOnSight({ bodyRef, candidates, covered, pill, onSeen }: S
     }
     const body = bodyRef.current;
     if (!body || candidates.length === 0) return;
-    const articleOf = (id: string) => body.querySelector<HTMLElement>(`[data-message-article="${CSS.escape(id)}"]`);
+    const articleOf = (id: string) => body.querySelector<HTMLElement>(`[${attribute}="${CSS.escape(id)}"]`);
     const showing = (id: string): boolean => {
       if (state.current.covered || dialogOpen() || !pageInFront()) return false;
       const article = articleOf(id);
@@ -295,5 +301,5 @@ export function useSeenOnSight({ bodyRef, candidates, covered, pill, onSeen }: S
     };
     // The candidates by their ids (a new list each render).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bodyRef, key]);
+  }, [bodyRef, key, attribute]);
 }

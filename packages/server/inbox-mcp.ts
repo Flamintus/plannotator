@@ -32,11 +32,22 @@ import { refuseArchiveWhileCommentThreadsOpen } from "@plannotator/shared/inbox/
 import type { InboxSendResult, InboxStore } from "@plannotator/shared/inbox/store";
 import type { InboxAttachment, InboxListRow } from "@plannotator/core/inbox-types";
 import { registerInboxGuideTools } from "./inbox-guides";
+import { commentSendReplyTarget } from "./inbox-comment-send-delivery";
 import { lastContactOf, noteSessionRead, staleThreadOf, staleThreadText } from "./inbox-session-reads";
 import { INBOX_BODY_CUT_BYTES, INBOX_EARLIER_PERSON_BYTES, INBOX_THREAD_WINDOW, clip, shortTime, sizeText, windowedThread, windowedThreadText } from "./inbox-mcp-read";
 import { registerInboxSearchTool } from "./inbox-mcp-search";
 import { registerInboxCardTool } from "./inbox-mcp-cards";
-import { COMMENT_REPLIES_FIELD, planCommentReplies, threadComments, threadCommentsText, writeCommentReplies } from "./inbox-mcp-comments";
+import {
+  checkCommentRepliesAlone,
+  COMMENT_REPLIES_FIELD,
+  commentRepliesAloneLine,
+  commentSendsShown,
+  planCommentReplies,
+  threadComments,
+  threadCommentsText,
+  writeCommentReplies,
+  writeCommentRepliesAlone,
+} from "./inbox-mcp-comments";
 export { COMMENT_REPLIES_DESCRIPTION } from "./inbox-mcp-comments";
 export { INBOX_BOARD_OFF_TEXT } from "./inbox-mcp-cards";
 import { checkStepsInput, INBOX_STEPS_OFF_TEXT, registerInboxStepsTool, rowSteps, STEPS_FIELD, stepsAgent, stepsProgressText, threadStepsText } from "./inbox-mcp-steps";
@@ -1012,7 +1023,8 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
       description: SEND_MESSAGE_DESCRIPTION,
       inputSchema: z
         .object({
-          body: z.string().min(1).describe(SEND_BODY_DESCRIPTION),
+          // Replies under comments may go alone, with no body (experimental "persistent-comments").
+          body: context.persistentCommentsOn?.() ? z.string().optional().describe(SEND_BODY_DESCRIPTION) : z.string().min(1).describe(SEND_BODY_DESCRIPTION),
           ...SEND_ROUTING_FIELDS,
           attachments: z
             .array(z.string())
@@ -1030,6 +1042,8 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
     },
     async (input, ctx) =>
       guarded(async () => {
+        // reply_to takes a comment send's id (a wake names the person's comments by it): it answers in that thread.
+        input = { ...input, reply_to: commentSendReplyTarget(store, input.reply_to, context.persistentCommentsOn?.() === true) };
         // A list that does not read is refused before anything is sent, so a message never lands without its steps.
         const withSteps = (input as { steps?: unknown }).steps;
         if (withSteps !== undefined) {
@@ -1037,23 +1051,33 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
           checkStepsInput(withSteps, stepsAgent(input));
         }
         // Replies under comments are checked before anything is sent too, so a message never lands without them.
-        const replies = planCommentReplies(store, (input as { comment_replies?: { comment_id: string; text: string }[] }).comment_replies, input.reply_to);
+        // With no body they go alone: no message in the thread (the person is told of them all the same).
+        const alone = context.persistentCommentsOn?.() === true && !input.body?.trim();
+        const replies = planCommentReplies(store, (input as { comment_replies?: { comment_id: string; text: string }[] }).comment_replies, input.reply_to, { alone, key: input.idempotency_key });
+        // A replay (the same idempotency key) answers the first send and writes nothing: a list the session sent
+        // since (the steps action) is never put back to this older one.
+        const saveSteps = (threadId: string, replayed: boolean) => {
+          if (withSteps === undefined || replayed) return "";
+          const { record } = store.setThreadSteps({ thread_id: threadId, agent: stepsAgent(input), steps: withSteps });
+          return record && record.steps.length > 0 ? ` Steps saved: ${stepsProgressText(record)}.` : " Steps cleared.";
+        };
+        if (alone) {
+          checkCommentRepliesAlone(replies, input);
+          const wakes = await senderWakes(context, ctx, input);
+          const done = writeCommentRepliesAlone(store, replies, input);
+          const url = threadUrl(context.baseUrl(), done.thread_id);
+          // Only a retry by its key keeps the first call's steps; a retry without a key may bring a list of its own.
+          const stepsLine = saveSteps(done.thread_id, done.replayed && done.keyed);
+          return ok(`${commentRepliesAloneLine(done, url)}${stepsLine} ${replyNextStepText(wakes, input.agent_host)}`, { thread_id: done.thread_id, url, comment_replies: done.replies, replayed: done.replayed });
+        }
         const project = await sendProject(context, input);
         const wakes = await senderWakes(context, ctx, input);
         const { steps: _steps, comment_replies: _replies, ...message } = input as typeof input & { steps?: unknown; comment_replies?: unknown };
-        const sent = await sendAgentMessage(context, project, { ...message, working_folder: callerWorkingFolder(ctx) }, undefined, wakes);
+        const sent = await sendAgentMessage(context, project, { ...message, body: message.body ?? "", working_folder: callerWorkingFolder(ctx) }, undefined, wakes);
         // A replay (the same idempotency key) answers with the replies the first call wrote.
         const replied = writeCommentReplies(store, replies, { message_id: String(sent.structured.message_id), thread_id: String(sent.structured.thread_id), replayed: sent.replayed }, input);
         const repliedLine = replied.length > 0 ? ` Replied under ${replied.length} comment${replied.length === 1 ? "" : "s"}; the person sees each under its comment.` : "";
-        // A replay (the same idempotency key) answers the first send and writes nothing: a list the session sent
-        // since (the steps action) is never put back to this older one.
-        const stepsLine =
-          withSteps === undefined || sent.replayed
-            ? ""
-            : (() => {
-                const { record } = store.setThreadSteps({ thread_id: String(sent.structured.thread_id), agent: stepsAgent(input), steps: withSteps });
-                return record && record.steps.length > 0 ? ` Steps saved: ${stepsProgressText(record)}.` : " Steps cleared.";
-              })();
+        const stepsLine = saveSteps(String(sent.structured.thread_id), sent.replayed);
         // Named a thread (reply_to, or a thread name) this session has not looked at for hours (or ever):
         // one line naming its subject. Not for a message routed to the session's own thread by default,
         // never on a replay (the first answer stands), and it never blocks the send.
@@ -1107,6 +1131,8 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
     },
     async (input, ctx) =>
       guarded(async () => {
+        // A comment send's id (a wake names the person's comments by it) reads its thread.
+        input = { ...input, message_id: commentSendReplyTarget(store, input.message_id, context.persistentCommentsOn?.() === true) };
         const threadId = threadOf(store, input);
         if (threadId) {
           const naming = namingHint(store, threadId, input.agent_session?.trim() || null);
@@ -1123,36 +1149,50 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
             if (!guest) store.settleReadPast(threadId, reader);
             // The person's 👍 (settled acks) are read now too: the window says the agent saw it.
             if (!guest) store.markAcksSeen(threadId);
-            // What this session was owed here and no wake is left to settle.
-            if (reader) store.recordOwnRead(threadId, reader);
+            // What this session was owed here and no wake is left to settle (its comment sends too, while sent comments are in view).
+            if (reader) store.recordOwnRead(threadId, reader, undefined, context.persistentCommentsOn?.() === true);
             // This session has read the thread now (send_message's "not read since" line).
             noteSessionRead(store, reader, threadId, clock());
             // The full records, as before the window (tests, scripts, a jq over the result).
             const thread = store.agentThread(threadId, reader)!;
             const replies = thread.messages.filter((m) => m.author.kind === "person").length;
-            const sentComments = context.persistentCommentsOn?.() ? threadComments(store, threadId).comments : [];
+            const sentComments = context.persistentCommentsOn?.() ? threadComments(store, threadId) : { comments: [], sends: [] };
             return ok(
               `Thread ${threadId}${thread.subject ? ` (${thread.subject})` : ""}: ${thread.messages.length} message${thread.messages.length === 1 ? "" : "s"}, ${replies} from the person${thread.resolved_at ? ", resolved" : ""}.${naming?.line ?? ""}`,
-              { thread, url, ...(naming?.structured ?? {}), ...(sentComments.length > 0 ? { comments: sentComments } : {}) },
+              {
+                thread,
+                url,
+                ...(naming?.structured ?? {}),
+                ...(sentComments.comments.length > 0 ? { comments: sentComments.comments } : {}),
+                ...(sentComments.sends.length > 0 ? { comment_sends: sentComments.sends } : {}),
+              },
             );
           }
           // Built first, so a refused read (a bad expand, before or after) marks nothing read.
-          const { result, order, shown, readThrough } = windowedThread(store, threadId, { ...input, caller: input.agent_session?.trim() || null }, url);
+          const { result, order, shown, readThrough, range } = windowedThread(store, threadId, { ...input, caller: input.agent_session?.trim() || null }, url);
+          // With sent comments in view, the read covers the comment sends of its range too (experimental "persistent-comments").
+          const seen = context.persistentCommentsOn?.() ? new Set([...shown, ...commentSendsShown(store, threadId, range)]) : shown;
           if (!guest) {
             store.markAgentChecked(threadId, readThrough, undefined, reader);
             store.settleReadPast(threadId, reader, shown);
             store.markAcksSeen(threadId, shown);
           }
           // What this session was owed in the messages it was shown, and no wake is left to settle.
-          if (reader) store.recordOwnRead(threadId, reader, shown);
+          if (reader) store.recordOwnRead(threadId, reader, seen);
           noteSessionRead(store, reader, threadId, clock());
           // The thread's steps (approval "inbox-thread-steps"), the reader's own first: only while the person has steps on.
           const steps = context.stepsOn?.() ? threadStepsText(store, threadId, reader) : [];
           const lists = steps.length > 0 ? { steps: store.threadSteps(threadId).map(({ agent, steps: list, updated_at }) => ({ agent, steps: list, updated_at })) } : {};
           // The comments the person sent (experimental): a ranged read lists those its replies carried and the unanchored ones.
-          const sent = context.persistentCommentsOn?.() ? threadComments(store, threadId, input.after !== undefined || input.before !== undefined ? shown : null) : { comments: [], elsewhere: 0 };
+          const sent = context.persistentCommentsOn?.() ? threadComments(store, threadId, input.after !== undefined || input.before !== undefined ? seen : null) : { comments: [], elsewhere: 0, sends: [] };
           const header = [...steps, ...threadCommentsText(sent, result.thread.project.root, reader)];
-          return okComplete(windowedThreadText(result, order, naming?.line ?? "", header), { ...result, ...(naming?.structured ?? {}), ...lists, ...(sent.comments.length > 0 ? { comments: sent.comments } : {}) });
+          return okComplete(windowedThreadText(result, order, naming?.line ?? "", header), {
+            ...result,
+            ...(naming?.structured ?? {}),
+            ...lists,
+            ...(sent.comments.length > 0 ? { comments: sent.comments } : {}),
+            ...(sent.sends.length > 0 ? { comment_sends: sent.sends } : {}),
+          });
         }
         if (input.expand || input.before !== undefined || input.after !== undefined) {
           throw new InboxError("validation_error", "expand, before and after read one thread: pass thread_id (or message_id).");

@@ -40,6 +40,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import {
   INBOX_BRIDGE_EVENT_PATH,
   INBOX_BRIDGE_POLL_PATH,
+  INBOX_COMMENTS_POLL_FIELD,
   INBOX_SEND_NOW_POLL_FIELD,
   INBOX_TAGS_POLL_FIELD,
   INBOX_TOOL_NAME,
@@ -543,6 +544,8 @@ export class InboxWake {
   private readonly settled = new Set<string>();
   /** Delivered, not yet acknowledged to the Inbox. */
   private readonly unacked = new Set<string>();
+  /** The comment sends each delivered command carried (`comments.sends`): its acknowledgement names them. */
+  private readonly ackSends = new Map<string, string[]>();
   /** Names this wake in the session's lease. */
   private readonly instanceId = randomUUID();
   private readonly leaseFile: string;
@@ -734,6 +737,8 @@ export class InboxWake {
         ...(this.steerable ? { [INBOX_SEND_NOW_POLL_FIELD]: true } : {}),
         // Tags (approval "inbox-tag-agents"): this connection words a reply it was tagged in truthfully.
         [INBOX_TAGS_POLL_FIELD]: true,
+        // Comment sends: a thread's waiting sends come as one command, and `delivered` names them.
+        [INBOX_COMMENTS_POLL_FIELD]: true,
         // What this process loaded (additive): the Inbox says when the session runs an older one.
         ...(plugin?.version ? { plugin } : {}),
       },
@@ -776,16 +781,22 @@ export class InboxWake {
    * running turn when one runs (`steer`), else as a turn at once.
    */
   private async deliverNext(urgent = false): Promise<void> {
-    const command = this.pending.values().next().value as InboxReplyCommand | undefined;
-    if (!command) return;
+    const held = this.pending.values().next().value as InboxReplyCommand | undefined;
+    if (!held) return;
     // Still waiting? An agent may have read it through the tool meanwhile, or
     // another process delivered it.
     const fresh = await this.pendingNow(0);
     if (fresh === null || this.disposed) return;
-    if (!fresh.some((candidate) => candidate.id === command.id)) {
-      this.settle(command.id);
+    const current = fresh.find((candidate) => candidate.id === held.id);
+    if (!current) {
+      // The person's comment sends may have joined another command (their words came): never settled here.
+      if (held.comments) this.pending.delete(held.id);
+      else this.settle(held.id);
       return;
     }
+    // Comment sends go as the Inbox words them now: the ones that came since ride them.
+    const command = current.comments ? current : held;
+    this.pending.set(command.id, command);
     const busy = await this.target.isBusy();
     const steering = busy && urgent && this.steerable;
     if (busy && !steering) {
@@ -821,6 +832,7 @@ export class InboxWake {
       writeQuietly(join(claim, "delivered"), new Date().toISOString());
       this.settle(command.id);
       this.unacked.add(command.id);
+      if (command.comments) this.ackSends.set(command.id, command.comments.sends);
       await this.acknowledge(command.id);
       return;
     }
@@ -847,15 +859,20 @@ export class InboxWake {
     writeQuietly(join(claim, "delivered"), new Date().toISOString());
     this.settle(command.id);
     this.unacked.add(command.id);
+    if (command.comments) this.ackSends.set(command.id, command.comments.sends);
     await this.acknowledge(command.id);
   }
 
   /** Tell the Inbox a reply was delivered (retried every tick until it answers). */
   private async acknowledge(id: string): Promise<void> {
-    const response = await this.connection.bridge(INBOX_BRIDGE_EVENT_PATH, this.sessionId, { type: "delivered", id });
+    const sends = this.ackSends.get(id);
+    const response = await this.connection.bridge(INBOX_BRIDGE_EVENT_PATH, this.sessionId, { type: "delivered", id, ...(sends ? { sends } : {}) });
     if (!response) return;
     // 200, or a refusal that will not change (the reply is gone or not ours): done.
-    if (response.status === 200 || (response.status >= 400 && response.status < 500 && response.status !== 401)) this.unacked.delete(id);
+    if (response.status === 200 || (response.status >= 400 && response.status < 500 && response.status !== 401)) {
+      this.unacked.delete(id);
+      this.ackSends.delete(id);
+    }
   }
 }
 

@@ -152,6 +152,7 @@ import {
   INBOX_REMOVED_ACTION_TEXT,
   INBOX_SEND_NOW_POLL_FIELD,
   INBOX_TAGS_POLL_FIELD,
+  INBOX_COMMENTS_POLL_FIELD,
   type InboxReplyCommand,
 } from "@plannotator/shared/inbox/connection";
 import {
@@ -218,6 +219,9 @@ import { INBOX_PULL_OWNER_KEYS_MAX, inboxPullIsOpen } from "@plannotator/core/in
 import { isInboxBoardSeq, readInboxBoardSeen, writeInboxBoardSeen } from "@plannotator/shared/inbox/board-seen";
 import { createInboxTagsRoute } from "./inbox-tags";
 import { createInboxStepsRoute, inboxStepsStale } from "./inbox-steps";
+import type { InboxWakeItem } from "@plannotator/core/inbox-comment-sends";
+import { createInboxCommentSendRoutes } from "./inbox-comment-sends";
+import { clearWakeItemNow, recordWakeDelivery, wakeCommandOf } from "./inbox-comment-send-delivery";
 import { createInboxDebugLog } from "./inbox-debug-log";
 import { createInboxDevices, DOOR_PREFIX } from "./inbox-devices";
 import { createInboxMachines, type InboxMachines, type MachineFrame, type MachineLinkTimings } from "./inbox-machines";
@@ -664,6 +668,8 @@ const ERROR_STATUS: Record<string, number> = {
   session_not_live: 409,
   // Send now: the session's connection does not poll now, or cannot deliver into a running turn.
   send_now_unavailable: 409,
+  // Send now on a comment send while sent comments are off (experimental "persistent-comments").
+  persistent_comments_off: 409,
   // Tags: a live session whose Plannotator is too old to word a tag truthfully.
   tag_needs_update: 409,
   // Tags: the session is known, but as another agent than the tag says.
@@ -2460,7 +2466,12 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         return { seq: line.seq, kind: line.kind, id: line.id, initiative: line.record };
       case "comment_reply":
         // An agent's reply under a sent comment (experimental "persistent-comments"): the open thread's files read it.
-        // Silent, never a notification or unread. A reader that does not know the kind skips it.
+        // With its message, silent (the message is the news). Sent alone (`call`), it is news itself: the row is unread,
+        // and the window notifies once per call, naming the agent (`from`) and counting the comments (`re`).
+        // A reader that does not know the kind skips it.
+        return { seq: line.seq, kind: line.kind, id: line.id, thread_id: line.record.thread_id, ...(line.record.call ? { call: line.record.call, from: line.record.from, re: line.record.re } : {}) };
+      case "comment_send":
+        // The person's comments sent to a session (experimental "persistent-comments"): silent, as above.
         return { seq: line.seq, kind: line.kind, id: line.id, thread_id: line.record.thread_id };
     }
   };
@@ -2803,6 +2814,14 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     };
   };
 
+  // The person's comment sends ride the same wake (inbox-comment-send-delivery.ts): one command per item.
+  const wakeCommand = (item: InboxWakeItem, sendNow: boolean, session: string | null): InboxReplyCommand =>
+    wakeCommandOf({ store, codeReviewOn, shapeOn }, item, session, {
+      sendNow,
+      url: threadPageUrl(baseUrl, item.thread_id),
+      messageCommand: (message) => replyCommand(message, sendNow, session),
+    });
+
   const bridgeSession = (body: Record<string, unknown>): string => {
     const session = typeof body.session === "string" ? body.session.trim() : "";
     if (!session) throw new InboxError("validation_error", "session: the agent session id is required.", { field: "session" });
@@ -2823,11 +2842,13 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     // A busy session that can take an item mid-turn: what has waited long enough goes in now.
     const steer = live.deliveryConnectionOf(session);
     if (sendNow && steer?.busy === true && steer.send_now) autoSendFor(session, tags);
+    // A connection that posts `sends` back with `delivered` gets a thread's comment sends together.
+    const together = body[INBOX_COMMENTS_POLL_FIELD] === true;
     const commands = () =>
       store
-        .pendingReplies(session, { tags })
-        .filter((reply) => !withdrawnTidy(reply))
-        .map((reply) => replyCommand(reply, sendNow, session));
+        .pendingWakeItems(session, { tags, together, sends: persistentCommentsOn() })
+        .filter((item) => !item.message || !withdrawnTidy(item.message))
+        .map((item) => wakeCommand(item, sendNow, session));
     // Ask AI: said on every answer until the client connects, so an answer that no one read loses nothing.
     const askWaits = () => (ask.waits(session) ? { [INBOX_ASK_WAITS_FIELD]: true } : {});
     const now = commands();
@@ -2848,8 +2869,11 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         resolve(json({ commands: commands(), ...askWaits() }));
       };
       const timer = setTimeout(finish, waitMs);
+      // The command is worded a microtask after the line that wakes it, once the write that made it is whole: the
+      // person's words and a comment send riding them (a Finish round with words) are written in one turn.
       const unsubscribe = store.subscribe((line) => {
-        if (line.kind === "message" && line.record.author.kind === "person" && store.pendingReplies(session, { tags }).length > 0) finish();
+        if (line.kind === "message" && line.record.author.kind === "person" && store.pendingReplies(session, { tags }).length > 0) queueMicrotask(finish);
+        if (line.kind === "comment_send" && store.pendingWakeItems(session, { tags, sends: persistentCommentsOn() }).some((item) => item.sends.length > 0)) queueMicrotask(finish);
       });
       const stopAskWaits = ask.onWaits((waiting) => {
         if (waiting === session) finish();
@@ -2875,7 +2899,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     }
     // Send now could not go into the running turn: the reply reads as queued again and waits for idle.
     if (body.type === "send_now_failed" && typeof body.id === "string") {
-      store.clearDeliverNow(body.id, session);
+      clearWakeItemNow(store, body.id, session, persistentCommentsOn());
       return json({ ok: true });
     }
     if (body.type !== "delivered" || typeof body.id !== "string") {
@@ -2889,8 +2913,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         (marked.deliver_now_by === "auto" ? marked.deliver_now_at : null)
       : null;
     const intoTurn = markedAt ? live.deliveredIntoTurn(session, markedAt) : undefined;
-    const reply = store.recordDelivery(body.id, { host, session, ...(intoTurn !== undefined ? { intoTurn } : {}) });
-    return json({ ok: true, delivery: reply.delivery });
+    // A command's comment sends (`sends`, from a connection that takes them together) settle with it.
+    const { delivery } = recordWakeDelivery(store, body.id, { host, session, ...(intoTurn !== undefined ? { intoTurn } : {}) }, body.sends, persistentCommentsOn());
+    return json({ ok: true, delivery });
   };
 
   /**
@@ -2984,6 +3009,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   const live = createInboxLiveSessions({
     store,
     serverSession,
+    commentSendsOn: persistentCommentsOn,
     resolveRoot: async (path) => (await projectRoots.resolve(path)).root,
     outdatedOf: (host, plugin, folder) => {
       if (host === "claude-code") {
@@ -3024,9 +3050,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   const codexWake = createInboxCodexWake({
     store,
     environment: agentEnvironment,
-    commandOf: (item, session) => replyCommand(item, false, session),
+    commandOf: (item, session) => wakeCommand(item, false, session),
     // A steps-only Tidy wake with steps off is withdrawn, never handed (a switch turned off in config.json by hand).
-    skip: (item) => withdrawnTidy(item),
+    skip: (item) => !!item.message && withdrawnTidy(item.message),
+    commentSends: persistentCommentsOn,
     ...(options.codexWake?.extraClis ? { extraClis: options.codexWake.extraClis } : {}),
     ...(options.codexWake?.now ? { now: options.codexWake.now } : {}),
     ...(options.codexWake?.queueTimeoutMs ? { queueTimeoutMs: options.codexWake.queueTimeoutMs } : {}),
@@ -3038,9 +3065,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     store,
     environment: agentEnvironment,
     dataDir,
-    commandOf: (item, session) => replyCommand(item, false, session),
+    commandOf: (item, session) => wakeCommand(item, false, session),
     // A steps-only Tidy wake with steps off is withdrawn, never handed (a switch turned off in config.json by hand).
-    skip: (item) => withdrawnTidy(item),
+    skip: (item) => !!item.message && withdrawnTidy(item.message),
+    commentSends: persistentCommentsOn,
     ...options.qwenWake,
   });
 
@@ -3049,9 +3077,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   const t3Wake = createInboxT3Wake({
     store,
     dataDir,
-    commandOf: (item, session) => replyCommand(item, false, session),
+    commandOf: (item, session) => wakeCommand(item, false, session),
     // A steps-only Tidy wake with steps off is withdrawn, never handed (a switch turned off in config.json by hand).
-    skip: (item) => withdrawnTidy(item),
+    skip: (item) => !!item.message && withdrawnTidy(item.message),
+    commentSends: persistentCommentsOn,
     ...options.t3Wake,
   });
 
@@ -3063,7 +3092,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   // (`deliver_now_by: "auto"`); the mark is a store line, which answers the session's held poll with `now: true`.
   const autoSendFor = (session: string, tags: boolean) => {
     try {
-      store.autoSendDue(session, { afterMs: live.autoSendAfterMs, tags, clockOf: (id) => live.waitClockOf(session, id) });
+      store.autoSendDue(session, { afterMs: live.autoSendAfterMs, tags, clockOf: (id) => live.waitClockOf(session, id), commentSends: persistentCommentsOn() });
     } catch (error) {
       process.stderr.write(`Inbox: a reply did not go in by itself: ${error instanceof Error ? error.message : String(error)}\n`);
     }
@@ -3126,6 +3155,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
 
   const tagsRoute = createInboxTagsRoute({ store, serverSession, live, json });
   const stepsRoute = createInboxStepsRoute({ store, serverSession, live, stepsOn, json });
+  // Comment sends (experimental "persistent-comments"): the person's comments as records of their own (packages/server/inbox-comment-sends.ts).
+  const commentSends = createInboxCommentSendRoutes({ store, serverSession, readBody: (req) => readBody(req), json, persistentCommentsOn, tagTargets: live.tagTargets });
 
   // Compose: a new thread the person starts with a live agent, drafts and uploads (packages/server/inbox-compose.ts).
   const compose = createInboxCompose({
@@ -4512,6 +4543,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
             // attachments on the reply, exactly as compose's become a thread's.
             // A replay answers the reply it wrote before anything is copied
             // (its uploads are gone by then); the rest checks the message first.
+            // The person's Finish round riding this reply (comment sends, experimental): checked before anything is written.
+            const finish = commentSends.finishRequest(body.finish_round);
             const uploads = body.uploads === undefined || body.uploads === null ? [] : body.uploads;
             if (!Array.isArray(uploads)) throw new InboxError("validation_error", "uploads: a list of upload ids.", { field: "uploads" });
             const replayKey = typeof body.idempotency_key === "string" ? body.idempotency_key.trim() : "";
@@ -4530,8 +4563,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
                 idempotency_key: body.idempotency_key as string,
                 feedback: typeof body.feedback === "string" ? body.feedback : undefined,
                 annotation_ids: body.annotation_ids as never,
-                // Comments still open from earlier rounds go again (experimental "persistent-comments").
-                carry_open_comments: persistentCommentsOn(),
+                // Comments still open from earlier rounds go again with a reply that carries comments itself (experimental
+                // "persistent-comments"): a linked machine's Send, whose comments travel in its replies and which no Finish
+                // names; with comment sends a Send carries none (a guided review's go with its verdict) and a Finish names them.
+                carry_open_comments: persistentCommentsOn() && Array.isArray(body.annotation_ids) && body.annotation_ids.some((id) => typeof id === "string" && !!store.annotation(id) && !store.annotation(id)!.guide),
                 // A verdict on a review (Approve / Send feedback in the review's header): only while Code review is on.
                 ...(body.review_verdict !== undefined && body.review_verdict !== null
                   ? codeReviewOn()
@@ -4554,6 +4589,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
               }
               throw error;
             }
+            // Written in this same turn as the reply, so the wake that hands the words out hands the Finish with them.
+            const finished = commentSends.finishWith(result.reply, finish);
             // The Send that carried the reply box's draft: its words go (a replay too, since the first one sent them)
             // while it is the draft those words were saved as (`updated_at`), with the files this Send carried (a file
             // it did not carry stays, as a draft of files only); or it goes whole while it holds exactly those words
@@ -4579,6 +4616,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
               questions: store.questionsOf(messageId),
               reply: result.reply,
               replayed: result.replayed,
+              ...(finished ?? {}),
             });
           }
           case "reask": {
@@ -4644,6 +4682,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       // Thread steps (approval "inbox-thread-steps"): a thread's lists with each session's presence (packages/server/inbox-steps.ts).
       const steps = stepsRoute.route(req, path);
       if (steps) return steps;
+      const sent = await commentSends.route(req, path);
+      if (sent) return sent;
 
       // #1813: an image a message's body shows, read from wherever it is on this
       // computer outside the home folder's hidden folders (packages/server/inbox-message-images.ts).
@@ -4736,7 +4776,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     return served(req, "local");
   };
 
-  attachmentRoutes = createInboxAttachmentRoutes({ store, serverSession, readBody, streamIdleMs: options.streamIdleMs, scheduleImageCapture: imageCapture.schedule, persistentCommentsOn });
+  attachmentRoutes = createInboxAttachmentRoutes({ store, serverSession, readBody, streamIdleMs: options.streamIdleMs, scheduleImageCapture: imageCapture.schedule, persistentCommentsOn, liveCommentReply: commentSends.liveReply, liveCommentReplyAgain: commentSends.liveReplyAgain });
   const started = startOnLoopback(fetch, previous?.port ?? null);
   server = started.server;
   portChanged = started.portChanged;

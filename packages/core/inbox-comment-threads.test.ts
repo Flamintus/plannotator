@@ -21,6 +21,9 @@ import {
   inboxOpenSubThreadPaths,
   inboxSubThreadAnnotation,
   inboxCommentMessages,
+  inboxCommentSitsUnder,
+  inboxCommentsHiddenUnderFolded,
+  inboxMessagesWithOpenThreads,
 } from './inbox-comment-threads';
 
 const agent = (id: string, created_at = '2026-11-04T09:00:00.000Z') => ({ id, author: { kind: 'agent' }, created_at });
@@ -423,5 +426,24 @@ describe('sub-threads on a passage of a message of a thread', () => {
     const text = inboxOpenCommentsFeedback(carried, '/repo');
     expect(text).toContain('### 1. Round 2, on a passage of reply rep_a under comment c1 (on message msg_a1): "off switch" (id s1)\nIn: "');
     expect(text).toContain('feature-flag off switch');
+  });
+});
+
+describe('the fold', () => {
+  const answer = { id: 'rep_a', re: 'c1' };
+  const s1 = record('s1', { parent: 'rep_a' });
+  const nested = record('s3', { parent: 's1' });
+
+  test('a folded thread hides what is under it, at any depth; nothing else is hidden', () => {
+    const up = inboxCommentSitsUnder([record('c1'), record('r1', { re: 'c1' }), s1, nested], [answer]);
+    expect(Object.fromEntries(up)).toEqual({ r1: 'c1', s1: 'rep_a', s3: 's1', rep_a: 'c1' });
+    expect([...inboxCommentsHiddenUnderFolded(['rep_a', 's1', 's3'], up, new Set(['c1']))].sort()).toEqual(['rep_a', 's1', 's3']);
+    expect([...inboxCommentsHiddenUnderFolded(['rep_a', 's1', 's3'], up, new Set(['s1']))]).toEqual(['s3']);
+    expect(inboxCommentsHiddenUnderFolded(['rep_a', 's1', 's3'], up, new Set()).size).toBe(0);
+  });
+
+  test("a message holding a thread still open, or resolved with a sub-thread open under it, opens unfolded; a folded one's, or a file comment's, does not", () => {
+    const comments = [record('open', { message_id: 'm1' }), record('kept', { message_id: 'm2' }), record('done', { message_id: 'm3' }), record('file', { message_id: 'm4', message: undefined })];
+    expect([...inboxMessagesWithOpenThreads(comments, new Set(['kept', 'done']), new Set(['kept']))]).toEqual(['m1', 'm2']);
   });
 });

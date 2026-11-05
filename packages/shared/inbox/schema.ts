@@ -19,6 +19,10 @@
  *                                      (approval "inbox-thread-steps"): their
  *                                      own records, read by nothing that
  *                                      routes, lists or notifies
+ *     projects/<key>/comment-replies.jsonl  the agents' replies under sent
+ *                                      comments (experimental)
+ *     projects/<key>/comment-sends.jsonl    the person's comments sent to an
+ *                                      agent session (experimental)
  *     initiatives.jsonl                the Board's initiatives (approval
  *                                      "board-initiatives"): one file for every
  *                                      project, read by the Board only
@@ -52,6 +56,12 @@ export const STEPS_FILE = "steps.jsonl";
 /** The agents' replies under the person's sent comments (experimental "persistent-comments"; `comment_reply` lines). */
 export const COMMENT_REPLIES_FILE = "comment-replies.jsonl";
 /**
+ * The person's comments sent to an agent session (experimental
+ * "persistent-comments"; `comment_send` lines): an older Inbox never reads it,
+ * so each write keeps the seq floor.
+ */
+export const COMMENT_SENDS_FILE = "comment-sends.jsonl";
+/**
  * The Board's initiatives (approval "board-initiatives"): one file in the
  * inbox folder, not per project (an initiative crosses projects), on the
  * store's one seq counter. Never read by routing, the list, unread or notifications.
@@ -63,7 +73,7 @@ export function inboxDir(dataDir: string): string {
   return join(dataDir, INBOX_DIR_NAME);
 }
 
-const KINDS: ReadonlySet<InboxRecordKind> = new Set(["project", "message", "question", "annotation", "card", "steps", "initiative", "comment_reply"]);
+const KINDS: ReadonlySet<InboxRecordKind> = new Set(["project", "message", "question", "annotation", "card", "steps", "initiative", "comment_reply", "comment_send"]);
 
 /**
  * One line of a store file, or null when it is not a line this reader can
