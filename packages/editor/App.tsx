@@ -5007,9 +5007,9 @@ const App: React.FC = () => {
      *  path only, since the empty-menu collapse removed the framed note. */
     approvalFraming?: boolean;
   }): Promise<boolean> => {
-    // Done (nothing left to send) is an end of the review too.
-    if (!options?.discardAnnotations && !options?.approvalFraming && !hasFeedbackToSend
-      && askBeforeEndingWithOpenThreads('done', () => headerHandlersRef.current.handleAnnotateFeedback(options))) return false;
+    // Done (nothing left to send) and a note sent with the approval's framing end the review too (a discard asked already).
+    const endsAs = options?.discardAnnotations ? null : options?.approvalFraming ? 'approved' : !hasFeedbackToSend ? 'done' : null;
+    if (endsAs && askBeforeEndingWithOpenThreads(endsAs, () => headerHandlersRef.current.handleAnnotateFeedback(options))) return false;
     setIsSubmitting(true);
     sendStarted();
     let sentFeedback: string | undefined;

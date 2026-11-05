@@ -380,7 +380,7 @@ describe.if(hasDom)("the review loop on an annotate screen", () => {
     await act(async () => { button("Resolve all & finish")!.click(); });
     for (let attempt = 0; attempt < 20 && !posts.some((post) => post.path === "/api/feedback"); attempt += 1) await settle(10);
     expect(posts.map((post) => post.path)).toEqual(["/api/threads/resolve", "/api/feedback"]);
-    expect(posts[1]!.body.feedback).toBe("Review done: every comment thread is resolved. Nothing more is asked.");
+    expect(posts[1]!.body.feedback).toBe("The person ended the review (Done): every comment thread is resolved. This is not a request: there is nothing to change or answer.");
   });
 
   test("personal version: Finish with them open ends the review as asked, and the agent reads which stay open", async () => {
@@ -392,6 +392,6 @@ describe.if(hasDom)("the review loop on an annotate screen", () => {
     await press("[data-open-threads-end=\"anyway\"]");
     for (let attempt = 0; attempt < 20 && !posts.some((post) => post.path === "/api/feedback"); attempt += 1) await settle(10);
     expect(posts.map((post) => post.path)).toEqual(["/api/feedback"]);
-    expect(posts[0]!.body.feedback).toBe("Review done; 1 comment thread stays open: annRetry. Nothing more is asked.");
+    expect(posts[0]!.body.feedback).toBe("The person ended the review (Done): 1 comment thread stays open: annRetry. This is not a request: there is nothing to change or answer.");
   });
 });
