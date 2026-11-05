@@ -84,7 +84,7 @@ Each comment in the annotations panel has a **Reply** button (the curved arrow, 
 > Not on a Friday. Pick a Tuesday.
 **Replies:**
 - **Reply (browser-agent):** Tuesday 10:00 then?
-  - **Reply (Swift Tater):** Yes, Tuesday 10:00.
+  - **Reply (swift-falcon-tater):** Yes, Tuesday 10:00.
 ```
 
 Replies work the same in annotate. A comment on part of an image, a checkbox you ticked and an answer to a question have no Reply.

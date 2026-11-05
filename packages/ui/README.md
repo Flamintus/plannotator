@@ -414,14 +414,14 @@ slot and mentions on the edit box (0.45.0)".
   and the panel is as before.
 - **`onReply?: (parentId, { text, mentions? }) => void`** (Unreleased) — the
   person's Reply. Supplied (and not `readOnly`), each plan-annotation card of
-  the open document gets a Reply action that opens one box under the card's
-  thread, where the reply will land; sending calls `onReply` and the host
+  the open document gets a Reply action that opens one box after the card's
+  own replies, where the reply will land; sending calls `onReply` and the host
   adds the reply, built with `buildReplyAnnotation(parent, { id, text,
   createdA, author, mentions })` from `utils/annotationReply` (the parent's
-  place and anchors, `inReplyTo`). `mentions` follows the edit box's rule. A
-  card whose place is not a text highlight (a region of an image, a checkbox
-  toggle, a question's answer) takes no Reply. Omit it and there is no action
-  and no box. Threads draw depth first whether or not you pass it: a reply to
+  place and anchors, `inReplyTo`). `mentions` follows the edit box's rule.
+  Three cards take no Reply: a region of an image, a checkbox toggle and a
+  question's answer (a general comment and a diff view comment do). Omit it
+  and there is no action and no box. Threads draw depth first whether or not you pass it: a reply to
   a reply sits one indent step deeper, the same step at every level, and a
   reply does not repeat its parent's quote.
 - **`renderCardBody?: (annotation) => ReactNode`** (ui 0.54.0) — the host's
