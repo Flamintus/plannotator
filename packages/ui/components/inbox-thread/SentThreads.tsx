@@ -210,7 +210,7 @@ interface SentThreadsActions<R extends SentThreadRecord = InboxAnnotationRecord>
   onSubThread?: SubThreadSave;
   /** Send one draft (a comment, a reply under one, a sub-thread, by id) alone, at once, the round left open; true once it went. */
   onSend?: (id: string) => Promise<boolean>;
-  /** Turn Live on (`live`) or off on a sent thread (a comment or a sub-thread, at any depth): under it the person's replies go on their own. Absent: no Live button. */
+  /** Turn Live on (`live`) or off on a sent thread (a comment or a sub-thread, at any depth): under it the person's replies go on their own; on a draft, its Live sends it first (`onSend`). Absent: no Live button. */
   onLive?: (record: R, live: boolean) => void;
   /**
    * Whether the person can still change a comment (a comment, a reply under one, a sub-thread, by id): the host's own
@@ -574,14 +574,28 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
   // A press in a box is a look at it (and, the press being in them too, at the boxes around it).
   const look = onLook ? () => onLook(record) : undefined;
   /** The switch of a sent box's Live, among its actions: Live turns it on, Unlive off; the ⚡ Live mark says it is on. */
-  const liveButton = !draft && onLive ? (
+  // On a draft, Live sends it at once first (the box's own Send), then turns Live on: Live is a sent thread's.
+  const liveButton = onLive && (!draft || onSend) ? (
     <button
       type="button"
       className="ib-sentc-act"
       aria-pressed={isLive}
       data-sent-live-toggle={id}
-      title={isLive ? 'Turn Live off: your replies here wait to be sent again.' : 'Turn Live on: your replies here go to the agent as you save them.'}
-      onClick={() => onLive(record, !isLive)}
+      title={
+        draft
+          ? 'Send it now and turn Live on: your replies here go to the agent as you save them.'
+          : isLive
+            ? 'Turn Live off: your replies here wait to be sent again.'
+            : 'Turn Live on: your replies here go to the agent as you save them.'
+      }
+      onClick={async () => {
+        if (draft) {
+          if (!(await onSend?.(id))) return;
+          onLive(record, true);
+          return;
+        }
+        onLive(record, !isLive);
+      }}
     >
       {isLive ? 'Unlive' : 'Live'}
     </button>
@@ -638,6 +652,7 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
     <span className="ib-sentb-acts">
       {headEdit}
       {draft && onSend && <SentSendButton id={id} onSend={onSend} />}
+      {draft && liveButton}
     </span>
   );
   if (held) {
