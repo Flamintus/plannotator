@@ -17,12 +17,12 @@
  *   at once, and the round stays open), and Live at a sent box's head, which
  *   turns it on or off: under a live thread the person's reply goes as a
  *   `now` send as soon as it is saved, the Send of a draft's path. The
- *   person's drafts are boxes too, "Not sent", after the sent ones on their block.
+ *   person's drafts are boxes too, "Draft", after the sent ones on their block.
  * - The annotations panel stays today's list, one comment per card with its
  *   controls, flat (a reply or a sub-thread is a card of its own, no tree):
  *   the page's own annotations only (a sent one takes no edit or delete),
  *   each with one more line (ui's `SentListLine`, read from the boxes' tree
- *   as the Inbox's lists read theirs): its round or "Not sent", what became of its send,
+ *   as the Inbox's lists read theirs): its round or "Draft", what became of its send,
  *   "✓ Resolved" with Resolve or Reopen, Send for a draft, and
  *   "↳ N replies under the passage" (the replies are read in the box).
  *
@@ -30,7 +30,7 @@
  * to put a box: there the panel keeps the threads as cards, as before
  * (`threadsInText` false): a sent card keeps its place and its highlight,
  * says what a box's head says, in the same chips (ui's `SentCardChips`: its
- * kind, its round or Not sent, its send's status, Live, ✓ Resolved; "Not
+ * kind, its round or Draft, its send's status, Live, ✓ Resolved; "Not
  * delivered" with Retry, New on the agent's reply), and
  * Resolve or Reopen (folded to its header once resolved, unless something
  * under it is open); the agent's replies are cards under their comment;
@@ -432,7 +432,7 @@ export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanel
     if (inText) return null;
     const element = index.elements.get(annotation.id);
     if (!element || element.node.draft) {
-      // A draft of the person's own (never an agent's comment on the page): Not sent, as its box says.
+      // A draft of the person's own (never an agent's comment on the page): Draft, as its box says.
       return annotation.source || index.sent.has(annotation.id) ? null : <SentCardChips draft />;
     }
     const thread = element.kind === 'thread';

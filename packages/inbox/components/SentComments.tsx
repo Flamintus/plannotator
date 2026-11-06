@@ -526,7 +526,7 @@ export function useSentFileComments(input: {
 
   const statuses = sent?.tree.statuses;
   /**
-   * A card's state after its own header, as a box's head says it (ui's `SentCardChips`): a draft's Not sent; a sent
+   * A card's state after its own header, as a box's head says it (ui's `SentCardChips`): a draft's Draft; a sent
    * one's kind (a thread's), its round, what became of it (comment sends), Live and ✓ Resolved.
    */
   const withSentRound = (header: ((annotation: Annotation) => ReactNode) | undefined) =>

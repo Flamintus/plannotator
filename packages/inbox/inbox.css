@@ -7882,6 +7882,10 @@ button.ib-sentb-quote:hover, button.ib-sentb-quote:focus-visible { color: var(--
 /* An agent's reply the person has not seen yet, and a thread whose next replies go on their own. */
 .ib-sentb-new { background: color-mix(in oklab, var(--primary) 22%, var(--card)); color: var(--foreground); font-weight: 600; }
 .ib-sentb-live { background: color-mix(in oklab, oklch(0.8 0.16 85) 16%, var(--card)); color: oklch(0.8 0.16 85); font-weight: 600; }
+/* A comment's state in its colour, the boxes' and the lists' alike (ui `sentTone`): draft light blue, sent orange, replied green. */
+[data-sent-tone="draft"] { color: oklch(0.78 0.12 235); background: color-mix(in oklab, oklch(0.78 0.12 235) 15%, var(--card)); font-weight: 600; }
+[data-sent-tone="sent"] { color: oklch(0.72 0.17 55); background: color-mix(in oklab, oklch(0.72 0.17 55) 15%, var(--card)); font-weight: 600; }
+[data-sent-tone="replied"] { color: var(--success, oklch(0.7 0.15 150)); background: color-mix(in oklab, var(--success, oklch(0.7 0.15 150)) 15%, var(--card)); font-weight: 600; }
 /* An open sub-thread's passage, marked in the message's words; the box a reply or a comment on a passage is written in. */
 .ib-sentc-mark { background: oklch(0.70 0.18 60 / 0.3); border-bottom: 2px solid var(--accent); color: inherit; border-radius: 2px; }
 .light .ib-sentc-mark { background: oklch(0.70 0.20 60 / 0.15); }

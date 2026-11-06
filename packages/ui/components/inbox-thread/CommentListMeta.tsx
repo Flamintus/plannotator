@@ -2,7 +2,7 @@
  * The line a flat list of comments adds under one comment once comments go
  * to the agent in rounds (#1116, experimental "persistent-comments"): the
  * list stays as it is, one comment per item, with no tree, and each item
- * gains what the rounds give it. Its round ("Round 2", or "Not sent" for a
+ * gains what the rounds give it. Its round ("Round 2", or "Draft" for a
  * draft), what became of its send (Queued, Delivered, Read, Working,
  * Replied), its resolution ("✓ Resolved", in the success colour the boxes
  * use), a quiet "↳ 2 replies under the passage" (the replies themselves are
@@ -16,7 +16,7 @@
  */
 import { useState, type ReactNode } from 'react';
 import type { InboxCommentSendStatus } from '@plannotator/core/inbox-comment-sends';
-import { SENT_STATUS_WORDS } from './SentThreads';
+import { SENT_DRAFT_WORD, SENT_STATUS_WORDS, sentTone } from './SentThreads';
 import type { SentCommentsTree, SentThreadRecord } from './sentCommentsTree';
 
 /** "↳ 1 reply under the passage", "↳ 3 replies under the passage". */
@@ -25,7 +25,7 @@ export function repliesUnderPassage(count: number): string {
 }
 
 export interface CommentListMetaProps {
-  /** Not sent yet: "Not sent", and Send when `onSend`. */
+  /** Not sent yet: "Draft", and Send when `onSend`. */
   draft?: boolean;
   /** The round it went in (a sent one). */
   round?: number;
@@ -88,7 +88,7 @@ export interface SentListEntry {
 /**
  * The line of one entry of a flat list, read from the boxes' tree (`SentCommentsTree`): the one reading of a
  * comment's round, status, resolution and replies for every list (the Inbox's comments list and its file panel, the
- * screens' column), so a list says what the comment's box says. A draft: "Not sent", and Send with `onSend`. A
+ * screens' column), so a list says what the comment's box says. A draft: "Draft", and Send with `onSend`. A
  * thread (a comment or a sub-thread): its round, its send's status (`withoutStatus`: the host says it did not
  * arrive), "✓ Resolved" with Resolve or Reopen (`onResolve`) and the replies under its passage. A reply: its round
  * and status. `children`: the host's own controls (a Retry).
@@ -137,8 +137,8 @@ export function CommentListMeta({ draft = false, round, status, resolved, replie
   return (
     <div className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-muted-foreground" data-comment-meta="">
       {draft ? (
-        <span className={`${CHIP} bg-muted text-muted-foreground`} data-comment-meta-round="">
-          Not sent
+        <span className={`${CHIP} bg-muted text-muted-foreground`} data-comment-meta-round="" data-sent-tone={sentTone('draft')}>
+          {SENT_DRAFT_WORD}
         </span>
       ) : (
         round !== undefined && (
@@ -148,7 +148,7 @@ export function CommentListMeta({ draft = false, round, status, resolved, replie
         )
       )}
       {!draft && status && (
-        <span className={`${CHIP} bg-muted text-muted-foreground`} data-comment-meta-status={status}>
+        <span className={`${CHIP} bg-muted text-muted-foreground`} data-comment-meta-status={status} data-sent-tone={sentTone(status)}>
           {SENT_STATUS_WORDS[status]}
         </span>
       )}

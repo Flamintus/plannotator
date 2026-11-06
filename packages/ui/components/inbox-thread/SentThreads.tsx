@@ -18,7 +18,7 @@
  *
  * At a box's head the passage and what the head says of it (`SentChips`: its
  * kind when not a comment, Deletion, Looks good or its label; its round or
- * Not sent, a draft's Send at any depth; its send's status, Live,
+ * Draft, a draft's Send at any depth; its send's status, Live,
  * ✓ Resolved, Unanchored), Reply and Resolve; then its messages: the comment, and the
  * replies under it, each with who wrote it (a reply its status or New, never
  * the round the head says). A sub-thread is a box in the box, in the message
@@ -223,28 +223,57 @@ interface SentThreadsActions<R extends SentThreadRecord = InboxAnnotationRecord>
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
-/** What became of an element a comment send carried, as its chip says it. */
+/** What became of an element a comment send carried, as its chip says it: delivered and waiting for its answer is Sent. */
 export const SENT_STATUS_WORDS: Record<InboxCommentSendStatus, string> = {
   pending: 'Queued',
-  delivered: 'Delivered',
+  delivered: 'Sent',
   read: 'Read',
   working: 'Working',
   replied: 'Replied',
 };
 
+/** A comment not sent yet, as its chip says it (a box's head, a list's line, beside the person's reply). */
+export const SENT_DRAFT_WORD = 'Draft';
+
+/**
+ * The colour a state's chip takes, the one source of it (`data-sent-tone`, styled alike in the Inbox's and the
+ * screens' CSS): a draft light blue, sent orange, replied green; the others none.
+ */
+export type SentTone = 'draft' | 'sent' | 'replied';
+export function sentTone(state: InboxCommentSendStatus | 'draft' | undefined): SentTone | undefined {
+  if (state === 'draft') return 'draft';
+  if (state === 'delivered') return 'sent';
+  if (state === 'replied') return 'replied';
+  return undefined;
+}
+
 /** An element's status chip (none without a status): the boxes' own, and a host's card (the file's panel). */
 export function SentStatusChip({ status }: { status: InboxCommentSendStatus | undefined }) {
   if (!status) return null;
   return (
-    <span className="ib-sentc-chip" data-sent-status={status}>
+    <span className="ib-sentc-chip" data-sent-status={status} data-sent-tone={sentTone(status)}>
       {SENT_STATUS_WORDS[status]}
     </span>
   );
 }
 
-/** A thread's round, or Not sent for a draft (none when it has neither). */
+/**
+ * What the line of the person's reply says beside "You": the states that are not final only, Draft until it is
+ * sent, then Sent until the agent answers, then nothing.
+ */
+function SentReplyState({ draft, status }: { draft: boolean; status: InboxCommentSendStatus | undefined }) {
+  if (draft) return <span className="ib-sentc-chip" data-sent-tone="draft">{SENT_DRAFT_WORD}</span>;
+  if (!status || status === 'replied') return null;
+  return (
+    <span className="ib-sentc-chip" data-sent-status={status} data-sent-tone="sent">
+      {SENT_STATUS_WORDS.delivered}
+    </span>
+  );
+}
+
+/** A thread's round, or Draft for a draft (none when it has neither). */
 function SentRoundChip({ draft, round }: { draft?: boolean; round?: number }) {
-  if (draft) return <span className="ib-sentc-chip">Not sent</span>;
+  if (draft) return <span className="ib-sentc-chip" data-sent-tone="draft">{SENT_DRAFT_WORD}</span>;
   return round === undefined ? null : (
     <span className="ib-sentc-chip" data-sent-round={round}>
       Round {round}
@@ -267,7 +296,7 @@ function SentKindChip({ kind }: { kind: CommentKind }) {
 /**
  * What a thread's head says of it after its passage, at any depth and for any kind (a box's head, and a host's card,
  * the Inbox file panel's): ⚡ Live first, in the lightning's yellow, while open; its kind when it is not a comment
- * (Deletion, Looks good, its label), its round or Not sent, what became of its send, ✓ Resolved in the success
+ * (Deletion, Looks good, its label), its round or Draft, what became of its send, ✓ Resolved in the success
  * colour, and Unanchored when its passage was not found.
  */
 export function SentChips({
@@ -557,7 +586,7 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
       {isLive ? 'Unlive' : 'Live'}
     </button>
   ) : null;
-  // What the head says, folded or not: ⚡ Live, its kind, its round or Not sent, its send's status, ✓ Resolved, Unanchored.
+  // What the head says, folded or not: ⚡ Live, its kind, its round or Draft, its send's status, ✓ Resolved, Unanchored.
   const chips = (
     <SentChips
       kind={commentKind(annotation)}
@@ -739,7 +768,7 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
             >
               <div className="ib-sentb-meta">
                 <span className="ib-sentc-who">{reply.who}</span>
-                <SentStatusChip status={statuses?.get(reply.id)} />
+                <SentReplyState draft={reply.draft} status={statuses?.get(reply.id)} />
                 {fresh?.has(reply.id) && <span className="ib-sentc-chip ib-sentb-new">New</span>}
                 {editButton(reply.id, reply.text)}
                 {reply.draft && onSend && <SentSendButton id={reply.id} onSend={onSend} />}
