@@ -348,19 +348,21 @@ describe.if(hasDom)("the review loop on an annotate screen", () => {
     await mountAndRestore();
     await pressPrimary();
     expect(posts.map((post) => post.path)).toEqual(["/api/threads/send"]);
+    // Every thread resolved, so Done ends the review at once wherever an open thread asks first (a personal build).
+    await press('[data-review-loop-boxes] [data-sent-resolve="annRetry"]');
     // Nothing left to send: Done ends the review, and the server says the tab may reopen it.
     await press("[data-decision-primary]");
     for (let attempt = 0; attempt < 10 && !document.querySelector("[data-completion-over-page]"); attempt += 1) await settle(10);
     const over = document.querySelector<HTMLElement>("[data-completion-over-page]");
     expect(over?.getAttribute("data-completion-state")).toBe("done");
     expect(over?.querySelector("[data-completion-back]")?.textContent).toBe("Reopen review");
-    expect(document.querySelector("[data-review-loop-boxes] [data-sent-resolve]")).toBeNull();
+    expect(document.querySelector("[data-comment-meta-resolve]")).toBeNull();
     await press("[data-completion-back]");
     for (let attempt = 0; attempt < 10 && document.querySelector("[data-completion-state]"); attempt += 1) await settle(10);
-    expect(posts.map((post) => post.path)).toEqual(["/api/threads/send", "/api/feedback", "/api/threads/reopen"]);
-    // The review again: no message, the box takes writes, and the next Done is a decision again.
+    expect(posts.map((post) => post.path)).toEqual(["/api/threads/send", "/api/threads/resolve", "/api/feedback", "/api/threads/reopen"]);
+    // The review again: no message, the thread takes writes (its Reopen), and the next Done is a decision again.
     expect(document.querySelector("[data-completion-state]")).toBeNull();
-    expect(document.querySelector('[data-review-loop-boxes] [data-sent-resolve="annRetry"]')).not.toBeNull();
+    expect(document.querySelector('[data-annotation-id="annRetry"] [data-comment-meta-resolve="reopen"]')).not.toBeNull();
     await press("[data-decision-primary]");
     for (let attempt = 0; attempt < 10 && posts.filter((post) => post.path === "/api/feedback").length < 2; attempt += 1) await settle(10);
     expect(posts.filter((post) => post.path === "/api/feedback")).toHaveLength(2);
