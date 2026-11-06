@@ -475,7 +475,7 @@ test.skipIf(!hasDom)("under the message, words selected in the agent's reply ope
   await until(() => posted.some((p) => p.path.includes(`/annotations/${replied}/subthreads`)), 'the sub-thread saved on the reply');
   const draft = () => el.querySelector(`[data-sent-reply="${replied}"] [data-sent-subthread]`);
   await until(() => draft() !== null && passageBox() === null, 'the draft sub-thread under the reply');
-  expect(draft()!.textContent).toContain('Not sent');
+  expect(draft()!.textContent).toContain('Draft');
   expect(draft()!.textContent).toContain('Which off switch?');
   expect([...body()!.querySelectorAll('mark[data-passage-mark]')].map((m) => m.textContent)).toEqual(['off switch']);
   const model = JSON.parse((await loopback(`/api/inbox/threads/${sent}/attachments`)).text) as { annotations: InboxAnnotationRecord[] };
@@ -508,7 +508,8 @@ test.skipIf(!hasDom)('with comment sends, a reply under a thread the person turn
   await act(async () => {
     box()!.querySelector<HTMLButtonElement>('[data-sent-send="live-1"]')!.click();
   });
-  await until(() => box()?.querySelector('[data-sent-live-toggle="live-1"]') != null, "the sent box's Live");
+  // A draft's box has Live too (it sends the draft first): wait for the box sent, then its Live.
+  await until(() => box()?.hasAttribute('data-sent-draft') === false && box()?.querySelector('[data-sent-live-toggle="live-1"]') != null, "the sent box's Live");
   // Send now makes no thread live: Live is the person's choice, at the box's head.
   expect(box()!.querySelector('[data-sent-live]')).toBeNull();
   await act(async () => {
@@ -518,7 +519,7 @@ test.skipIf(!hasDom)('with comment sends, a reply under a thread the person turn
   // No draft left, but a send went in the round under way: Finish round is still offered.
   expect(el.querySelector('[data-finish-round]')).not.toBeNull();
 
-  // The person's reply under it goes on its own: sent (Queued), never "Not sent".
+  // The person's reply under it goes on its own: sent (Queued), never "Draft".
   act(() => box()!.querySelector<HTMLButtonElement>('[data-sent-reply-to="live-1"]')!.click());
   await type(box()!.querySelector<HTMLTextAreaElement>('[data-sent-replies="live-1"] textarea')!, 'And Nantes.');
   await act(async () => {
@@ -546,9 +547,9 @@ test.skipIf(!hasDom)("with comment sends, a draft comment on a file has Send on 
 
   await renderApp(`#thread=${world.filed}&file=${world.attachment}`);
   const card = () => document.querySelector<HTMLElement>('[data-annotation-id="snd-file-1"]');
-  // A Markdown file's flat list: the draft's line says Not sent, with Send.
+  // A Markdown file's flat list: the draft's line says Draft, with Send.
   await until(() => card()?.querySelector('[data-comment-meta-send]') != null, "the draft card's Send");
-  expect(card()!.querySelector('[data-comment-meta-round]')!.textContent).toBe('Not sent');
+  expect(card()!.querySelector('[data-comment-meta-round]')!.textContent).toBe('Draft');
   await act(async () => {
     card()!.querySelector<HTMLButtonElement>('[data-comment-meta-send]')!.click();
   });
@@ -715,13 +716,13 @@ test.skipIf(!hasDom)("with comment sends, the closed foot keeps the Draft note a
   // 👍 Looks good stays offered (nothing is taken away).
   expect(el.querySelector('[data-ack]')).not.toBeNull();
 
-  // The list: the draft first (Not sent, Send, Edit), then the sent one, alone and read-only, with its line.
+  // The list: the draft first (Draft, Send, Edit), then the sent one, alone and read-only, with its line.
   act(() => el.querySelector<HTMLButtonElement>('[data-foot-status] button[data-draft-comments]')!.click());
   await until(() => el.querySelector('[data-comments-list]') !== null, 'the list');
   const row = (id: string) => el.querySelector<HTMLElement>(`[data-comments-list] [data-annotation-row="${id}"]`);
   expect([...el.querySelectorAll('[data-comments-list] [data-annotation-row]')].map((r) => r.getAttribute('data-annotation-row'))).toEqual(['lst-d2', 'lst-d1']);
   expect(el.querySelector('[data-comments-list] .ib-aph')!.textContent).toBe('1 comment · 1 sent');
-  expect(row('lst-d2')!.querySelector('[data-comment-meta-round]')!.textContent).toBe('Not sent');
+  expect(row('lst-d2')!.querySelector('[data-comment-meta-round]')!.textContent).toBe('Draft');
   expect(row('lst-d2')!.querySelector('[data-comment-meta-send]')).not.toBeNull();
   expect([...row('lst-d2')!.querySelectorAll('button')].some((b) => b.textContent === 'Edit')).toBe(true);
   expect(row('lst-d1')!.querySelector('[data-comment-meta-round]')!.textContent).toBe('Round 1');

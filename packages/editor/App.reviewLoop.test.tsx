@@ -267,11 +267,11 @@ afterAll(() => {
 describe.if(hasDom)("the review loop on an annotate screen", () => {
   test("Send Feedback ends the round in the same tab; the threads are boxes under their passage, the panel a flat list; Done tells the agent how the review ended", async () => {
     await mountAndRestore();
-    // A draft keeps today's Reply (nested replies, PR 2), and is a box too, "Not sent", under its paragraph.
+    // A draft keeps today's Reply (nested replies, PR 2), and is a box too, "Draft", under its paragraph.
     expect(card("annRetry")?.querySelector('button[title="Reply"]')).not.toBeNull();
     expect(box("annRetry")?.hasAttribute("data-sent-draft")).toBe(true);
     expect(box("annRetry")?.closest("[data-below-block]")?.getAttribute("data-below-block")).toBe("block-1");
-    expect(card("annRetry")?.querySelector('[data-comment-meta-round]')?.textContent).toBe("Not sent");
+    expect(card("annRetry")?.querySelector('[data-comment-meta-round]')?.textContent).toBe("Draft");
 
     await pressPrimary();
     expect(posts.map((post) => post.path)).toEqual(["/api/threads/send"]);
@@ -285,7 +285,8 @@ describe.if(hasDom)("the review loop on an annotate screen", () => {
     expect(toastText()).toContain("Round 1 sent");
     expect(toastText()).toContain("This page updates by itself when Claude Code replies.");
     // The tab stays: the comment is still in the panel, sent, one line more; the header counts the round.
-    expect(card("annRetry")?.querySelector('[data-comment-meta-status="delivered"]')?.textContent).toBe("Delivered");
+    // Delivered and waiting for its answer says Sent (R31).
+    expect(card("annRetry")?.querySelector('[data-comment-meta-status="delivered"]')?.textContent).toBe("Sent");
     expect(card("annRetry")?.querySelector('[data-comment-meta-round]')?.textContent).toBe("Round 1");
     // Pinned on purpose: the count's words are the initiative's ("Round N · M open"), the numbers the server's.
     expect(document.querySelector("[data-review-loop-count]")?.textContent).toBe("Round 2 · 1 open");
@@ -306,7 +307,7 @@ describe.if(hasDom)("the review loop on an annotate screen", () => {
     await settle();
     expect(reply()?.hasAttribute("data-sent-new")).toBe(false);
 
-    // The person replies in the box: a draft there, "Not sent", sent alone at once by its own Send under the thread.
+    // The person replies in the box: a draft there, "Draft", sent alone at once by its own Send under the thread.
     await press('[data-sent-reply-to="annRetry"]');
     const field = document.querySelector<HTMLTextAreaElement>('[data-review-loop-boxes] textarea[aria-label="Reply"]')!;
     await act(async () => {

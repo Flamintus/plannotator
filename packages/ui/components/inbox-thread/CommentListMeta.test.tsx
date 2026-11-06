@@ -1,6 +1,6 @@
 /**
  * The line a flat list adds under one comment (`CommentListMeta`): a draft
- * says "Not sent" and has Send (once, again only when it did not go); a sent
+ * says "Draft" and has Send (once, again only when it did not go); a sent
  * one its round, its send's status, "Resolved" with Reopen (Resolve while
  * open), and how many replies are under its passage, never their words;
  * nothing at all when there is nothing to say.
@@ -30,11 +30,12 @@ async function draw(element: ReactElement): Promise<HTMLElement> {
   return host;
 }
 
-test.skipIf(!hasDom)('a draft: "Not sent" and Send, pressed once, again only when it did not go', async () => {
+test.skipIf(!hasDom)('a draft: "Draft" and Send, pressed once, again only when it did not go', async () => {
   const pressed: number[] = [];
   let answer = false;
   const host = await draw(<meta.CommentListMeta draft onSend={async () => { pressed.push(1); return answer; }} />);
-  expect(host.querySelector('[data-comment-meta-round]')?.textContent).toBe('Not sent');
+  // Pinned on purpose: a draft's word is the person's choice (Draft, R31), the one every list and box says.
+  expect(host.querySelector('[data-comment-meta-round]')?.textContent).toBe('Draft');
   const send = host.querySelector<HTMLButtonElement>('[data-comment-meta-send]')!;
   await act(async () => send.click());
   expect(send.disabled).toBe(false);
