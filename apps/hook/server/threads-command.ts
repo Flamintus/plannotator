@@ -16,6 +16,12 @@
  *   `threads --review`; given a send's `id`, that send's line again, nothing
  *   written (a client that closed before handing it over). A Finish with
  *   nothing to carry writes no round (`empty`).
+ * - Live: `threads live <comment-id> on|off` turns Live on or off on a sent
+ *   comment or sub-thread (the review named as for any client action, or by
+ *   `--review <key>`). `comment` says whether the comment it wrote goes now
+ *   (`now`: a reply under a live thread): the client then sends it at once by
+ *   its own `send` of mode `now`, hands the agent its line and marks it
+ *   `delivered`; the CLI never sends it itself.
  *
  * Unreleased (HIDDEN_SUBCOMMANDS): nothing calls them until a client does.
  * stdout carries the result only (one JSON value for a client's action); a
@@ -31,6 +37,7 @@ import {
   closeReviewJournal,
   isReviewJournalKey,
   listReviewJournals,
+  liveReviewComment,
   markReviewSendsDelivered,
   readReviewJournal,
   readReviewTarget,
@@ -39,6 +46,7 @@ import {
   resolveReviewComment,
   reviewCliHow,
   reviewJournalAgentRead,
+  reviewJournalGoesNow,
   reviewJournalKey,
   reviewJournalView,
   reviewJournalWakeText,
@@ -53,7 +61,7 @@ import {
 import { resolve } from "node:path";
 import { THREADS_COMMAND_USAGE } from "./cli";
 
-/** The actions a client calls: `plannotator threads <action> [<json> | -]`. */
+/** The actions a client calls: `plannotator threads <action> [<json> | -]`, and `threads live <comment-id> on|off`. */
 export const THREADS_CLIENT_ACTIONS = ["view", "comment", "remove", "resolve", "reopen", "anchor", "send", "delivered", "close"] as const;
 type ThreadsAction = (typeof THREADS_CLIENT_ACTIONS)[number];
 
@@ -142,6 +150,7 @@ export async function runThreadsCommand(argv: readonly string[], deps: ThreadsCo
       io.out(THREADS_COMMAND_USAGE);
       return 0;
     }
+    if (argv[0] === "live") return liveAction(argv.slice(1), deps, io);
     if ((THREADS_CLIENT_ACTIONS as readonly string[]).includes(argv[0] ?? "")) return clientAction(argv[0] as ThreadsAction, argv.slice(1), deps, io);
     let key: string | null = null;
     let json = false;
@@ -229,7 +238,8 @@ function idOf(args: Record<string, unknown>): string {
   return args.id;
 }
 
-async function clientAction(action: ThreadsAction, argv: readonly string[], deps: ThreadsCommandDeps, io: Io): Promise<number> {
+/** A client action's one JSON object: its argument, or stdin (`-`, or nothing piped in from a terminal). */
+async function jsonArgs(action: string, argv: readonly string[], deps: ThreadsCommandDeps): Promise<Record<string, unknown>> {
   if (argv.length > 1) throw new Usage(`One JSON argument after ${action} (or - for stdin).`);
   let raw = argv[0];
   if (raw === undefined || raw === "-") {
@@ -238,14 +248,36 @@ async function clientAction(action: ThreadsAction, argv: readonly string[], deps
     if (read === null) throw new Usage("The JSON on stdin is too long.");
     raw = read;
   }
-  let args: Record<string, unknown>;
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
-    args = parsed as Record<string, unknown>;
+    return parsed as Record<string, unknown>;
   } catch {
     throw new Usage(`${action}: one JSON object.`);
   }
+}
+
+/**
+ * `threads live <comment-id> on|off [<json> | - | --review <key>]`: Live on or
+ * off on a sent comment or sub-thread. The review is named as for any client
+ * action (`{"review": <key>}` or `{"target": {...}}`), or by `--review <key>`.
+ * Out: `{ review, comment, live }`. A draft, a reply or an unknown id is refused.
+ */
+async function liveAction(argv: readonly string[], deps: ThreadsCommandDeps, io: Io): Promise<number> {
+  const [id, state, ...rest] = argv;
+  if (!id || id.startsWith("-")) throw new Usage("live <comment-id> on|off: the sent comment or sub-thread, then on or off.");
+  if (state !== "on" && state !== "off") throw new Usage(`live ${id} on|off: on or off, not ${state === undefined ? "nothing" : JSON.stringify(state)}.`);
+  const flag = rest[0] === "--review" || rest[0]?.startsWith("--review=") === true;
+  if (flag && rest.length > (rest[0]!.includes("=") ? 1 : 2)) throw new Usage("live: --review <key>, or one JSON object, not both.");
+  const args = flag ? { review: flagValue(rest, 0, "--review") } : await jsonArgs("live", rest, deps);
+  const ref = refOf(args, deps.cwd);
+  const comment = liveReviewComment({ dataDir: deps.dataDir, now: deps.now }, ref, id, state === "on");
+  io.out(JSON.stringify({ review: keyOfRef(ref), comment, live: typeof comment.live_at === "string" }));
+  return 0;
+}
+
+async function clientAction(action: ThreadsAction, argv: readonly string[], deps: ThreadsCommandDeps, io: Io): Promise<number> {
+  const args = await jsonArgs(action, argv, deps);
   const ref = refOf(args, deps.cwd);
   const review = keyOfRef(ref);
   const options = { dataDir: deps.dataDir, now: deps.now };
@@ -255,8 +287,11 @@ async function clientAction(action: ThreadsAction, argv: readonly string[], deps
         const state = readReviewJournal(deps.dataDir, ref);
         return { review, target: state?.target ?? ("target" in ref ? ref.target : null), view: reviewJournalView(state, { agentName: inboxAgentName }) };
       }
-      case "comment":
-        return { review, comment: writeReviewComment(options, ref, args as unknown as ReviewCommentInput) };
+      case "comment": {
+        const comment = writeReviewComment(options, ref, args as unknown as ReviewCommentInput);
+        // A reply under a live thread goes now: the client sends it at once by its own `send` of mode `now`.
+        return { review, comment, now: reviewJournalGoesNow(readReviewJournal(deps.dataDir, { key: review }), comment) };
+      }
       case "remove":
         return { review, removed: removeReviewComment(options, ref, idOf(args)) };
       case "resolve":

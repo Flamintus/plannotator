@@ -159,7 +159,8 @@ describe('the text a send gives the agent', () => {
 describe('the thread view of a journal', () => {
   test('statuses, live threads, folds, sub-threads under the reply they are on, and agent names', () => {
     const records = [
-      comment('c1', { sent_reply_id: 'snd_1' }),
+      // Live is the person's choice (`live_at`): the `now` send that carried c1 and c2 makes neither live.
+      comment('c1', { sent_reply_id: 'snd_1', live_at: at(8) }),
       comment('c2', { sent_reply_id: 'snd_1', created_at: at(2), resolved_at: at(9) }),
       comment('s1', { parent: 'rep_1', quote: 'answer', quote_offset: 0, sent_reply_id: 'snd_2', created_at: at(6) }),
     ];
@@ -173,7 +174,7 @@ describe('the thread view of a journal', () => {
     expect(view.round).toBe(2);
     const [c1, c2] = view.threads;
     expect([c1!.id, c1!.status, c1!.live, c1!.folded]).toEqual(['c1', 'replied', true, false]);
-    expect([c2!.id, c2!.state, c2!.folded]).toEqual(['c2', 'resolved', true]);
+    expect([c2!.id, c2!.state, c2!.live, c2!.folded]).toEqual(['c2', 'resolved', false, true]);
     expect(c1!.replies[0]!.author_name).toBe('claude-code');
     expect(c1!.replies[0]!.sub_threads.map((sub) => [sub.id, sub.status])).toEqual([['s1', 'pending']]);
     expect(c2!.replies[0]!.author_name).toBe('pi');

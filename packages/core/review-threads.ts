@@ -17,8 +17,9 @@
  *   round of the newest send its session had received;
  * - state: open once sent, resolved by the person, open again on a reply
  *   newer than the resolution (`reviewCommentState`);
- * - live threads: a thread a `now` send reached; the person's next replies in
- *   it go on their own (`reviewLiveThreads`);
+ * - live threads: a sent comment or sub-thread the person turned Live on
+ *   (its `live_at`, the last toggle winning); the person's next replies in it
+ *   go on their own (`reviewLiveThreads`, `reviewDraftIsLive`);
  * - statuses of what a send carried: pending, delivered, read, working,
  *   replied (`reviewSendStatus`);
  * - the thread model (`reviewThreads`), the text an agent reads of a send
@@ -78,6 +79,11 @@ export interface ReviewCommentFields {
   resolved_at?: string | null;
   /** Its words were no longer found in the target the client last showed: when. */
   unanchored_at?: string | null;
+  /**
+   * Live, turned on by the person on a sent comment or sub-thread: when; null
+   * or absent while off. Only the person sets or clears it; a send never does.
+   */
+  live_at?: string | null;
 }
 
 /**
@@ -464,29 +470,28 @@ export function reviewRoundNow(
 // ──────────── Live threads and statuses ────────────
 
 /**
- * The live threads, by id: each a `now` send carried, or carried a reply of
- * the person's under. As crit's live threads, a thread stays live once it is:
- * the person's next replies in it go on their own (`reviewDraftIsLive`). A
- * sub-thread is a thread of its own: live once a `now` send carried it.
+ * Whether Live can be turned on or off on a comment record: a sent comment or
+ * sub-thread, not removed. A draft has none (it goes by its own Send), and a
+ * reply is part of its thread, whose Live it follows.
  */
-export function reviewLiveThreads(
-  sends: readonly Pick<ReviewSend, "id" | "mode" | "comments">[],
-  records: readonly Pick<ReviewCommentFields, "id" | "re" | "sent_reply_id">[],
-): Set<string> {
-  const byId = new Map(records.map((record) => [record.id, record]));
+export function isReviewLiveSettable(record: Pick<ReviewCommentFields, "re" | "sent_reply_id" | "removed_at">): boolean {
+  return isReviewCommentSent(record) && !isReviewCommentReply(record);
+}
+
+/**
+ * The live threads, by id: each sent comment or sub-thread the person turned
+ * Live on (`live_at`; the last toggle written wins, as the record holds it).
+ * Chosen, never inferred: a send, `now` or a Finish, makes no thread live. A
+ * sub-thread has its own Live, whatever its thread's. Under a live thread the
+ * person's next replies go on their own (`reviewDraftIsLive`).
+ */
+export function reviewLiveThreads(records: readonly Pick<ReviewCommentFields, "id" | "re" | "sent_reply_id" | "removed_at" | "live_at">[]): Set<string> {
   const live = new Set<string>();
-  for (const send of sends) {
-    if (send.mode !== "now") continue;
-    for (const id of send.comments) {
-      const record = byId.get(id);
-      if (record?.sent_reply_id !== send.id) continue;
-      live.add(isReviewCommentReply(record) ? record.re! : record.id);
-    }
-  }
+  for (const record of records) if (isReviewLiveSettable(record) && typeof record.live_at === "string") live.add(record.id);
   return live;
 }
 
-/** Whether a draft goes on its own, as a `now` send: a reply of the person's under a live thread. */
+/** Whether a draft goes on its own, as a `now` send, as soon as it is saved: a reply of the person's under a live thread. */
 export function reviewDraftIsLive(draft: Pick<ReviewCommentFields, "re" | "sent_reply_id" | "removed_at">, live: ReadonlySet<string>): boolean {
   return draft.sent_reply_id === null && draft.removed_at === null && isReviewCommentReply(draft) && live.has(draft.re!);
 }
@@ -896,7 +901,7 @@ export interface ReviewThreadNode<A = ReviewAnchor> extends Omit<ReviewThread<A>
   folded: boolean;
   /** A thread a send carried: what became of it. */
   status?: ReviewSendStatus;
-  /** A `now` send reached it: the person's next replies in it go on their own. */
+  /** The person turned Live on (`reviewLiveThreads`): their replies under it go on their own as they are saved. */
   live: boolean;
   replies: ReviewReplyNode<A>[];
   /** The sub-threads on its own words. */
@@ -920,8 +925,8 @@ function plainAgentName(author: ReviewAgent): string {
 /**
  * The comment threads as a tree, from the thread model (`reviewThreads`,
  * drafts included) plus what the sends give: each element's status (`busy`
- * names the sessions in a turn now) and whether a thread is live; and whether
- * each thread is folded. It shows what it is given: the person's drafts among
+ * names the sessions in a turn now); whether a thread is live (its record's
+ * `live_at`); and whether each thread is folded. It shows what it is given: the person's drafts among
  * `records` are listed (`draft`) and open a resolved comment again; without
  * them it is what was sent. A sub-thread sits under the message it is on, at
  * any depth; one whose message is gone, or that a broken writer left in a
@@ -944,7 +949,7 @@ export function reviewThreadView<R extends ReviewCommentFields, A>(
   const agentName = input.agentName ?? plainAgentName;
   const threads = reviewThreads(read, input.records, agentReplies, sends, { drafts: true, messages });
   const sendsById = new Map(sends.map((send) => [send.id, send]));
-  const live = reviewLiveThreads(sends, input.records);
+  const live = reviewLiveThreads(input.records);
   const answered = reviewCommentLastReplies([], agentReplies);
   const statusOf = (carrier: string, thread: string): { status?: ReviewSendStatus } => {
     const send = sendsById.get(carrier);

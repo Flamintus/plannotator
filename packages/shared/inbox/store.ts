@@ -193,6 +193,7 @@ import {
   inboxCommentSendMark,
   inboxCommentSendMarked,
   inboxWakeItems,
+  isInboxCommentLiveSettable,
   isInboxCommentSendRecord,
   type InboxCommentSend,
   type InboxCommentSendMode,
@@ -5108,6 +5109,25 @@ export class InboxStore {
   }
 
   /**
+   * The person turns Live on or off on a sent comment or sub-thread
+   * (experimental "persistent-comments"): `live_at` stamped, or cleared, the
+   * last one written winning. Under a live thread the person's replies go on
+   * their own as they are saved (inbox-comment-sends.ts). The person alone
+   * does: no agent tool writes it. Nothing is written when it is already so.
+   */
+  setAnnotationLive(id: string, live: boolean): InboxAnnotationRecord {
+    const record = this.annotations.get(id);
+    if (!record) throw new InboxError("annotation_not_found", `No annotation ${id}.`);
+    if (isInboxCommentReply(record)) throw new InboxError("validation_error", "A reply follows the Live of the comment it is under.", { field: "id" });
+    if (!isInboxCommentLiveSettable(record)) throw new InboxError("validation_error", "Only a sent comment is Live; a draft goes by its own Send.", { field: "id" });
+    if ((typeof record.live_at === "string") === live) return record;
+    const at = this.stamp();
+    const next = { ...record, live_at: live ? at : null, updated_at: at };
+    this.appendAnnotation(next, at);
+    return next;
+  }
+
+  /**
    * The person's reply under a sent comment, a new one or an edit of one
    * still waiting (experimental "persistent-comments"): a comment record
    * whose `re` names the comment, a draft that the next Send carries like any
@@ -5129,7 +5149,7 @@ export class InboxStore {
       throw new InboxError("annotation_closed", "This annotation was already sent or removed.");
     }
     const at = this.stamp();
-    const { unanchored_at: _unanchored, resolved_at: _resolved, parent: _parent, quote_offset: _offset, ...target } = comment;
+    const { unanchored_at: _unanchored, resolved_at: _resolved, live_at: _live, parent: _parent, quote_offset: _offset, ...target } = comment;
     const record: InboxAnnotationRecord = {
       ...target,
       id: input.id,
@@ -5201,7 +5221,7 @@ export class InboxStore {
       throw new InboxError("annotation_closed", "This annotation was already sent or removed.");
     }
     const at = this.stamp();
-    const { unanchored_at: _unanchored, resolved_at: _resolved, re: _re, parent: _parent, quote_offset: _offset, ...target } = comment;
+    const { unanchored_at: _unanchored, resolved_at: _resolved, live_at: _live, re: _re, parent: _parent, quote_offset: _offset, ...target } = comment;
     const createdAt = existing?.created_at ?? at;
     const record: InboxAnnotationRecord = {
       ...target,

@@ -18,9 +18,9 @@
  *   holds on Windows too), reads, checks the whole write, then appends its
  *   lines at once; a lock older than `LOCK_STALE_MS` is broken. Reads take no
  *   lock.
- * - Only the person resolves: the agent's side writes replies, never a
- *   resolution. Approving the review removes its folder
- *   (`closeReviewJournal`).
+ * - Only the person resolves and turns a thread Live on or off: the agent's
+ *   side writes replies, never a resolution. Approving the review removes its
+ *   folder (`closeReviewJournal`).
  *
  * Synchronous and runtime-agnostic (node:fs and node:crypto only), so the Bun
  * server, the CLI and the Pi server (vendored) share it.
@@ -34,9 +34,12 @@ import {
   REVIEW_TEXT_MAX,
   isReviewCommentReply,
   isReviewCommentSent,
+  isReviewLiveSettable,
   isReviewReplyId,
   isReviewSendId,
   reviewCommentId,
+  reviewDraftIsLive,
+  reviewLiveThreads,
   reviewReplyId,
   reviewRoundNow,
   reviewSendId,
@@ -213,6 +216,7 @@ function isComment(value: unknown): value is ReviewComment {
     nullableText(record.sent_reply_id) &&
     optionalNullableText(record.resolved_at) &&
     optionalNullableText(record.unanchored_at) &&
+    optionalNullableText(record.live_at) &&
     (record.re === undefined || typeof record.re === "string") &&
     (record.parent === undefined || typeof record.parent === "string")
   );
@@ -653,6 +657,37 @@ export function resolveReviewComment(options: ReviewJournalOptions, ref: ReviewJ
     const next = { ...record, resolved_at: resolved ? at : null, updated_at: at };
     return { lines: [{ kind: "comment", id, record: next }], result: next };
   });
+}
+
+/**
+ * The person turns Live on (`live`) or off on a sent comment or sub-thread:
+ * the comment's line again with `live_at` stamped or cleared, the last one
+ * written winning. Under a live thread the person's replies go on their own
+ * as they are saved (`reviewJournalGoesNow`). Only the person: no agent's
+ * command writes this. A draft or a reply is refused; nothing is written when
+ * it is already so.
+ */
+export function liveReviewComment(options: ReviewJournalOptions, ref: ReviewJournalRef, id: string, live: boolean): ReviewComment {
+  return write(options, ref, (state, at) => {
+    const review = state ?? empty(keyOf(ref));
+    const record = review.comments.find((comment) => comment.id === id && comment.removed_at === null);
+    if (!record) throw new ReviewJournalError("not_found", `No comment or sub-thread ${id}.`);
+    if (isReviewCommentReply(record)) throw new ReviewJournalError("invalid", `${id} is a reply: Live is turned on or off on the comment or sub-thread it is under (${record.re}).`);
+    if (!isReviewLiveSettable(record)) throw new ReviewJournalError("conflict", `${id} is not sent yet: Live is turned on once it is sent.`);
+    if ((typeof record.live_at === "string") === live) return { lines: [], result: record };
+    const next = { ...record, live_at: live ? at : null, updated_at: at };
+    return { lines: [{ kind: "comment", id, record: next }], result: next };
+  });
+}
+
+/**
+ * Whether the person's comment just written goes on its own, now, as a `now`
+ * send: a draft reply under a live thread (the core's `reviewDraftIsLive` over
+ * `reviewLiveThreads`). The client that wrote it sends it at once by its own
+ * `now` send; nothing here sends it.
+ */
+export function reviewJournalGoesNow(state: ReviewJournalState | null, comment: Pick<ReviewComment, "re" | "sent_reply_id" | "removed_at">): boolean {
+  return reviewDraftIsLive(comment, reviewLiveThreads(state?.comments ?? []));
 }
 
 /**

@@ -12,8 +12,9 @@
  *   threads still open by id. The round is the count of Finishes before it,
  *   plus one, continuing the rounds the person's replies carried before
  *   (`inboxCommentRoundNow`).
- * - A thread a `now` send reached is live, as crit's live threads: the
- *   person's next replies in it go on their own (`inboxLiveCommentThreads`).
+ * - A thread is live when the person turned Live on (the record's
+ *   `live_at`, inboxLiveCommentThreads): their next replies in it go on their
+ *   own. A send never makes a thread live.
  * - Each element a send carries has a status the send gives it: pending,
  *   delivered, read, working, replied (`inboxCommentSendStatus`).
  * - The text an agent reads is composed here from the records
@@ -51,6 +52,7 @@ import { inboxAgentName, type InboxDelivery, type InboxMessage, type InboxTag } 
 import {
   REVIEW_SEND_TITLE,
   REVIEW_THREAD_VIEW_VERSION,
+  isReviewLiveSettable,
   isReviewSendId,
   reviewDraftIsLive,
   reviewLiveThreads,
@@ -155,20 +157,22 @@ export function inboxOpenCommentsToName(threads: readonly InboxCommentThread[], 
   return threads.filter((thread) => isInboxCommentAskedAgain(thread) && sentTo(thread.reply_id) === session);
 }
 
-/**
- * The live threads, by id: each a `now` send carried, or carried a reply of
- * the person's under. As crit's live threads, a thread stays live once it is:
- * the person's next replies in it go on their own (`inboxCommentDraftIsLive`).
- * A sub-thread is a thread of its own: it is live once a `now` send carried it.
- */
-export function inboxLiveCommentThreads(
-  sends: readonly Pick<InboxCommentSend, "id" | "mode" | "comments">[],
-  records: readonly Pick<InboxAnnotationRecord, "id" | "re" | "sent_reply_id">[],
-): Set<string> {
-  return reviewLiveThreads(sends, records);
+/** Whether the person can turn Live on or off on a comment record: a sent comment or sub-thread, not removed (never a draft, never a reply). */
+export function isInboxCommentLiveSettable(record: Pick<InboxAnnotationRecord, "re" | "sent_reply_id" | "removed_at">): boolean {
+  return isReviewLiveSettable(record);
 }
 
-/** Whether a draft goes on its own, as a `now` send: a reply of the person's under a live thread. */
+/**
+ * The live threads, by id: each sent comment or sub-thread the person turned
+ * Live on (`live_at`, the store's `setAnnotationLive`), the review loop's rule
+ * (review-threads.ts `reviewLiveThreads`). A sub-thread has its own Live. The
+ * person's next replies in a live thread go on their own (`inboxCommentDraftIsLive`).
+ */
+export function inboxLiveCommentThreads(records: readonly Pick<InboxAnnotationRecord, "id" | "re" | "sent_reply_id" | "removed_at" | "live_at">[]): Set<string> {
+  return reviewLiveThreads(records);
+}
+
+/** Whether a draft goes on its own, as a `now` send, as soon as it is saved: a reply of the person's under a live thread. */
 export function inboxCommentDraftIsLive(draft: Pick<InboxAnnotationRecord, "re" | "sent_reply_id" | "removed_at">, live: ReadonlySet<string>): boolean {
   return reviewDraftIsLive(draft, live);
 }
@@ -336,8 +340,8 @@ export type InboxCommentThreadView = ReviewThreadView<InboxCommentAnchor>;
  * The comment threads as a tree, from the thread model
  * (`inboxCommentThreads`, drafts included: rounds, state, place, replies,
  * unanchored) plus what the sends give: each element's status (`busy` names
- * the sessions in a turn now) and whether a thread is live; and whether each
- * thread is folded. It shows what it is given: the person's drafts among
+ * the sessions in a turn now); whether a thread is live (its record's
+ * `live_at`); and whether each thread is folded. It shows what it is given: the person's drafts among
  * `records` are listed (`draft`) and open a resolved comment again, as in
  * the window; without them it is what was sent. A sub-thread sits under the
  * message it is on, at any depth; one whose message is gone, or that a

@@ -333,26 +333,36 @@ test("the window's read gives each agent's reply its seq on the event log", asyn
   expect(replies[0]!.seq).toBeGreaterThan(before);
 });
 
-test("live: once a `now` send reached a thread, the person's reply under it goes on its own; under any other it stays a draft", async () => {
+test("live: once the person turned Live on a thread, their reply under it goes on its own; Send now alone, or Live turned off, keeps it a draft", async () => {
   const { project, dataDir } = world();
   const server = await start(dataDir);
   const client = await agent(server);
   const sent = await opening(client, project);
   await comment(server, sent.message_id, "c-live", "all stores at once", "One store first.");
   await comment(server, sent.message_id, "c-quiet", "with a press release", "No press release yet.");
-  await press(server, sent.thread_id, { mode: "now", comment_ids: ["c-live"], idempotency_key: "k-1" });
-  await press(server, sent.thread_id, { mode: "round", idempotency_key: "f-1" });
+  // A draft takes no Live: it goes by its own Send.
+  expect((await post(server, "/api/inbox/annotations/c-live/live", { live: true })).status).toBe(422);
+  await press(server, sent.thread_id, { mode: "now", comment_ids: ["c-live", "c-quiet"], idempotency_key: "k-1" });
+  const on = (await (await post(server, "/api/inbox/annotations/c-live/live", { live: true })).json()) as { annotation: InboxAnnotationRecord };
+  expect(typeof on.annotation.live_at).toBe("string");
 
   const live = await post(server, "/api/inbox/annotations/c-live/replies", { annotation: { id: "r-live", text: "Lyon, then?" } });
   const answer = (await live.json()) as { annotation: InboxAnnotationRecord; sends?: InboxCommentSend[] };
   expect(answer.sends!.map((s) => [s.mode, s.comments, s.to.session])).toEqual([["now", ["r-live"], "ses_alpha"]]);
   expect(answer.annotation.sent_reply_id).toBe(answer.sends![0]!.id);
+  // A reply follows its thread's Live: it takes none of its own.
+  expect((await post(server, "/api/inbox/annotations/r-live/live", { live: true })).status).toBe(422);
 
-  // c-quiet went with the Finish only: a reply under it waits for the next press.
+  // c-quiet went by Send now too, Live never turned on: a reply under it waits for the next press.
   const quiet = await post(server, "/api/inbox/annotations/c-quiet/replies", { annotation: { id: "r-quiet", text: "Or a short note?" } });
   const kept = (await quiet.json()) as { annotation: InboxAnnotationRecord; sends?: unknown };
   expect([kept.annotation.sent_reply_id, kept.sends]).toEqual([null, undefined]);
-  expect((await files(server, sent.thread_id)).annotations.map((r) => r.id)).toEqual(["r-quiet"]);
+
+  // Live turned off again (the last toggle wins): the next reply under c-live waits too.
+  await post(server, "/api/inbox/annotations/c-live/live", { live: false });
+  const off = (await (await post(server, "/api/inbox/annotations/c-live/replies", { annotation: { id: "r-off", text: "Or Nantes?" } })).json()) as { sends?: unknown };
+  expect(off.sends).toBeUndefined();
+  expect((await files(server, sent.thread_id)).annotations.map((r) => r.id).sort()).toEqual(["r-off", "r-quiet"]);
 });
 
 test("ranged reads keep what the sends of their range carried, and a session's own read marks its sends read, never another's", async () => {
@@ -437,6 +447,7 @@ test("refusals: no agent session to send to, a resolved thread; a live reply who
   const sent = await opening(client, project);
   await comment(server, sent.message_id, "c-1", "all stores at once", "One store first.");
   await press(server, sent.thread_id, { mode: "now", comment_ids: ["c-1"], idempotency_key: "k-1" });
+  await post(server, "/api/inbox/annotations/c-1/live", { live: true });
   const tagged = await post(server, "/api/inbox/annotations/c-1/replies", { annotation: { id: "r-ghost", text: "Ask the other agent too.", mentions: ["ses_ghost"] } });
   const answer = (await tagged.json()) as { annotation: InboxAnnotationRecord; send_refused?: { code: string } };
   expect([answer.annotation.sent_reply_id, answer.send_refused?.code]).toEqual([null, "session_not_live"]);
@@ -453,6 +464,7 @@ test("a live reply saved again (a lost answer) answers what it sent, once", asyn
   const sent = await opening(client, project);
   await comment(server, sent.message_id, "c-1", "all stores at once", "One store first.");
   await press(server, sent.thread_id, { mode: "now", comment_ids: ["c-1"], idempotency_key: "k-1" });
+  await post(server, "/api/inbox/annotations/c-1/live", { live: true });
   const body = { annotation: { id: "r-1", text: "Lyon, then?" } };
   const first = (await (await post(server, "/api/inbox/annotations/c-1/replies", body)).json()) as { sends: InboxCommentSend[] };
   const again = await post(server, "/api/inbox/annotations/c-1/replies", body);

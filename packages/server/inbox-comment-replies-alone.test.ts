@@ -254,7 +254,7 @@ test("on: without a key, the same session's words already last under a comment a
   expect((await call(client, "send_message", alone([{ comment_id: "c-2", text: "No release." }]))).structured.replayed).toBe(true);
   // Another session's same words are its own reply.
   await call(client, "send_message", { ...alone([{ comment_id: "c-2", text: "No release." }]), ...OTHER });
-  // Once the person replied under the comment (a live thread sends it on its own), the same words again are a new reply.
+  // Once the person replied under the comment (sent by its own Send, or on its own under a thread they turned Live on), the same words again are a new reply.
   const saved = await post(server, "/api/inbox/annotations/c-1/replies", { annotation: { id: "r-person", text: "Why Lyon?" } });
   expect(saved.status).toBe(200);
   if (!((await saved.json()) as { sends?: unknown[] }).sends?.length) {

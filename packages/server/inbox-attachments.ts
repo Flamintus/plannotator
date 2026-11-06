@@ -614,6 +614,17 @@ export function createInboxAttachmentRoutes(context: InboxAttachmentRoutesContex
       return json({ annotation: store.resolveAnnotation(resolve[1]!, body.resolved) });
     }
 
+    // The person turns Live on or off on a sent comment or sub-thread: under it, their replies go on their own (experimental "persistent-comments").
+    const live = /^\/api\/inbox\/annotations\/([A-Za-z0-9_.:-]+)\/live$/.exec(path);
+    if (live) {
+      if (req.method !== "POST") return json({ error: "Use POST." }, 405);
+      if (!context.persistentCommentsOn?.()) return json({ error: "Sent comments are not kept in view.", code: "persistent_comments_off" }, 409);
+      const body = await guardedBody(req);
+      if (body instanceof Response) return body;
+      if (typeof body.live !== "boolean") throw new InboxError("validation_error", "live: a boolean.", { field: "live" });
+      return json({ annotation: store.setAnnotationLive(live[1]!, body.live) });
+    }
+
     // The person's reply under a sent comment, a draft the next Send carries (experimental "persistent-comments").
     const reply = /^\/api\/inbox\/annotations\/([A-Za-z0-9_.:-]+)\/replies$/.exec(path);
     if (reply) {

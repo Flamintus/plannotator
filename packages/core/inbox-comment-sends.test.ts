@@ -206,25 +206,28 @@ describe('what a Finish names as still open', () => {
 
 describe('live threads', () => {
   const records = [
-    record('c1', { sent_reply_id: 'snd_now' }),
-    record('c2', { sent_reply_id: 'snd_fin' }),
-    record('c3', { sent_reply_id: 'snd_fin' }),
-    record('r1', { re: 'c3', sent_reply_id: 'snd_reply' }),
+    record('c1', { sent_reply_id: 'snd_now', live_at: at(5) }),
+    // Carried by a `now` send, Live never turned on: not live (Send now makes no thread live).
+    record('c2', { sent_reply_id: 'snd_now' }),
+    // Turned on, then off (the last toggle wins).
+    record('c3', { sent_reply_id: 'snd_fin', live_at: null }),
+    // A sub-thread has its own Live, whatever its thread's.
+    record('s1', { parent: 'c2', quote_offset: 0, sent_reply_id: 'snd_fin', live_at: at(6) }),
+    // Never a draft, a reply or a removed thread.
+    record('d0', { live_at: at(6) }),
+    record('r1', { re: 'c3', sent_reply_id: 'snd_fin', live_at: at(6) }),
+    record('x1', { sent_reply_id: 'snd_now', removed_at: at(7), live_at: at(6) }),
   ];
-  const sends = [
-    send('snd_now', 2, { comments: ['c1'] }),
-    send('snd_fin', 3, { mode: 'round', comments: ['c2', 'c3', 'c1'] }),
-    send('snd_reply', 4, { comments: ['r1'] }),
-  ];
-  const live = inboxLiveCommentThreads(sends, records);
+  const live = inboxLiveCommentThreads(records);
 
-  test('a thread is live once a `now` send carried it or a reply under it; a Finish makes none live', () => {
-    expect([...live].sort()).toEqual(['c1', 'c3']);
+  test('a thread is live while the person turned Live on (its `live_at`), never because a send reached it', () => {
+    expect([...live].sort()).toEqual(['c1', 's1']);
   });
 
   test("the person's next reply under a live thread goes on its own; a sub-thread, a sent reply or a reply elsewhere does not", () => {
     expect(inboxCommentDraftIsLive(record('d1', { re: 'c1' }), live)).toBe(true);
     expect(inboxCommentDraftIsLive(record('d2', { re: 'c2' }), live)).toBe(false);
+    expect(inboxCommentDraftIsLive(record('d6', { re: 's1' }), live)).toBe(true);
     expect(inboxCommentDraftIsLive(record('d3', { parent: 'c1', quote_offset: 0 }), live)).toBe(false);
     expect(inboxCommentDraftIsLive(record('d4', { re: 'c1', sent_reply_id: 'snd_x' }), live)).toBe(false);
     expect(inboxCommentDraftIsLive(record('d5', { re: 'c1', removed_at: at(9) }), live)).toBe(false);
@@ -358,7 +361,8 @@ describe('the thread view', () => {
     const [old, thread] = view.threads;
     // Carried by the person's reply, before sends: no status.
     expect(old!.status).toBeUndefined();
-    expect(thread).toMatchObject({ id: 'c1', round: 2, state: 'open', status: 'replied', live: true });
+    // Sent by a `now` send, Live never turned on: not live.
+    expect(thread).toMatchObject({ id: 'c1', round: 2, state: 'open', status: 'replied', live: false });
     expect(thread!.replies.map((r) => [r.id, r.author.kind, r.status ?? null])).toEqual([
       ['rep_a', 'agent', null],
       ['r1', 'person', 'pending'],

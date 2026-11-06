@@ -30,11 +30,12 @@
  * it wrote. Every refusal comes before anything is written. The shape is
  * the one the device door is to take as it is.
  *
- * Live threads, as crit's: once a `now` send reached a thread, the person's
- * reply under it goes on its own, whichever client saved it
- * (`liveCommentReply`, from the reply route), so every client has one rule;
- * the same save sent again (a lost answer) answers what it sent
- * (`liveCommentReplyAgain`).
+ * Live threads: once the person turned Live on for a thread (the record's
+ * `live_at`, `POST /api/inbox/annotations/:id/live`; a send never does), the
+ * person's reply under it goes on its own as it is saved, whichever client
+ * saved it (`liveCommentReply`, from the reply route), so every client has
+ * one rule; the same save sent again (a lost answer) answers what it sent
+ * (`liveCommentReplyAgain`). Under a thread with Live off it stays a draft.
  *
  * Off, the route answers 409 `persistent_comments_off` and writes nothing.
  */
@@ -231,7 +232,7 @@ export function liveCommentReply(
   record: InboxAnnotationRecord,
 ): { annotation: InboxAnnotationRecord; sends?: InboxCommentSend[]; send_refused?: { code: string; message: string } } {
   const { store } = context;
-  const live = inboxLiveCommentThreads(store.commentSends(record.thread_id), store.sentAnnotations(record.thread_id));
+  const live = inboxLiveCommentThreads(store.sentAnnotations(record.thread_id));
   if (!inboxCommentDraftIsLive(record, live)) return { annotation: record };
   try {
     const { sends } = sendComments(context, record.thread_id, { mode: "now", comment_ids: [record.id], idempotency_key: `live:${record.id}` });

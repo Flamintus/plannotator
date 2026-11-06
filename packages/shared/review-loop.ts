@@ -12,7 +12,8 @@
  *   screen keeps today's single decision.
  * - The page (`/api/threads`): reads the review (`v: 1` thread view), sends
  *   the person's comments (`now`, or the end of a round), resolves and
- *   reopens. A send is written to the journal and handed to the host as one
+ *   reopens, and turns a thread Live on or off (under a live thread the page
+ *   sends the person's reply as a `now` send as soon as it is saved). A send is written to the journal and handed to the host as one
  *   line (a round is not a message): the shared core's wake, saying how the
  *   agent reads the round and answers (the `plannotator` tool when the host
  *   says its agent has it, else the CLI); the host's report marks it
@@ -50,6 +51,7 @@ import {
   closeReviewJournal,
   markReviewSendsDelivered,
   markReviewSendsRead,
+  liveReviewComment,
   readReviewJournal,
   replyInReview,
   resolveReviewComment,
@@ -72,6 +74,7 @@ import type { ReviewAgent, ReviewReplyHow, ReviewSend, ReviewSendMode } from "@p
 export const REVIEW_THREADS_PATH = "/api/threads";
 export const REVIEW_THREADS_SEND_PATH = "/api/threads/send";
 export const REVIEW_THREADS_RESOLVE_PATH = "/api/threads/resolve";
+export const REVIEW_THREADS_LIVE_PATH = "/api/threads/live";
 export const REVIEW_THREADS_REOPEN_PATH = "/api/threads/reopen";
 export const HOST_THREADS_PATH = "/api/host/threads";
 export const HOST_THREADS_REPLY_PATH = "/api/host/threads/reply";
@@ -98,6 +101,7 @@ const PATHS: ReadonlySet<string> = new Set([
   REVIEW_THREADS_PATH,
   REVIEW_THREADS_SEND_PATH,
   REVIEW_THREADS_RESOLVE_PATH,
+  REVIEW_THREADS_LIVE_PATH,
   REVIEW_THREADS_REOPEN_PATH,
   HOST_THREADS_PATH,
   HOST_THREADS_REPLY_PATH,
@@ -430,6 +434,22 @@ export function createReviewLoop(options: ReviewLoopOptions): ReviewLoop {
     }
   };
 
+  /** The person turns Live on or off on a sent comment or sub-thread. */
+  const handleLive = async (body: unknown): Promise<HostControlAnswer> => {
+    if (!available()) return unavailable();
+    if (ending) return endedRefusal();
+    if (!isRecord(body) || typeof body.id !== "string" || !body.id) return { status: 400, body: { error: "id: the sent comment or sub-thread." } };
+    if (typeof body.live !== "boolean") return { status: 400, body: { error: "live: true, or false to turn it off." } };
+    const { id, live } = body as { id: string; live: boolean };
+    try {
+      const comment = await retryReviewJournalWrite(() => liveReviewComment(writing, { key: key! }, id, live));
+      push();
+      return { status: 200, body: { comment, ...state() } };
+    } catch (error) {
+      return journalRefusal(error);
+    }
+  };
+
   // ── The host's side ──
 
   const handleHost = async (request: ReviewLoopRequest): Promise<HostControlAnswer> => {
@@ -502,6 +522,7 @@ export function createReviewLoop(options: ReviewLoopOptions): ReviewLoop {
       }
       if (request.method !== "POST") return { status: 405, body: { error: "Use POST." } };
       if (request.pathname === REVIEW_THREADS_REOPEN_PATH) return handleReopen();
+      if (request.pathname === REVIEW_THREADS_LIVE_PATH) return handleLive(request.body);
       return request.pathname === REVIEW_THREADS_SEND_PATH ? handleSend(request.body) : handleResolve(request.body);
     },
     messages: () => (pushedMessages ? [...pushedMessages] : null),

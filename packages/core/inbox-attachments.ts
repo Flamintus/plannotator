@@ -224,6 +224,13 @@ export interface InboxAnnotationRecord {
    */
   resolved_at?: string | null;
   /**
+   * A sent comment or sub-thread the person turned Live on: when; null or
+   * absent while off. Under it, the person's replies go on their own as they
+   * are saved. Only the person sets or clears it (additive; experimental
+   * "persistent-comments", inbox-comment-sends.ts `inboxLiveCommentThreads`).
+   */
+  live_at?: string | null;
+  /**
    * The person's reply under a sent comment: that comment's id (additive;
    * experimental "persistent-comments", inbox-comment-threads.ts). A draft
    * until a Send carries it, like any comment; its target and anchor are the
