@@ -364,7 +364,8 @@ describe.if(hasDom)("the review loop on an annotate screen", () => {
   test("personal version: Done with a thread still open asks first; Go back sends nothing, Resolve all & finish resolves it and tells the agent", async () => {
     await mountAndRestore();
     await pressPrimary();
-    await press("[data-completion-back]");
+    // Send Feedback's word: a toast where the review loop says it so (R11), else its message over the page, sent back.
+    if (document.querySelector("[data-completion-back]")) await press("[data-completion-back]");
     posts = [];
     const dialog = () => document.querySelector<HTMLElement>("[data-plannotator-confirm-dialog]");
     const button = (words: string) => Array.from(dialog()?.querySelectorAll<HTMLButtonElement>("button") ?? []).find((b) => b.textContent?.trim() === words);
@@ -386,7 +387,8 @@ describe.if(hasDom)("the review loop on an annotate screen", () => {
   test("personal version: Finish with them open ends the review as asked, and the agent reads which stay open", async () => {
     await mountAndRestore();
     await pressPrimary();
-    await press("[data-completion-back]");
+    // Send Feedback's word: a toast where the review loop says it so (R11), else its message over the page, sent back.
+    if (document.querySelector("[data-completion-back]")) await press("[data-completion-back]");
     posts = [];
     await press("[data-decision-primary]");
     await press("[data-open-threads-end=\"anyway\"]");
