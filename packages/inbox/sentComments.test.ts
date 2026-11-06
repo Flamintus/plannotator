@@ -129,9 +129,9 @@ describe('sub-threads in the window', () => {
     expect(Object.fromEntries([...by].map(([parent, list]) => [parent, list.map((r) => r.id)]))).toEqual({ rep_a: ['s1', 's2'], s1: ['s3'] });
   });
 
-  test("a message's words mark its sub-threads still open, not a resolved one", () => {
+  test("a message's words mark every sub-thread's passage, a resolved one too, as the document keeps a comment's highlight", () => {
     const marks = partsOf([rec('c1', {}), { ...s1, resolved_at: at(9) }, s2, nested]).passages;
-    expect(marks.get('rep_a')).toEqual([{ quote: 'rolls back', offset: 7 }]);
+    expect(marks.get('rep_a')).toEqual([{ quote: 'off switch', offset: 33 }, { quote: 'rolls back', offset: 7 }]);
     expect(marks.get('s1')).toEqual([{ quote: 'off switch', offset: 6 }]);
   });
 
