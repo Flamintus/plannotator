@@ -16,9 +16,11 @@
  *    with the message, the passage and its offset;
  *  - with comment sends: a draft (a comment, a reply under one, a sub-thread)
  *    has Send, which calls the host with its id and stays disabled once it
- *    went (pressed again only when it did not); a sent element shows its
- *    status, a live thread says so, an agent's reply not seen yet is New;
- *    without `onSend` a draft has no Send.
+ *    went (pressed again only when it did not); a box's head says the state
+ *    of the person's last message in it, and each message of the person's,
+ *    the comment included, its own beside "You" while not final; a live
+ *    thread says so, an agent's reply not seen yet is New; without `onSend` a
+ *    draft has no Send.
  *
  * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
@@ -248,9 +250,15 @@ describe.skipIf(!hasDom)('SentThreads', () => {
         return answers.shift()!;
       },
     });
-    // What became of each sent element (status words pinned on purpose: they are the decision's), the live thread, the new reply.
-    expect(box('c1')!.querySelector(':scope > .ib-sentb-head [data-sent-status="replied"]')!.textContent).toBe('Replied');
-    expect(box('c1')!.querySelector('[data-sent-reply="p1"] [data-sent-status="working"]')!.textContent).toBe('Working');
+    // The box's state is its last message of the person's (state words pinned on purpose: they are the decision's): p2, a draft,
+    // after its round; beside "You", each message of the person's its state while not final (the comment, replied: none).
+    const head = box('c1')!.querySelector(':scope > .ib-sentb-head')!;
+    expect([...head.querySelectorAll('[data-sent-round], [data-sent-tone], [data-sent-status], [data-sent-resolved-chip]')].map((chip) => chip.textContent)).toEqual(['Round 1', 'Draft']);
+    expect(box('c1')!.getAttribute('data-sent-box-tone')).toBe('draft');
+    expect(box('c1')!.querySelector(':scope > [data-sent-message="c1"] .ib-sentb-meta [data-sent-tone]')).toBeNull();
+    expect(box('c1')!.querySelector('[data-sent-reply="p1"] [data-sent-status="working"]')!.textContent).toBe('Sent');
+    expect(box('c1')!.querySelector('[data-sent-reply="p2"] [data-sent-tone="draft"]')!.textContent).toBe('Draft');
+    expect(box('c3')!.querySelector(':scope > [data-sent-message="c3"] .ib-sentb-meta [data-sent-tone="draft"]')!.textContent).toBe('Draft');
     expect(box('c1')!.querySelector(':scope > .ib-sentb-head [data-sent-live]')).not.toBeNull();
     expect(box('c1')!.querySelector('[data-sent-reply="r1"]')!.hasAttribute('data-sent-new')).toBe(true);
     expect(box('c1')!.querySelector('[data-sent-reply="p1"]')!.hasAttribute('data-sent-new')).toBe(false);

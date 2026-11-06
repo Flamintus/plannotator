@@ -17,11 +17,13 @@
  * @plannotator/ui/inbox-thread.css.
  *
  * At a box's head the passage and what the head says of it (`SentChips`: its
- * kind when not a comment, Deletion, Looks good or its label; its round or
- * Draft, a draft's Send at any depth; its send's status, Live,
- * ✓ Resolved, Unanchored), Reply and Resolve; then its messages: the comment, and the
- * replies under it, each with who wrote it (a reply its status or New, never
- * the round the head says). A sub-thread is a box in the box, in the message
+ * kind when not a comment, Deletion, Looks good or its label; its comment's
+ * round, a draft's Send at any depth; the box's state, the state of the
+ * person's last message in it, Draft, what became of its send or Replied, or
+ * ✓ Resolved alone, `sentBoxState`; Live, Unanchored), Reply and Resolve; then its messages: the comment, and the
+ * replies under it, each with who wrote it (the person's, the comment
+ * included, its state while not final, `SentMessageState`; an agent's New;
+ * never the round the head says). A sub-thread is a box in the box, in the message
  * whose passage it is on, under the block (paragraph) of its words where the
  * passage starts, as a thread sits under its block in the document, in a
  * group of boxes like the document's (`BoxGroup`, one rule for the room
@@ -53,11 +55,13 @@
  * round; what a send carried says what became of it (Queued, Delivered,
  * Read, Working, Replied); a thread the person turned Live on is Live (their
  * next replies in it go on their own as they are saved); and an agent's
- * reply the person has not seen yet is New. With `onLive`, a sent box, at
- * any depth, has Live at its head, which turns it on or off (pressed while
- * on, in the Live mark's look); a draft has none.
+ * reply the person has not seen yet is New. With `onLive`, a box, at any
+ * depth, has Live at its head, which turns it on or off (pressed while on, in
+ * the Live mark's look); turning it on first sends at once what waits in the
+ * box (its comment while a draft, the person's draft replies under it), each
+ * by its own Send, and leaves Live off when one does not go.
  */
-import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type ComponentProps, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { isInboxCommentThreadFolded, isInboxSubThread } from '@plannotator/core/inbox-comment-threads';
 import type { TextPassage } from '@plannotator/core/passage';
 import type { InboxAnnotationRecord } from '@plannotator/core/inbox-types';
@@ -210,7 +214,7 @@ interface SentThreadsActions<R extends SentThreadRecord = InboxAnnotationRecord>
   onSubThread?: SubThreadSave;
   /** Send one draft (a comment, a reply under one, a sub-thread, by id) alone, at once, the round left open; true once it went. */
   onSend?: (id: string) => Promise<boolean>;
-  /** Turn Live on (`live`) or off on a sent thread (a comment or a sub-thread, at any depth): under it the person's replies go on their own; on a draft, its Live sends it first (`onSend`). Absent: no Live button. */
+  /** Turn Live on (`live`) or off on a sent thread (a comment or a sub-thread, at any depth): under it the person's replies go on their own; its box's Live sends what waits in it first (`onSend`). Absent: no Live button. */
   onLive?: (record: R, live: boolean) => void;
   /**
    * Whether the person can still change a comment (a comment, a reply under one, a sub-thread, by id): the host's own
@@ -232,19 +236,49 @@ export const SENT_STATUS_WORDS: Record<InboxCommentSendStatus, string> = {
   replied: 'Replied',
 };
 
-/** A comment not sent yet, as its chip says it (a box's head, a list's line, beside the person's reply). */
+/** A comment not sent yet, as its chip says it (a box's head, a list's line, beside "You"). */
 export const SENT_DRAFT_WORD = 'Draft';
+
+/** A message's or a box's state: a draft not sent yet, what became of its send, or (a thread's) resolved. */
+export type SentState = 'draft' | InboxCommentSendStatus | 'resolved';
 
 /**
  * The colour a state's chip takes, the one source of it (`data-sent-tone`, styled alike in the Inbox's and the
- * screens' CSS): a draft light blue, sent orange, replied green; the others none.
+ * screens' CSS, and the frame of the box where the person is, `data-sent-box-tone`): a draft light blue, sent orange,
+ * replied green; the others none (resolved has the success colour of its own).
  */
 export type SentTone = 'draft' | 'sent' | 'replied';
-export function sentTone(state: InboxCommentSendStatus | 'draft' | undefined): SentTone | undefined {
+export function sentTone(state: SentState | undefined): SentTone | undefined {
   if (state === 'draft') return 'draft';
   if (state === 'delivered') return 'sent';
   if (state === 'replied') return 'replied';
   return undefined;
+}
+
+/** A message's state from what is known of it: Resolved (a thread's) first, else Draft while a draft, else what became of its send. */
+function messageState(draft: boolean, status: InboxCommentSendStatus | undefined, resolved = false): SentState | undefined {
+  return resolved ? 'resolved' : draft ? 'draft' : status;
+}
+
+/**
+ * A box's state, the one its head, its folded line and its frame where the person is say: Resolved once its thread
+ * is; else the state of the person's last message in it (its comment, or a reply of theirs under it; a sub-thread is
+ * a box of its own): Draft while a draft, else what became of its send, Replied once the agent answered after it (its
+ * send's status says so). A reply is the person's when it is a draft or a send carried it; an agent's is neither.
+ */
+function sentBoxState(
+  id: string,
+  draft: boolean,
+  tree: Pick<SentCommentsTree<SentThreadRecord>, 'resolved' | 'replies' | 'statuses'>,
+): SentState | undefined {
+  if (tree.resolved.has(id)) return 'resolved';
+  const { statuses } = tree;
+  const under = tree.replies.get(id) ?? [];
+  for (let at = under.length - 1; at >= 0; at--) {
+    const reply = under[at]!;
+    if (reply.draft || statuses?.has(reply.id)) return messageState(reply.draft, statuses?.get(reply.id));
+  }
+  return messageState(draft, statuses?.get(id));
 }
 
 /** An element's status chip (none without a status): the boxes' own, and a host's card (the file's panel). */
@@ -258,10 +292,11 @@ export function SentStatusChip({ status }: { status: InboxCommentSendStatus | un
 }
 
 /**
- * What the line of the person's reply says beside "You": the states that are not final only, Draft until it is
- * sent, then Sent until the agent answers, then nothing.
+ * What the author line of a message of the person's says beside "You", the first one (the comment) as each reply
+ * of theirs, the one decision of it: the states that are not final only, Draft until it is sent, then Sent until the
+ * agent answers (Queued, Read and Working said Sent), then nothing. An agent's reply (no draft, no status) says none.
  */
-function SentReplyState({ draft, status }: { draft: boolean; status: InboxCommentSendStatus | undefined }) {
+function SentMessageState({ draft, status }: { draft: boolean; status: InboxCommentSendStatus | undefined }) {
   if (draft) return <span className="ib-sentc-chip" data-sent-tone="draft">{SENT_DRAFT_WORD}</span>;
   if (!status || status === 'replied') return null;
   return (
@@ -271,14 +306,28 @@ function SentReplyState({ draft, status }: { draft: boolean; status: InboxCommen
   );
 }
 
-/** A thread's round, or Draft for a draft (none when it has neither). */
-function SentRoundChip({ draft, round }: { draft?: boolean; round?: number }) {
-  if (draft) return <span className="ib-sentc-chip" data-sent-tone="draft">{SENT_DRAFT_WORD}</span>;
+/** A thread's round, the one its comment was sent in (none for a comment never sent). */
+function SentRoundChip({ round }: { round?: number }) {
   return round === undefined ? null : (
     <span className="ib-sentc-chip" data-sent-round={round}>
       Round {round}
     </span>
   );
+}
+
+/** A state's chip, the one source of it at a head: Draft, what became of a send (`SentStatusChip`), or ✓ Resolved in the success colour. */
+function SentStateChip({ state }: { state: SentState | undefined }) {
+  if (state === undefined) return null;
+  if (state === 'draft') return <span className="ib-sentc-chip" data-sent-tone="draft">{SENT_DRAFT_WORD}</span>;
+  if (state === 'resolved') {
+    return (
+      <span className="ib-sentc-chip ib-sentb-resolved" data-sent-resolved-chip="">
+        <Icon name="check" size={11} />
+        Resolved
+      </span>
+    );
+  }
+  return <SentStatusChip status={state} />;
 }
 
 /** A thread's kind when it is not a comment (`commentKind`): Deletion, Looks good (in the success colour), or its label. */
@@ -295,43 +344,33 @@ function SentKindChip({ kind }: { kind: CommentKind }) {
 
 /**
  * What a thread's head says of it after its passage, at any depth and for any kind (a box's head, and a host's card,
- * the Inbox file panel's): ⚡ Live first, in the lightning's yellow, while open; its kind when it is not a comment
- * (Deletion, Looks good, its label), its round or Draft, what became of its send, ✓ Resolved in the success
- * colour, and Unanchored when its passage was not found.
+ * the Inbox file panel's): ⚡ Live first, in the lightning's yellow, while not resolved; its kind when it is not a
+ * comment (Deletion, Looks good, its label), the round its comment was sent in, its state (`SentStateChip`: Draft,
+ * what became of a send, or ✓ Resolved alone), and Unanchored when its passage was not found.
  */
 export function SentChips({
   kind,
-  draft = false,
   round,
-  status,
+  state,
   live = false,
-  resolved = false,
   unanchored = false,
 }: {
   kind?: CommentKind;
-  draft?: boolean;
   round?: number;
-  status?: InboxCommentSendStatus;
+  state?: SentState;
   live?: boolean;
-  resolved?: boolean;
   unanchored?: boolean;
 }) {
   return (
     <>
-      {live && !resolved && (
+      {live && state !== 'resolved' && (
         <span className="ib-sentc-chip ib-sentb-live" data-sent-live="" title="Your replies here go to the agent as you save them">
           ⚡ Live
         </span>
       )}
       {kind && <SentKindChip kind={kind} />}
-      <SentRoundChip draft={draft} round={round} />
-      <SentStatusChip status={status} />
-      {resolved && (
-        <span className="ib-sentc-chip ib-sentb-resolved" data-sent-resolved-chip="">
-          <Icon name="check" size={11} />
-          Resolved
-        </span>
-      )}
+      <SentRoundChip round={round} />
+      <SentStateChip state={state} />
       {unanchored && (
         <span className="ib-sentc-chip" data-sent-unanchored="">
           Unanchored
@@ -344,15 +383,26 @@ export function SentChips({
 /**
  * A card's state in a comments panel, where a thread is a card because there is no text to put its box in (an HTML
  * page, the plan diff, the Markdown edit mode; the Inbox's code, HTML, image and video files): what a box's head says,
- * by the same chips. `annotation`: a thread's (its kind; none for a reply). The card says Deletion in its own type word
- * and Unanchored in its own chip, so neither is said twice here.
+ * by the same chips, the card's own state (a card is one message). `annotation`: a thread's (its kind; none for a
+ * reply). The card says Deletion in its own type word and Unanchored in its own chip, so neither is said twice here.
  */
 export function SentCardChips({
   annotation,
-  ...chips
-}: { annotation?: { type?: unknown; text?: unknown; isQuickLabel?: unknown } } & Omit<ComponentProps<typeof SentChips>, 'kind' | 'unanchored'>) {
+  draft = false,
+  round,
+  status,
+  live,
+  resolved = false,
+}: {
+  annotation?: { type?: unknown; text?: unknown; isQuickLabel?: unknown };
+  draft?: boolean;
+  round?: number;
+  status?: InboxCommentSendStatus;
+  live?: boolean;
+  resolved?: boolean;
+}) {
   const kind = annotation ? commentKind(annotation) : undefined;
-  return <SentChips {...chips} kind={kind?.kind === 'deletion' ? undefined : kind} />;
+  return <SentChips kind={kind?.kind === 'deletion' ? undefined : kind} round={draft ? undefined : round} state={messageState(draft, status, resolved)} live={live} />;
 }
 
 /** A draft's Send: it goes alone, at once; disabled while it goes, and again only when it did not. The boxes' own, and a host's card. */
@@ -424,8 +474,9 @@ export type SentThreadsProps<R extends SentThreadRecord = InboxAnnotationRecord>
  * A resolved thread says so plainly: its passage's bar takes the success
  * colour, a "✓ Resolved" chip at its head, its words dimmed. Every box's frame
  * is grey; only the box where the person is, the innermost (`selected`, or
- * under the pointer, or holding the focus), takes a colour, the comments'
- * own, or the success colour once resolved.
+ * under the pointer, or holding the focus), takes a colour, its state's
+ * (`data-sent-box-tone`: Draft, Sent, Replied), the comments' own for a state
+ * with none, or the success colour once resolved.
  */
 export function SentThreads<R extends SentThreadRecord = InboxAnnotationRecord>({ group, records, tree, view, lost = false, passageToolbar, selected = null, ...actions }: SentThreadsProps<R>) {
   if (records.length === 0) return null;
@@ -539,6 +590,8 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
   const { rounds, resolved, replies, subThreads, openBelow, passages, statuses, live, fresh } = tree;
   const { onOpen, onLook, onResolve, onReply, onSubThread, onSend, onLive, canEdit, onEdit } = actions;
   const { box, setBox, edit, setEdit } = view;
+  // Live is going on: what waits in the box is being sent (pressed again only once it went or did not).
+  const [going, setGoing] = useState(false);
   const id = record.id;
   const annotation = record.annotation as unknown as Annotation;
   const quote = annotation.originalText ?? '';
@@ -557,6 +610,8 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
   const folded = view.isFolded(id, byDefault);
   const toggleFold = () => view.toggleFold(id, byDefault);
   const under = replies.get(id) ?? [];
+  // The box's state (its head, its folded line, its frame where the person is): its thread's, or its last message of the person's.
+  const state = sentBoxState(id, draft, tree);
   const context: BoxContext<R> = { tree, view, actions, selected };
   // Folded, what it hides that its line says (and whether the comment selected is in there).
   const held = folded ? heldUnder(id, replies, subThreads, fresh, selected) : null;
@@ -570,48 +625,46 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
     'data-sent-draft': draft ? '' : undefined,
     'data-sent-folded': folded ? '' : undefined,
     'data-sent-selected': here ? '' : undefined,
+    'data-sent-box-tone': sentTone(state),
   };
   // A press in a box is a look at it (and, the press being in them too, at the boxes around it).
   const look = onLook ? () => onLook(record) : undefined;
-  /** The switch of a sent box's Live, among its actions: Live turns it on, Unlive off; the ⚡ Live mark says it is on. */
-  // On a draft, Live sends it at once first (the box's own Send), then turns Live on: Live is a sent thread's.
-  const liveButton = onLive && (!draft || onSend) ? (
+  /** What waits in this box to go: its comment while a draft, then the person's draft replies under it, in their order. */
+  const waiting = [...(draft ? [id] : []), ...under.filter((reply) => reply.draft).map((reply) => reply.id)];
+  /**
+   * The switch of a box's Live, among its actions: Live turns it on, Unlive off; the ⚡ Live mark says it is on.
+   * Turning it on first sends at once what waits in the box, each by its own Send (`onSend`), in its order, then
+   * turns Live on (Live is a sent thread's); one that does not go leaves Live off. Turning it off sends nothing.
+   */
+  const liveButton = onLive && (waiting.length === 0 || onSend) ? (
     <button
       type="button"
       className="ib-sentc-act"
       aria-pressed={isLive}
       data-sent-live-toggle={id}
+      disabled={going}
       title={
-        draft
-          ? 'Send it now and turn Live on: your replies here go to the agent as you save them.'
-          : isLive
-            ? 'Turn Live off: your replies here wait to be sent again.'
+        isLive
+          ? 'Turn Live off: your replies here wait to be sent again.'
+          : waiting.length > 0
+            ? 'Send what waits here now and turn Live on: your replies here go to the agent as you save them.'
             : 'Turn Live on: your replies here go to the agent as you save them.'
       }
       onClick={async () => {
-        if (draft) {
-          if (!(await onSend?.(id))) return;
-          onLive(record, true);
-          return;
+        setGoing(true);
+        try {
+          if (!isLive) for (const next of waiting) if (!(await onSend!(next))) return;
+          onLive(record, !isLive);
+        } finally {
+          setGoing(false);
         }
-        onLive(record, !isLive);
       }}
     >
       {isLive ? 'Unlive' : 'Live'}
     </button>
   ) : null;
-  // What the head says, folded or not: ⚡ Live, its kind, its round or Draft, its send's status, ✓ Resolved, Unanchored.
-  const chips = (
-    <SentChips
-      kind={commentKind(annotation)}
-      draft={draft}
-      round={round}
-      status={statuses?.get(id)}
-      live={isLive}
-      resolved={isResolved}
-      unanchored={lost || typeof record.unanchored_at === 'string'}
-    />
-  );
+  // What the head says, folded or not: ⚡ Live, its kind, its comment's round, the box's state, Unanchored.
+  const chips = <SentChips kind={commentKind(annotation)} round={round} state={state} live={isLive} unanchored={lost || typeof record.unanchored_at === 'string'} />;
   /** A comment of this box the person can still change (the host's rule) is being edited: the field in place of its words. */
   const editable = (messageId: string) => !!onEdit && canEdit?.(messageId) === true;
   const editing = (messageId: string) => edit?.at === messageId && editable(messageId);
@@ -767,6 +820,7 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
         <div className="ib-sentb-msg" data-sent-message={id}>
           <div className="ib-sentb-meta">
             <span className="ib-sentc-who">You</span>
+            <SentMessageState draft={draft} status={statuses?.get(id)} />
           </div>
           {editField(id) ?? saidWithSubThreads(id, words, !draft && !!onSubThread)}
         </div>
@@ -783,7 +837,7 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
             >
               <div className="ib-sentb-meta">
                 <span className="ib-sentc-who">{reply.who}</span>
-                <SentReplyState draft={reply.draft} status={statuses?.get(reply.id)} />
+                <SentMessageState draft={reply.draft} status={statuses?.get(reply.id)} />
                 {fresh?.has(reply.id) && <span className="ib-sentc-chip ib-sentb-new">New</span>}
                 {editButton(reply.id, reply.text)}
                 {reply.draft && onSend && <SentSendButton id={reply.id} onSend={onSend} />}
