@@ -266,9 +266,9 @@ function SentKindChip({ kind }: { kind: CommentKind }) {
 
 /**
  * What a thread's head says of it after its passage, at any depth and for any kind (a box's head, and a host's card,
- * the Inbox file panel's): its kind when it is not a comment (Deletion, Looks good, its label), its round or Not sent,
- * what became of its send, Live while open, ✓ Resolved in the success colour, and Unanchored when its passage was not
- * found.
+ * the Inbox file panel's): ⚡ Live first, in the lightning's yellow, while open; its kind when it is not a comment
+ * (Deletion, Looks good, its label), its round or Not sent, what became of its send, ✓ Resolved in the success
+ * colour, and Unanchored when its passage was not found.
  */
 export function SentChips({
   kind,
@@ -289,14 +289,14 @@ export function SentChips({
 }) {
   return (
     <>
+      {live && !resolved && (
+        <span className="ib-sentc-chip ib-sentb-live" data-sent-live="" title="Your replies here go to the agent as you save them">
+          ⚡ Live
+        </span>
+      )}
       {kind && <SentKindChip kind={kind} />}
       <SentRoundChip draft={draft} round={round} />
       <SentStatusChip status={status} />
-      {live && !resolved && (
-        <span className="ib-sentc-chip ib-sentb-live" data-sent-live="" title="Your replies here go to the agent as you save them">
-          Live
-        </span>
-      )}
       {resolved && (
         <span className="ib-sentc-chip ib-sentb-resolved" data-sent-resolved-chip="">
           <Icon name="check" size={11} />
@@ -544,34 +544,31 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
   };
   // A press in a box is a look at it (and, the press being in them too, at the boxes around it).
   const look = onLook ? () => onLook(record) : undefined;
-  /** Live at the head of a sent box: pressed while on, in the Live mark's look, which it then stands for. */
+  /** The switch of a sent box's Live, among its actions: Live turns it on, Unlive off; the ⚡ Live mark says it is on. */
   const liveButton = !draft && onLive ? (
     <button
       type="button"
-      className={`ib-sentc-act${isLive ? ' ib-sentb-live' : ''}`}
+      className="ib-sentc-act"
       aria-pressed={isLive}
       data-sent-live-toggle={id}
-      data-sent-live={isLive ? '' : undefined}
-      title={isLive ? 'Live: your replies here go to the agent as you save them. Press to turn it off.' : 'Turn Live on: your replies here go to the agent as you save them.'}
+      title={isLive ? 'Turn Live off: your replies here wait to be sent again.' : 'Turn Live on: your replies here go to the agent as you save them.'}
       onClick={() => onLive(record, !isLive)}
     >
-      Live
+      {isLive ? 'Unlive' : 'Live'}
     </button>
   ) : null;
-  // What the head says, folded or not: its kind, its round or Not sent, its send's status, Live, ✓ Resolved, Unanchored.
-  // Open, a box with the Live button says Live by it, not twice.
-  const chipsWith = (withLive: boolean) => (
+  // What the head says, folded or not: ⚡ Live, its kind, its round or Not sent, its send's status, ✓ Resolved, Unanchored.
+  const chips = (
     <SentChips
       kind={commentKind(annotation)}
       draft={draft}
       round={round}
       status={statuses?.get(id)}
-      live={withLive && isLive}
+      live={isLive}
       resolved={isResolved}
       unanchored={lost || typeof record.unanchored_at === 'string'}
     />
   );
-  const chips = chipsWith(true);
   /** A comment of this box the person can still change (the host's rule) is being edited: the field in place of its words. */
   const editable = (messageId: string) => !!onEdit && canEdit?.(messageId) === true;
   const editing = (messageId: string) => edit?.at === messageId && editable(messageId);
@@ -697,7 +694,7 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
         ) : (
           <span className="ib-sentb-quote">{quoteText}</span>
         )}
-        <span className="ib-sentb-chips">{chipsWith(!liveButton)}</span>
+        <span className="ib-sentb-chips">{chips}</span>
         {send}
         {!draft && (onReply || onResolve || liveButton) && (
           <span className="ib-sentb-acts">
