@@ -1359,10 +1359,13 @@ export const inboxApi = {
   /** The person resolves a sent comment, or opens it again (experimental "persistent-comments"). */
   resolveComment: (id: string, resolved: boolean) =>
     post<{ annotation: InboxAnnotationRecord }>(inboxUrl(`/annotations/${encodeURIComponent(id)}/resolve`, undefined, machineOf(id)), { resolved }),
+  /** The person turns Live on or off on a sent comment or sub-thread: under it their replies go on their own (experimental "persistent-comments"). */
+  setCommentLive: (id: string, live: boolean) =>
+    post<{ annotation: InboxAnnotationRecord }>(inboxUrl(`/annotations/${encodeURIComponent(id)}/live`, undefined, machineOf(id)), { live }),
   /**
    * The person's reply under a sent comment, new or edited: a draft (experimental "persistent-comments"). Under a
-   * live thread (a comment send went to it at once) it goes on its own: `sends` names what carried it, and
-   * `send_refused` says why it stayed a draft.
+   * live thread (the person turned Live on) it goes on its own: `sends` names what carried it, and `send_refused`
+   * says why it stayed a draft.
    */
   saveCommentReply: (commentId: string, reply: { id: string; text: string; mentions?: readonly string[] }) =>
     post<{ annotation: InboxAnnotationRecord; sends?: InboxCommentSend[]; send_refused?: { code: string; message: string } }>(

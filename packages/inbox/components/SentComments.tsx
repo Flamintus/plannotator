@@ -50,10 +50,10 @@
  * and leaves the round open; the thread's Finish round sends every draft
  * left (Thread.tsx). What a send carried says what became of it (Queued,
  * Delivered, Read, Working while its session is in a turn, Replied); a
- * thread a send reached at once is Live, and the person's next reply under
- * it goes on its own (the server's rule); an agent's reply newer than the
- * person's look is New. The header counts the round and the threads still
- * open (`count`).
+ * sent box's Live, at its head, turns Live on or off, and under a live
+ * thread the person's next reply goes on its own as it is saved (the
+ * server's rule); an agent's reply newer than the person's look is New. The
+ * header counts the round and the threads still open (`count`).
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
@@ -141,6 +141,8 @@ export interface SentFileComments {
   onSubThread?: SubThreadSave;
   /** The person sends one draft alone, at once (comment sends; absent: none, the drafts go with the next Send). */
   onSend?: (id: string) => Promise<boolean>;
+  /** The person turns Live on or off on a sent comment or sub-thread (comment sends; absent: no Live). */
+  onLive?: (record: InboxAnnotationRecord, live: boolean) => void;
 }
 
 /**
@@ -161,10 +163,11 @@ export interface SentFileComments {
  *
  * With comment sends (`sendsOn`, see the header): `sendable`, the drafts that
  * go by them; `send`, one draft alone, at once (`reload` reads the files
- * again once it went, as for a reply that went on its own); the boxes carry
- * each sent element's status (its session's connection read while one waits
- * for an answer, for Working), the live threads and the agents' replies newer
- * than `newSince` (New); `count`, the header's round and threads still open.
+ * again once it went, as for a reply that went on its own); `setLive`, Live
+ * on or off on a sent thread; the boxes carry each sent element's status (its
+ * session's connection read while one waits for an answer, for Working), the
+ * live threads and the agents' replies newer than `newSince` (New); `count`,
+ * the header's round and threads still open.
  */
 export function useSentComments(input: {
   threadId: string;
@@ -264,6 +267,13 @@ export function useSentComments(input: {
       (cause: unknown) => onErrorRef.current(cause instanceof InboxApiError ? cause.message : 'The comment did not change.'),
     );
   }, []);
+  /** Live on or off on a sent comment or sub-thread: drawn as soon as the Inbox answers; a refusal goes to `onError`. */
+  const setLive = useCallback((record: InboxAnnotationRecord, live: boolean) => {
+    void inboxApi.setCommentLive(record.id, live).then(
+      ({ annotation }) => setWritten((current) => new Map(current).set(annotation.id, annotation)),
+      (cause: unknown) => onErrorRef.current(cause instanceof InboxApiError ? cause.message : 'Live did not change.'),
+    );
+  }, []);
   const patchRef = useRef(patchDrafts);
   patchRef.current = patchDrafts;
   const reloadRef = useRef(reload);
@@ -332,6 +342,8 @@ export function useSentComments(input: {
     [rounds, resolved, replies, subThreads, openBelow, passages, statuses, live, fresh],
   );
   const sendAction = sendsOn && canResolve ? send : undefined;
+  // Live sends a reply as a `now` send: only where comment sends go.
+  const liveAction = sendAction ? setLive : undefined;
   const pane = useMemo<SentFileComments | undefined>(
     () =>
       files?.sent_comments
@@ -346,9 +358,10 @@ export function useSentComments(input: {
             onUnanchoredReport: report,
             ...(canResolve ? { onResolve: resolve, onReply: reply, onSubThread: subThread } : {}),
             ...(sendAction ? { onSend: sendAction } : {}),
+            ...(liveAction ? { onLive: liveAction } : {}),
           }
         : undefined,
-    [files?.sent_comments, fileRecords, rounds, agentReplies, replyRounds, resolved, openBelow, tree, report, resolve, reply, subThread, canResolve, sendAction],
+    [files?.sent_comments, fileRecords, rounds, agentReplies, replyRounds, resolved, openBelow, tree, report, resolve, reply, subThread, canResolve, sendAction, liveAction],
   );
   const foldedIds = useMemo(() => new Set(threads.filter((record) => isInboxCommentThreadFolded(record.id, resolved, openBelow)).map((record) => record.id)), [threads, resolved, openBelow]);
   const view = useSentThreadsView(canResolve && boxesByMessage.size > 0, foldedIds);
@@ -370,7 +383,7 @@ export function useSentComments(input: {
   ) => {
     const list = boxesByMessage.get(messageId);
     if (!list) return undefined;
-    const actions = live && canResolve ? { onResolve: resolve, onReply: reply, onSubThread: subThread, ...(sendAction ? { onSend: sendAction } : {}) } : {};
+    const actions = live && canResolve ? { onResolve: resolve, onReply: reply, onSubThread: subThread, ...(sendAction ? { onSend: sendAction } : {}), ...(liveAction ? { onLive: liveAction } : {}) } : {};
     const edit = onEdit
       ? { canEdit: (id: string) => draftsById.has(id), onEdit: (id: string, text: string) => { const draft = draftsById.get(id); return draft ? onEdit(draft, text) : undefined; } }
       : {};
@@ -666,7 +679,8 @@ export function useSentFileComments(input: {
   const slotsFor = (blocks: readonly Block[], { selected, onEdit }: { selected?: string | null; onEdit?: (id: string, text: string) => void } = {}) => {
     if (roots.length === 0) return undefined;
     const movedHere = moved.key === (view?.key ?? '') ? moved.blocks : undefined;
-    const actions = live ? { onResolve, onReply: sent?.onReply, onSubThread, ...(onSend ? { onSend } : {}) } : {};
+    const onLive = sent?.onLive;
+    const actions = live ? { onResolve, onReply: sent?.onReply, onSubThread, ...(onSend ? { onSend } : {}), ...(onLive ? { onLive } : {}) } : {};
     const editable = (id: string) => {
       const draft = draftById.get(id);
       return !readOnly && !!draft && annotationOf(draft).type !== AnnotationType.DELETION;

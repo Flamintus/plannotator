@@ -3,8 +3,9 @@
  * `/plannotator-annotate`, plan review; #1116, experimental
  * "persistent-comments"): its state, read once from `GET /api/threads` and
  * then from the `review-threads` event (`receive`), and the page's writes
- * (`POST /api/threads/send`, `POST /api/threads/resolve`), and the reopen of
- * a review the person ended (`POST /api/threads/reopen`).
+ * (`POST /api/threads/send`, `POST /api/threads/resolve`, `POST
+ * /api/threads/live`), and the reopen of a review the person ended
+ * (`POST /api/threads/reopen`).
  *
  * Unavailable (the setting off, no host that carries sends, a target the
  * journal does not name), `state` stays null and the page is today's: one
@@ -21,6 +22,7 @@ import { EMPTY_REVIEW_LOOP_INDEX, indexReviewLoop, readReviewLoopState, type Rev
 export const REVIEW_THREADS_URL = '/api/threads';
 export const REVIEW_THREADS_SEND_URL = '/api/threads/send';
 export const REVIEW_THREADS_RESOLVE_URL = '/api/threads/resolve';
+export const REVIEW_THREADS_LIVE_URL = '/api/threads/live';
 export const REVIEW_THREADS_REOPEN_URL = '/api/threads/reopen';
 
 /** What a send did: its id and round when it went, or why it did not. */
@@ -102,6 +104,8 @@ export interface ReviewLoop {
   retry: (sendId: string) => Promise<ReviewLoopSendResult | null>;
   canRetry: (sendId: string) => boolean;
   resolve: (id: string, resolved: boolean) => Promise<{ ok: boolean; error?: string }>;
+  /** Live on or off on a sent comment or sub-thread: under a live thread the person's replies go on their own. */
+  setLive: (id: string, live: boolean) => Promise<{ ok: boolean; error?: string }>;
   /**
    * Takes up the review the person ended here (its decision was reopenable):
    * the server decides again and tells the agent. `final`: it can no longer be
@@ -220,13 +224,14 @@ export function useReviewLoop(options: { enabled: boolean }): ReviewLoop {
     return post({ mode: 'round', comments: [], key });
   }, [post]);
 
-  const resolve = useCallback(async (id: string, resolved: boolean): Promise<{ ok: boolean; error?: string }> => {
+  /** A write on one comment (`url`, `body`): the state the server answers with, or why it did not go. */
+  const write = useCallback(async (url: string, body: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> => {
     let response: Response;
     try {
-      response = await fetch(REVIEW_THREADS_RESOLVE_URL, {
+      response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, resolved }),
+        body: JSON.stringify(body),
       });
     } catch {
       return { ok: false, error: 'Plannotator could not reach its server.' };
@@ -235,6 +240,8 @@ export function useReviewLoop(options: { enabled: boolean }): ReviewLoop {
     receive(await response.json().catch(() => null));
     return { ok: true };
   }, [receive]);
+  const resolve = useCallback((id: string, resolved: boolean) => write(REVIEW_THREADS_RESOLVE_URL, { id, resolved }), [write]);
+  const setLive = useCallback((id: string, live: boolean) => write(REVIEW_THREADS_LIVE_URL, { id, live }), [write]);
 
   const reopen = useCallback(async (): Promise<{ ok: boolean; error?: string; final?: boolean }> => {
     let response: Response;
@@ -271,6 +278,7 @@ export function useReviewLoop(options: { enabled: boolean }): ReviewLoop {
     retry,
     canRetry,
     resolve,
+    setLive,
     reopen,
     isNew,
     markSeen,

@@ -13,9 +13,11 @@
  *   a comment, a deletion, a quick label), Reply,
  *   Resolve and Reopen at a thread's head, any box folded to one line and
  *   opened again by hand (a resolved thread folded by default once nothing
- *   under it is open), and Send on a draft (it goes alone,
- *   at once, and the round stays open). The person's drafts are boxes too,
- *   "Not sent", after the sent ones on their block.
+ *   under it is open), Send on a draft (it goes alone,
+ *   at once, and the round stays open), and Live at a sent box's head, which
+ *   turns it on or off: under a live thread the person's reply goes as a
+ *   `now` send as soon as it is saved, the Send of a draft's path. The
+ *   person's drafts are boxes too, "Not sent", after the sent ones on their block.
  * - The annotations panel stays today's list, one comment per card with its
  *   controls, flat (a reply or a sub-thread is a card of its own, no tree):
  *   the page's own annotations only (a sent one takes no edit or delete),
@@ -220,7 +222,7 @@ export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanel
     const top = index.elements.get(thread)?.top.id;
     addDraft(annotation, !!top && held.has(top) && annotationOwnsHighlight(annotation));
     lookAt(parentId);
-    // A live thread (a single send reached it): the person's next replies in it go on their own.
+    // A live thread (the person turned Live on; the view's `live`, the core's rule): the reply goes now, as a draft's Send.
     const node = index.elements.get(thread)?.node as ReviewThreadNode | undefined;
     if (node?.live) void sendDrafts([annotation]);
     return true;
@@ -248,6 +250,13 @@ export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanel
   const resolveThread = useCallback(async (id: string, resolved: boolean) => {
     const result = await loop.resolve(id, resolved);
     if (!result.ok) notify(result.error ?? 'The comment did not change.');
+    lookAt(id);
+  }, [loop, notify, lookAt]);
+
+  /** Live on or off on a sent thread; said when it did not go. */
+  const setLive = useCallback(async (id: string, live: boolean) => {
+    const result = await loop.setLive(id, live);
+    if (!result.ok) notify(result.error ?? 'Live did not change.');
     lookAt(id);
   }, [loop, notify, lookAt]);
 
@@ -343,6 +352,7 @@ export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanel
         ? {}
         : {
             onResolve: (record: SentThreadRecord, resolved: boolean) => void resolveThread(record.id, resolved),
+            onLive: (record: SentThreadRecord, live: boolean) => void setLive(record.id, live),
             onReply: async (commentId: string, words: Reply) => onReply(commentId, words),
             onSubThread: async (parentId: string, passage: TextPassage, comment: PassageComment) => onCommentPassage(parentId, passage, comment),
             onSend: async (id: string) => {
@@ -357,7 +367,7 @@ export function useReviewLoopPanel(input: ReviewLoopPanelInput): ReviewLoopPanel
             onEdit: (id: string, text: string) => edit(id, { text }),
           }),
     }),
-    [readOnly, onSelect, lookAt, resolveThread, onReply, onCommentPassage, held, sendDrafts, cardParts, edit],
+    [readOnly, onSelect, lookAt, resolveThread, setLive, onReply, onCommentPassage, held, sendDrafts, cardParts, edit],
   );
   const lastBlock = blocks.length > 0 ? blocks[blocks.length - 1]!.id : null;
   const belowBlock = useMemo(() => {

@@ -22,7 +22,8 @@
  * sends: a draft (a comment drawn as a box, a sub-thread) has Send, which
  * sends it alone at once and shows what became of it, the words' Send
  * carries no draft, and Finish round sends the rest with the words, the
- * header counting the round; a reply under a live thread goes on its own,
+ * header counting the round; Send now makes no thread live, the sent box's
+ * Live turns it on, and a reply under a live thread then goes on its own,
  * and Finish round with nothing else to send ends the round alone.
  * The server side is proved in packages/server/inbox-persistent-comments.test.ts,
  * inbox-comment-replies.test.ts and inbox-comment-subthreads.test.ts.
@@ -497,7 +498,7 @@ test.skipIf(!hasDom)("under the message, words selected in the agent's reply ope
   expect([carried!.mode, carried!.comments]).toEqual(['now', [id]]);
 }, 30_000);
 
-test.skipIf(!hasDom)('with comment sends, a reply under a live thread goes on its own and shows sent; Finish round with nothing else to send ends the round alone', async () => {
+test.skipIf(!hasDom)('with comment sends, a reply under a thread the person turned Live goes on its own and shows sent; Finish round with nothing else to send ends the round alone', async () => {
   const { sent } = await command<{ sent: string }>({ send: { project: world.project, session: 'ses_live_msg', body: 'Deploys roll out to every store.' } });
   await postJson(`/api/inbox/messages/${sent}/annotations`, { annotation: words('live-1', 'every store', 'Lyon first.', 'block-0') });
 
@@ -507,7 +508,13 @@ test.skipIf(!hasDom)('with comment sends, a reply under a live thread goes on it
   await act(async () => {
     box()!.querySelector<HTMLButtonElement>('[data-sent-send="live-1"]')!.click();
   });
-  await until(() => box()?.querySelector('[data-sent-live]') != null, 'the thread live');
+  await until(() => box()?.querySelector('[data-sent-live-toggle="live-1"]') != null, "the sent box's Live");
+  // Send now makes no thread live: Live is the person's choice, at the box's head.
+  expect(box()!.querySelector('[data-sent-live]')).toBeNull();
+  await act(async () => {
+    box()!.querySelector<HTMLButtonElement>('[data-sent-live-toggle="live-1"]')!.click();
+  });
+  await until(() => box()?.querySelector('[data-sent-live-toggle="live-1"][aria-pressed="true"]') != null, 'the thread live');
   // No draft left, but a send went in the round under way: Finish round is still offered.
   expect(el.querySelector('[data-finish-round]')).not.toBeNull();
 

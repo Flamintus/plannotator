@@ -51,9 +51,11 @@
  * `live` and `fresh`): a draft, the comment, a reply under one or a
  * sub-thread, has Send, which sends it alone at once without ending the
  * round; what a send carried says what became of it (Queued, Delivered,
- * Read, Working, Replied); a thread a send reached at once is Live (the
- * person's next replies in it go on their own); and an agent's reply the
- * person has not seen yet is New.
+ * Read, Working, Replied); a thread the person turned Live on is Live (their
+ * next replies in it go on their own as they are saved); and an agent's
+ * reply the person has not seen yet is New. With `onLive`, a sent box, at
+ * any depth, has Live at its head, which turns it on or off (pressed while
+ * on, in the Live mark's look); a draft has none.
  */
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type ComponentProps, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { isInboxCommentThreadFolded, isInboxSubThread } from '@plannotator/core/inbox-comment-threads';
@@ -208,6 +210,8 @@ interface SentThreadsActions<R extends SentThreadRecord = InboxAnnotationRecord>
   onSubThread?: SubThreadSave;
   /** Send one draft (a comment, a reply under one, a sub-thread, by id) alone, at once, the round left open; true once it went. */
   onSend?: (id: string) => Promise<boolean>;
+  /** Turn Live on (`live`) or off on a sent thread (a comment or a sub-thread, at any depth): under it the person's replies go on their own. Absent: no Live button. */
+  onLive?: (record: R, live: boolean) => void;
   /**
    * Whether the person can still change a comment (a comment, a reply under one, a sub-thread, by id): the host's own
    * rule, the one its list or panel offers Edit by (a draft, never what was sent). With `onEdit`, its box has Edit.
@@ -504,7 +508,7 @@ function BoxGroup<R extends SentThreadRecord>({
 /** One thread (a comment, or a sub-thread; `root`: its thread's first comment), as a box; `lost`: placed where it is because its passage was not found. */
 function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, view, actions, selected }: { record: R; root: R; lost: boolean } & BoxContext<R>) {
   const { rounds, resolved, replies, subThreads, openBelow, passages, statuses, live, fresh } = tree;
-  const { onOpen, onLook, onResolve, onReply, onSubThread, onSend, canEdit, onEdit } = actions;
+  const { onOpen, onLook, onResolve, onReply, onSubThread, onSend, onLive, canEdit, onEdit } = actions;
   const { box, setBox, edit, setEdit } = view;
   const id = record.id;
   const annotation = record.annotation as unknown as Annotation;
@@ -518,6 +522,7 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
   const round = record.sent_reply_id ? rounds.get(record.sent_reply_id) : undefined;
   const isSub = isInboxSubThread(record);
   const isResolved = resolved.has(id);
+  const isLive = live?.has(id) === true;
   // Folded by default: a resolved thread with nothing open under it; any box folds and unfolds by hand.
   const byDefault = isInboxCommentThreadFolded(id, resolved, openBelow);
   const folded = view.isFolded(id, byDefault);
@@ -539,18 +544,34 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
   };
   // A press in a box is a look at it (and, the press being in them too, at the boxes around it).
   const look = onLook ? () => onLook(record) : undefined;
+  /** Live at the head of a sent box: pressed while on, in the Live mark's look, which it then stands for. */
+  const liveButton = !draft && onLive ? (
+    <button
+      type="button"
+      className={`ib-sentc-act${isLive ? ' ib-sentb-live' : ''}`}
+      aria-pressed={isLive}
+      data-sent-live-toggle={id}
+      data-sent-live={isLive ? '' : undefined}
+      title={isLive ? 'Live: your replies here go to the agent as you save them. Press to turn it off.' : 'Turn Live on: your replies here go to the agent as you save them.'}
+      onClick={() => onLive(record, !isLive)}
+    >
+      Live
+    </button>
+  ) : null;
   // What the head says, folded or not: its kind, its round or Not sent, its send's status, Live, ✓ Resolved, Unanchored.
-  const chips = (
+  // Open, a box with the Live button says Live by it, not twice.
+  const chipsWith = (withLive: boolean) => (
     <SentChips
       kind={commentKind(annotation)}
       draft={draft}
       round={round}
       status={statuses?.get(id)}
-      live={live?.has(id)}
+      live={withLive && isLive}
       resolved={isResolved}
       unanchored={lost || typeof record.unanchored_at === 'string'}
     />
   );
+  const chips = chipsWith(true);
   /** A comment of this box the person can still change (the host's rule) is being edited: the field in place of its words. */
   const editable = (messageId: string) => !!onEdit && canEdit?.(messageId) === true;
   const editing = (messageId: string) => edit?.at === messageId && editable(messageId);
@@ -676,10 +697,11 @@ function SentThreadBox<R extends SentThreadRecord>({ record, root, lost, tree, v
         ) : (
           <span className="ib-sentb-quote">{quoteText}</span>
         )}
-        <span className="ib-sentb-chips">{chips}</span>
+        <span className="ib-sentb-chips">{chipsWith(!liveButton)}</span>
         {send}
-        {!draft && (onReply || onResolve) && (
+        {!draft && (onReply || onResolve || liveButton) && (
           <span className="ib-sentb-acts">
+            {liveButton}
             {onReply && (
               <button
                 type="button"

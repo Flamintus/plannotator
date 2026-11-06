@@ -162,7 +162,8 @@ function makeFetch(): typeof fetch {
           ...view,
           threads: view.threads.map((thread) => {
             const replies = comments.filter((c) => c.re === thread.id).map((c) => ({ id: c.id, author: { kind: "person" }, author_name: null, round: view.round, message_id: "snd_01JEEEEEEEEEEEEEEEEEEEEEEE", text: c.text, at: "2026-11-05T10:05:00.000Z", draft: false, status: "pending", sub_threads: [] }));
-            return replies.length > 0 ? { ...thread, live: true, replies: [...(thread.replies as unknown[]), ...replies] } : thread;
+            // A send makes no thread live: Live is the person's choice (`/api/threads/live`).
+            return replies.length > 0 ? { ...thread, replies: [...(thread.replies as unknown[]), ...replies] } : thread;
           }),
         };
       }
@@ -172,6 +173,12 @@ function makeFetch(): typeof fetch {
       const resolved = body();
       posts.push({ path: url.pathname, body: resolved });
       view = { ...view, threads: view.threads.map((thread) => (thread.id === resolved.id ? { ...thread, state: resolved.resolved === false ? "open" : "resolved" } : thread)) };
+      return Response.json({ comment: {}, ...state() });
+    }
+    if (url.pathname === "/api/threads/live") {
+      const live = body();
+      posts.push({ path: url.pathname, body: live });
+      view = { ...view, threads: view.threads.map((thread) => (thread.id === live.id ? { ...thread, live: live.live === true } : thread)) };
       return Response.json({ comment: {}, ...state() });
     }
     if (url.pathname === "/api/feedback") {
